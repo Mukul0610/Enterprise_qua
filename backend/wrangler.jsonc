@@ -93,7 +93,7 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "enterprise-qua-d1",
+          "database_name": "enterprise-qua-d1"
         }
       ],
       "r2_buckets": [
