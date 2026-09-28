@@ -49,7 +49,7 @@ export default function BuyerAccountTable() {
     // The category master, read from the database. Empty until it loads, and
     // empty for good if the read failed — there is no bundled copy to fall back
     // to, because a major category selected here becomes this buyer's procurement
-    // scope and is used to route RFQs.
+    // scope and is used to route RFQs.and
     categoryTaxonomy,
     categoryTaxonomyError,
   } = useApp();
@@ -517,31 +517,28 @@ export default function BuyerAccountTable() {
           <div className="flex items-center gap-1 text-xs bg-slate-100 dark:bg-gray-800 p-1 rounded-xl shrink-0 overflow-x-auto">
             <button
               onClick={() => setSourceFilter('ALL')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${
-                sourceFilter === 'ALL'
-                  ? 'bg-white dark:bg-gray-900 text-slate-900 dark:text-white shadow-xs'
-                  : 'text-slate-600 dark:text-gray-400'
-              }`}
+              className={`px-2.5 py-1 rounded-lg font-semibold transition-all ${sourceFilter === 'ALL'
+                ? 'bg-white dark:bg-gray-900 text-slate-900 dark:text-white shadow-xs'
+                : 'text-slate-600 dark:text-gray-400'
+                }`}
             >
               All Sources ({buyerAccounts.length})
             </button>
             <button
               onClick={() => setSourceFilter('public_system')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all flex items-center gap-1 ${
-                sourceFilter === 'public_system'
-                  ? 'bg-amber-600 text-white shadow-xs'
-                  : 'text-amber-700 dark:text-amber-400'
-              }`}
+              className={`px-2.5 py-1 rounded-lg font-semibold transition-all flex items-center gap-1 ${sourceFilter === 'public_system'
+                ? 'bg-amber-600 text-white shadow-xs'
+                : 'text-amber-700 dark:text-amber-400'
+                }`}
             >
               <Database size={11} /> Public DB ({buyerAccounts.filter((b) => b.accountSource === 'public_system').length})
             </button>
             <button
               onClick={() => setSourceFilter('web_registration')}
-              className={`px-2.5 py-1 rounded-lg font-semibold transition-all flex items-center gap-1 ${
-                sourceFilter === 'web_registration'
-                  ? 'bg-indigo-600 text-white shadow-xs'
-                  : 'text-slate-600 dark:text-gray-400'
-              }`}
+              className={`px-2.5 py-1 rounded-lg font-semibold transition-all flex items-center gap-1 ${sourceFilter === 'web_registration'
+                ? 'bg-indigo-600 text-white shadow-xs'
+                : 'text-slate-600 dark:text-gray-400'
+                }`}
             >
               <Globe size={11} /> Web ({buyerAccounts.filter((b) => b.accountSource === 'web_registration').length})
             </button>
@@ -581,9 +578,8 @@ export default function BuyerAccountTable() {
                   return (
                     <tr
                       key={buyer.id}
-                      className={`hover:bg-slate-50/80 dark:hover:bg-gray-800/30 transition-colors ${
-                        isActiveSession ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
-                      }`}
+                      className={`hover:bg-slate-50/80 dark:hover:bg-gray-800/30 transition-colors ${isActiveSession ? 'bg-indigo-50/40 dark:bg-indigo-950/20' : ''
+                        }`}
                     >
                       {/* Col 1: Organization */}
                       <td className="py-3 px-4">
@@ -964,11 +960,10 @@ export default function BuyerAccountTable() {
                         type="button"
                         key={cat.majorCategory}
                         onClick={() => toggleMajorCategory(cat.majorCategory)}
-                        className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all flex items-center gap-1 ${
-                          isSelected
-                            ? 'bg-indigo-600 text-white shadow-xs'
-                            : 'bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-300'
-                        }`}
+                        className={`px-2 py-1 rounded-md text-[10px] font-semibold transition-all flex items-center gap-1 ${isSelected
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-700 text-slate-600 dark:text-gray-300'
+                          }`}
                       >
                         {isSelected && <Check size={10} />}
                         <span>{cat.majorCategory}</span>
