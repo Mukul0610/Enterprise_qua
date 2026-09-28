@@ -15,6 +15,8 @@ import {
   Search,
   Sparkles,
   Zap,
+  X,
+  FileText,
 } from 'lucide-react';
 import { SOURCING_MODES, formatIndianDateTime } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
@@ -126,9 +128,14 @@ export default function KanbanBoard({
       showToast('No RFQs Awaiting Quotes', 'There are no RFQs in Quotes Pending to batch-chase.', 'info');
       return;
     }
-    col2_pending.forEach((rfq) => triggerBatchChannelChaser(rfq.rfqNumber, ['call', 'whatsapp', 'sms']));
+    col2_pending.forEach((rfq) => triggerBatchChannelChaser(rfq.rfqNumber, ['call', 'whatsapp', 'sms'], true));
     addAuditLog(
       `Executed Global Override: Multi-Channel Batch Follow-up (Call + WhatsApp + SMS) to ${col2_pending.length} pending RFQ(s)`
+    );
+    showToast(
+      'Multi-Channel Batch Broadcast Active!',
+      `AI chasing dispatched across Call, WhatsApp, and SMS for ${col2_pending.length} pending RFQ(s).`,
+      'success'
     );
   };
 
@@ -149,6 +156,8 @@ export default function KanbanBoard({
   const rfqsWithInvites = rfqs.filter((r) => (r.assignedVendors?.length || 0) > 0).length;
   const totalVendorsInvited = rfqs.reduce((sum, r) => sum + (r.assignedVendors?.length || 0), 0);
 
+  const [summaryFilterModal, setSummaryFilterModal] = useState<'pipeline' | 'quotes' | 'awaiting' | null>(null);
+
   const summaryCards = [
     {
       key: 'pipeline',
@@ -156,7 +165,7 @@ export default function KanbanBoard({
       value: `${totalRFQs} Total`,
       hint: `${activeChasing} Actively Chasing`,
       tone: 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 border-indigo-200 dark:border-indigo-800',
-      onClick: onNavigateToAllRfqs,
+      onClick: () => setSummaryFilterModal('pipeline'),
     },
     {
       key: 'quotes',
@@ -164,7 +173,7 @@ export default function KanbanBoard({
       value: `${quotesReceived} Total`,
       hint: `Avg ${avgQuotesPerRFQ} / RFQ`,
       tone: 'text-sky-600 dark:text-cyan-400 bg-sky-50 dark:bg-cyan-950/60 border-sky-200 dark:border-sky-800',
-      onClick: onNavigateToAllRfqs,
+      onClick: () => setSummaryFilterModal('quotes'),
     },
     {
       key: 'response',
@@ -184,7 +193,7 @@ export default function KanbanBoard({
     },
     {
       key: 'awaiting',
-      onClick: onNavigateToAllRfqs,
+      onClick: () => setSummaryFilterModal('awaiting'),
       label: 'Awaiting Quotes',
       value: `${awaitingQuotes} Active`,
       hint: `${quotesReceived} Received So Far`,
@@ -197,15 +206,9 @@ export default function KanbanBoard({
       {/* Title & Top Toolbar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Operational Monitoring Kanban & Chasing Control
-            </h1>
-            <span className="badge badge-purple">Screen 2.1</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Category pipeline governance, Mode 1/2/3 AI chaser dispatch engine, and operational analytics controls.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            Operational Monitoring Kanban & Chasing Control
+          </h1>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">
@@ -590,6 +593,135 @@ export default function KanbanBoard({
         onClose={() => setDeepDiveModalOpen(false)}
         rfq={selectedRFQForDeepDive}
       />
+
+      {/* In-Page Summary Category Filter Modal */}
+      {summaryFilterModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
+          role="dialog"
+          aria-modal="true"
+        >
+          <div className="bg-white dark:bg-gray-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl w-full max-w-4xl max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-4 sm:p-5 border-b border-slate-200 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400">
+                  <FileText size={18} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    {summaryFilterModal === 'pipeline' && 'RFQs In Pipeline'}
+                    {summaryFilterModal === 'quotes' && 'Quotes Received'}
+                    {summaryFilterModal === 'awaiting' && 'Awaiting Quotes'}
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-gray-400">
+                    Live Operational Overview &amp; Tracking
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setSummaryFilterModal(null)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-all"
+                title="Close"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-3">
+              {(() => {
+                const filteredList =
+                  summaryFilterModal === 'pipeline'
+                    ? rfqs
+                    : summaryFilterModal === 'quotes'
+                    ? rfqs.filter((r) => (r.quotesCount || 0) > 0)
+                    : rfqs.filter((r) => (r.quotesCount || 0) === 0);
+
+                if (filteredList.length === 0) {
+                  return (
+                    <div className="text-center py-12 text-slate-400 dark:text-gray-500 space-y-2">
+                      <p className="text-sm font-medium">No RFQs found matching this criteria.</p>
+                      <p className="text-xs">Try selecting a different category or adjusting the search filter.</p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                    <table className="w-full text-xs text-left">
+                      <thead className="bg-slate-50 dark:bg-slate-800/50 text-slate-500 font-semibold uppercase tracking-wider text-[10px] border-b border-slate-200 dark:border-slate-800">
+                        <tr>
+                          <th className="px-4 py-2.5">RFQ Number</th>
+                          <th className="px-4 py-2.5">Title &amp; Category</th>
+                          <th className="px-4 py-2.5">Delivery PIN</th>
+                          <th className="px-4 py-2.5 text-center">Quotes</th>
+                          <th className="px-4 py-2.5">Status</th>
+                          <th className="px-4 py-2.5 text-right">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                        {filteredList.map((rfq) => (
+                          <tr key={rfq.id || rfq.rfqNumber} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="px-4 py-3 font-mono font-bold text-slate-900 dark:text-white whitespace-nowrap">
+                              {rfq.rfqNumber}
+                            </td>
+                            <td className="px-4 py-3">
+                              <div className="font-semibold text-slate-800 dark:text-gray-200">{rfq.title}</div>
+                              <div className="text-[10px] text-slate-400">{rfq.category || 'General'} • {rfq.sourcingMode?.toUpperCase()}</div>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-600 dark:text-gray-300">
+                              {rfq.deliveryPincode ? `PIN: ${rfq.deliveryPincode}` : '—'}
+                            </td>
+                            <td className="px-4 py-3 text-center whitespace-nowrap">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                                (rfq.quotesCount || 0) > 0
+                                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-300'
+                              }`}>
+                                {rfq.quotesCount || 0} Quote{(rfq.quotesCount || 0) === 1 ? '' : 's'}
+                              </span>
+                            </td>
+                            <td className="px-4 py-3 whitespace-nowrap">
+                              <span className="badge badge-indigo text-[10px] font-semibold">{rfq.status}</span>
+                            </td>
+                            <td className="px-4 py-3 text-right whitespace-nowrap">
+                              <button
+                                onClick={() => {
+                                  setSummaryFilterModal(null);
+                                  if (onNavigateToMatrix && (rfq.quotesCount || 0) > 0) {
+                                    onNavigateToMatrix(rfq);
+                                  } else {
+                                    setRfqUnderReview(rfq);
+                                  }
+                                }}
+                                className="btn btn-primary btn-xs py-1 px-2.5 text-[10px] font-bold inline-flex items-center gap-1"
+                              >
+                                <span>{(rfq.quotesCount || 0) > 0 ? 'Matrix' : 'Review'}</span>
+                                <ChevronRight size={10} />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                );
+              })()}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 border-t border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50 flex justify-end">
+              <button
+                onClick={() => setSummaryFilterModal(null)}
+                className="btn btn-secondary text-xs px-4 py-1.5 font-bold"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

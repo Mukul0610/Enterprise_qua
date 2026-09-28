@@ -68,7 +68,7 @@ const BUYER_CONTACTS_MAP: Record<string, Omit<BuyerContactInfo, 'source'>> = {
 
 export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: QuotationFormProps) {
   const router = useRouter();
-  const { rfqs, vendorOpportunities, showToast, addAuditLog, vendorSubscription, currentUserSession, refreshFromDB } = useApp();
+  const { rfqs, vendorOpportunities, buyerVendors, showToast, addAuditLog, vendorSubscription, currentUserSession, refreshFromDB } = useApp();
   const [selectedBuyerModal, setSelectedBuyerModal] = useState<(BuyerContactInfo & { rfqNumber: string }) | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
@@ -79,6 +79,10 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [myVendorName, setMyVendorName] = useState<string>('');
   const [myAddedByBuyerCompany, setMyAddedByBuyerCompany] = useState<string | null>(null);
   const [freeCreditsRemaining, setFreeCreditsRemaining] = useState<number | null>(null);
+  const myVendorRecord = buyerVendors?.find(
+    (v) => v.email?.toLowerCase() === currentUserSession?.email?.toLowerCase()
+  );
+  const effectiveFreeCredits = freeCreditsRemaining ?? myVendorRecord?.freeQuotationCredits ?? (vendorSubscription === 'premium' ? 5 : 0);
   // isOwnBuyerRfq depends on myAddedByBuyerCompany, which only exists once
   // this fetch resolves — the deep-link auto-open effect below waits on this
   // flag so it doesn't judge a real direct-buyer RFQ as locked just because
@@ -350,15 +354,11 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
           >
             <ArrowLeft size={14} /> Back to Opportunity Feed
           </button>
-          <div className="flex items-center gap-2">
+          <div>
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Sourcing Enquiries & Quotation Tracking
             </h1>
-            <span className="badge badge-emerald">Screen 3.2</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Review active RFQs received from eligible buyers, download specifications, and track submitted email quotation status.
-          </p>
         </div>
       </div>
 
@@ -392,7 +392,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
             <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-1 mono">
               {vendorSubscription === 'connect' || vendorSubscription === 'select'
                 ? 'Active Plan'
-                : `${freeCreditsRemaining ?? 5} Free Left`}
+                : `${effectiveFreeCredits} Free Left`}
             </span>
           </div>
           <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
@@ -433,11 +433,12 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
               {vendorOpportunities.map((opp) => {
                 const quote = submittedQuotes.find((q) => q.rfqNumber === opp.rfqNumber);
                 const parentCompany = getParentCompany(opp.buyer);
-                // 'connect'/'select' are the real marketplace-unlock tiers (see
-                // vendor-subscription.tsx's own plan copy) — 'premium_network'
-                // is a value nothing in the app ever sets, so this is locked
-                // unless the vendor's real buyer relationship covers this RFQ.
-                const isLocked = !isOwnBuyerRfq(opp.rfqNumber) && vendorSubscription !== 'connect' && vendorSubscription !== 'select';
+                const isDirectBuyer = isOwnBuyerRfq(opp.rfqNumber);
+                const freeCredits = effectiveFreeCredits;
+                const isLocked = !isDirectBuyer && (
+                  vendorSubscription === 'premium' ||
+                  (vendorSubscription !== 'connect' && vendorSubscription !== 'select' && freeCredits <= 0)
+                );
                 
                 // Condition: If buyer uploaded this vendor (isOwnBuyerRfq), show even before quote is submitted.
                 // Otherwise, show only after quote is submitted and updated in the system (quote !== undefined || opp.status === 'submitted').

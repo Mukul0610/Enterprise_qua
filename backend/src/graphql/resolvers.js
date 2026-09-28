@@ -1,4 +1,5 @@
 const storeService = require('../services/storeService');
+const domainQueries = require('../db/domainQueries');
 const { queryCache } = require('../db/queryCache');
 const pool = require('../db/pool');
 const { getOptimizationMetrics } = require('../db/optimizationMetrics');
@@ -115,18 +116,37 @@ const rootResolvers = {
     } else if (args.buyerId) {
       buyerId = args.buyerId;
     }
-    let result = await storeService.getVendors(buyerId);
-    if (majorCategory) {
-      result = result.filter((v) => v.majorCategory && v.majorCategory.toLowerCase().includes(majorCategory.toLowerCase()));
+    let result;
+    if (pool.hasStorage()) {
+      // storeService.getVendors() re-syncs from the DB with a full unbounded
+      // table read on every call (its own doc comment flags this) — wrong
+      // here since this resolver already takes limit/offset/search/
+      // majorCategory and only needs one page. getVendorsPageFromDB does the
+      // same filtering in SQL, so a request only ever touches the rows it
+      // returns.
+      const page = await domainQueries.getVendorsPageFromDB({
+        limit,
+        offset,
+        search: search || '',
+        category: majorCategory || '',
+        publicOnly: !buyerId,
+        scopedBuyerId: buyerId || '',
+      });
+      result = page.rows;
+    } else {
+      // No DB configured: nothing to bound against, fall back to the
+      // in-memory collection and filter/paginate in JS as before.
+      result = await storeService.getVendors(buyerId);
+      if (majorCategory) {
+        result = result.filter((v) => v.majorCategory && v.majorCategory.toLowerCase().includes(majorCategory.toLowerCase()));
+      }
+      if (search) {
+        const q = search.toLowerCase();
+        result = result.filter((v) => (v.name && v.name.toLowerCase().includes(q)) || (v.email && v.email.toLowerCase().includes(q)));
+      }
+      result = result.slice(offset, offset + limit);
     }
-    if (source) {
-      result = result.filter((v) => v.source === source);
-    }
-    if (search) {
-      const q = search.toLowerCase();
-      result = result.filter((v) => (v.name && v.name.toLowerCase().includes(q)) || (v.email && v.email.toLowerCase().includes(q)));
-    }
-    return result.slice(offset, offset + limit);
+    return source ? result.filter((v) => v.source === source) : result;
   },
 
   vendor: async (args = {}, context = {}) => {
@@ -142,8 +162,23 @@ const rootResolvers = {
       return storeService.getVendorById(args.id, buyerId) || null;
     }
     if (args.email) {
-      const vendors = await storeService.getVendors(buyerId);
-      return vendors.find((v) => v.email && v.email.toLowerCase() === args.email.toLowerCase()) || null;
+      if (!pool.hasStorage()) {
+        const vendors = await storeService.getVendors(buyerId);
+        return vendors.find((v) => v.email && v.email.toLowerCase() === args.email.toLowerCase()) || null;
+      }
+      // Bounded single-row lookup instead of a full-table getVendors() fetch
+      // just to find one row by email.
+      const vendor = await domainQueries.getVendorByEmailFromDB(args.email);
+      if (!vendor) return null;
+      if (buyerId === 'all') return vendor;
+      if (!vendor.buyerId && !vendor.buyerAccountId) return vendor;
+      if (!buyerId) return null;
+      const sId = String(buyerId).toLowerCase();
+      const matches =
+        (vendor.buyerId && String(vendor.buyerId).toLowerCase() === sId) ||
+        (vendor.buyerAccountId && String(vendor.buyerAccountId).toLowerCase() === sId) ||
+        (vendor.buyerEmail && String(vendor.buyerEmail).toLowerCase() === sId);
+      return matches ? vendor : null;
     }
     return null;
   },

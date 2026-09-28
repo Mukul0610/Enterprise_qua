@@ -1748,6 +1748,8 @@ export interface RFQIngestionDraft {
   source: RFQSource;
   sourceFileName?: string;
   sourceEmail?: string;
+  deliveryLocation?: string;
+  deliveryPincode?: string;
 }
 
 /** Why an AI extraction attempt did not yield line items. */

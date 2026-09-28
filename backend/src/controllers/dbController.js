@@ -34,7 +34,14 @@ async function getDBStatus(req, res, next) {
       loadedRecords: {
         isLoadedFromDatabase: storeService.isHydratedFromDB,
         buyerAccounts: storeService.getBuyerAccounts().length,
-        vendors: (await storeService.getVendors()).length,
+        // storeService.getVendors() re-syncs from the DB on every call (a full
+        // unbounded table read — see its own doc comment) — wrong for a
+        // status endpoint whose own comment above says it reports what this
+        // process holds "in memory", not a live re-fetch. this.vendors is
+        // itself now a bounded hydration subset (see MAX_HYDRATION_VENDORS in
+        // storeService.js), so the real table-wide count is vendorsTotal when
+        // available, falling back to the in-memory length pre-hydration.
+        vendors: storeService.vendorsTotal ?? storeService.vendors.length,
         rfqs: storeService.getRFQs().length,
       },
     });

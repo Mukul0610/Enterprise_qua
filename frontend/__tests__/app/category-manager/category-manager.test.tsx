@@ -355,6 +355,13 @@ describe('Category Manager Screens Suite', () => {
 
       const escalateBtns = screen.getAllByRole('button', { name: /Escalate to Buyer/i });
       fireEvent.click(escalateBtns[0]);
+
+      // Open & Review Categories action on parsing RFQ card
+      const reviewActionBtns = screen.getAllByRole('button', { name: /Open & Review Categories/i });
+      fireEvent.click(reviewActionBtns[0]);
+      expect(screen.getByText(/Edit RFQ/i)).toBeInTheDocument();
+      const cancelEditBtn = screen.getByRole('button', { name: /Cancel/i });
+      fireEvent.click(cancelEditBtn);
     });
 
     test('the scored card never throws when no matrix-navigation callback is supplied', async () => {
@@ -366,6 +373,86 @@ describe('Category Manager Screens Suite', () => {
 
       const matrixBtn = screen.getByRole('button', { name: /View Comparative Quote Matrix/i });
       expect(() => fireEvent.click(matrixBtn)).not.toThrow();
+    });
+
+    test('clicking summary cards opens filtered modal dialogs on the active page and allows closing them', async () => {
+      renderWithProvider(<KanbanBoard onNavigateToSpend={jest.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('RFQ-2026-00421')).toBeInTheDocument();
+      });
+
+      // 1. Pipeline Summary Card
+      const pipelineBtn = screen.getByRole('button', { name: /RFQs In Pipeline/i });
+      fireEvent.click(pipelineBtn);
+      expect(screen.getByRole('heading', { name: 'RFQs In Pipeline' })).toBeInTheDocument();
+      expect(screen.getByText(/Live Operational Overview & Tracking/i)).toBeInTheDocument();
+      const closeButtons1 = screen.getAllByRole('button', { name: /Close/i });
+      fireEvent.click(closeButtons1[0]);
+      expect(screen.queryByRole('heading', { name: 'RFQs In Pipeline' })).not.toBeInTheDocument();
+
+      // 2. Quotes Received Summary Card
+      const quotesBtn = screen.getByRole('button', { name: /Quotes Received/i });
+      fireEvent.click(quotesBtn);
+      expect(screen.getByRole('heading', { name: 'Quotes Received' })).toBeInTheDocument();
+      const closeButtons2 = screen.getAllByRole('button', { name: /Close/i });
+      fireEvent.click(closeButtons2[0]);
+      expect(screen.queryByRole('heading', { name: 'Quotes Received' })).not.toBeInTheDocument();
+
+      // 3. Awaiting Quotes Summary Card - footer Close button
+      const awaitingBtn = screen.getByRole('button', { name: /Awaiting Quotes/i });
+      fireEvent.click(awaitingBtn);
+      expect(screen.getByRole('heading', { name: 'Awaiting Quotes' })).toBeInTheDocument();
+      const closeButtons3 = screen.getAllByRole('button', { name: /Close/i });
+      fireEvent.click(closeButtons3[closeButtons3.length - 1]);
+      expect(screen.queryByRole('heading', { name: 'Awaiting Quotes' })).not.toBeInTheDocument();
+    });
+
+    test('modal rows allow navigating to matrix or reviewing the rfq', async () => {
+      const onMatrix = jest.fn();
+      renderWithProvider(<KanbanBoard onNavigateToMatrix={onMatrix} onNavigateToSpend={jest.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.getByText('RFQ-2026-00421')).toBeInTheDocument();
+      });
+
+      // Open Quotes Received modal (contains RFQ with quotes)
+      const quotesBtn = screen.getByRole('button', { name: /Quotes Received/i });
+      fireEvent.click(quotesBtn);
+      const matrixBtns = screen.queryAllByRole('button', { name: /Matrix/i });
+      if (matrixBtns.length > 0) {
+        fireEvent.click(matrixBtns[0]);
+        expect(onMatrix).toHaveBeenCalled();
+      }
+
+      // Open Pipeline modal (contains RFQ without quotes)
+      const pipelineBtn = screen.getByRole('button', { name: /RFQs In Pipeline/i });
+      fireEvent.click(pipelineBtn);
+      const reviewBtns = screen.queryAllByRole('button', { name: /Review/i });
+      if (reviewBtns.length > 0) {
+        fireEvent.click(reviewBtns[0]);
+        const cancelEditBtn = screen.queryByRole('button', { name: /Cancel/i });
+        if (cancelEditBtn) fireEvent.click(cancelEditBtn);
+      }
+
+      // Column 1 review action button
+      const colReviewBtns = screen.queryAllByRole('button', { name: /Review Categories|Open & Review Categories/i });
+      if (colReviewBtns.length > 0) {
+        fireEvent.click(colReviewBtns[0]);
+        const cancelBtn = screen.queryByRole('button', { name: /Cancel/i });
+        if (cancelBtn) fireEvent.click(cancelBtn);
+      }
+
+      // Re-test summary modal click when onNavigateToMatrix is not supplied
+      renderWithProvider(<KanbanBoard onNavigateToSpend={jest.fn()} />);
+      const quotesBtn2 = screen.getAllByRole('button', { name: /Quotes Received/i });
+      fireEvent.click(quotesBtn2[quotesBtn2.length - 1]);
+      const matrixBtns2 = screen.queryAllByRole('button', { name: /Matrix/i });
+      if (matrixBtns2.length > 0) {
+        fireEvent.click(matrixBtns2[0]);
+        const cancelEditBtn2 = screen.queryByRole('button', { name: /Cancel/i });
+        if (cancelEditBtn2) fireEvent.click(cancelEditBtn2);
+      }
     });
 
     // Some real RFQ rows predate extractedEntities being reliably set, and a

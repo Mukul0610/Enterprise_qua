@@ -20,6 +20,12 @@ const { simulateChaserOutreach } = require('./aiChaserService');
 const mailerService = require('./mailerService');
 const { logger } = require('./loggerService');
 
+// Bound on the vendors table read at boot hydration (see hydrateFromDB) —
+// same cap the bootstrap payload already applies (MAX_BOOTSTRAP_VENDORS
+// below), reused here rather than invented separately: this.vendors is one
+// shared in-memory cache used by both paths, so they should stay consistent.
+const MAX_HYDRATION_VENDORS = 500;
+
 class StoreService {
   constructor() {
     // Every collection starts empty and is filled from Neon by hydrateFromDB().
@@ -80,9 +86,18 @@ class StoreService {
     }
 
     try {
-      const [vendors, rfqs, evaluations, vendorCatalogue, buyerAccountsResult, aiFeed, auditLogs, notifications, paymentLinks] =
+      const [vendorPage, rfqs, evaluations, vendorCatalogue, buyerAccountsResult, aiFeed, auditLogs, notifications, paymentLinks] =
         await Promise.all([
-          domainQueries.getVendorsFromDB(),
+          // Bounded, not domainQueries.getVendorsFromDB() (a full unbounded
+          // table read) — this runs on every Worker cold start, and D1's
+          // free-tier daily row-read cap was exhausted twice by exactly this:
+          // Cloudflare's edge fan-out spins up many isolates under load /
+          // during a deploy, each one re-reading the entire vendors table
+          // once at boot. this.vendors is already documented elsewhere
+          // (getVendorByIdWithDBFallback) as "a capped, bootstrap-time
+          // subset" that individual DB fallbacks paper over — hydration
+          // should actually honor that instead of loading everything.
+          domainQueries.getVendorsPageFromDB({ limit: MAX_HYDRATION_VENDORS, offset: 0 }),
           domainQueries.getRFQsFromDB(),
           domainQueries.getEvaluationsFromDB(),
           domainQueries.getVendorCatalogueFromDB(),
@@ -93,7 +108,8 @@ class StoreService {
           domainQueries.getPaymentLinksFromDB(),
         ]);
 
-      this.vendors = vendors;
+      this.vendors = vendorPage.rows;
+      this.vendorsTotal = vendorPage.total;
       this.rfqs = rfqs;
       this.evaluations = evaluations;
       this.vendorCatalogue = vendorCatalogue;
@@ -116,7 +132,8 @@ class StoreService {
       logger.info(
         'Domain records loaded from PostgreSQL',
         {
-          vendors: vendors.length,
+          vendors: vendorPage.rows.length,
+          vendorsTotal: vendorPage.total,
           rfqs: rfqs.length,
           evaluations: evaluations.length,
           vendorCatalogue: vendorCatalogue.length,

@@ -134,10 +134,20 @@ async function getVendorsPageFromDB({ limit, offset, search = '', category = '',
  * present in a capped/paginated listing without fetching the whole table. */
 async function getVendorByEmailFromDB(email) {
   if (!pool.hasStorage() || !email) return null;
+  // Matches the `email` column OR raw->>'corporateEmail' — a vendor's inbound
+  // gateway email can be the corporate contact address rather than the
+  // primary login email, and the in-memory lookup this replaces checked both.
   const result = await pool.query(
-    'SELECT raw FROM vendors WHERE email = $1 LIMIT 1',
+    `SELECT raw FROM vendors
+     WHERE lower(email) = lower($1) OR lower(raw->>'corporateEmail') = lower($1)
+     LIMIT 1`,
     [email],
-    { d1: true }
+    {
+      d1: true,
+      d1Text: `SELECT raw FROM vendors
+     WHERE lower(email) = lower($1) OR lower(json_extract(raw,'$.corporateEmail')) = lower($1)
+     LIMIT 1`,
+    }
   );
   return result.rows[0] ? parseRaw(result.rows[0].raw) : null;
 }

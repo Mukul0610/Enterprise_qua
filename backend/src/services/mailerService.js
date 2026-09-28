@@ -1,4 +1,5 @@
 const nodemailer = require('nodemailer');
+const { google } = require('googleapis');
 const dns = require('dns');
 const { logger } = require('./loggerService');
 const {
@@ -152,6 +153,18 @@ function vendorGatewayAddress() {
 
 /**
  * Send one message through the vendor transporter.
+ *
+ * Falls back to the Gmail API (the same account buyer-side mail already uses
+ * — see deliver()) when no dedicated vendor mailbox (VENDOR_SMTP_USER or
+ * VENDOR_EMAIL_GATEWAY_USER) is configured, rather than silently no-op'ing.
+ * This is the actual
+ * fix for vendor onboarding emails never arriving: no vendor mailbox has
+ * ever been set up (VENDOR_SMTP_USER/PASSWORD are unset), so every one of
+ * these calls was already dropping the email before the Gmail API even
+ * existed here — it just never surfaced because deliverVendor no-ops
+ * quietly. The email will show as sent from the buyer Gmail account until a
+ * dedicated vendor mailbox is authorized the same way (see
+ * scripts/get-gmail-refresh-token.js).
  */
 async function deliverVendor(message, label) {
   if (process.env.NODE_ENV === 'test') {
@@ -160,6 +173,14 @@ async function deliverVendor(message, label) {
 
   const activeTransporter = getVendorTransporter();
   if (!activeTransporter) {
+    if (isGmailApiConfigured()) {
+      logger.warn(
+        `Vendor SMTP not configured — falling back to the Gmail API (buyer account) for ${label}`,
+        { to: message.to },
+        'MAILER_SERVICE'
+      );
+      return deliverViaGmailApi(message, label);
+    }
     logger.warn(`Vendor SMTP not configured (VENDOR_SMTP_USER/VENDOR_SMTP_PASSWORD unset) — ${label} not sent`, { to: message.to }, 'MAILER_SERVICE');
     return { sent: false, reason: 'SMTP not configured' };
   }
@@ -271,17 +292,98 @@ async function deliverViaResend(message, label) {
   return { sent: true, messageId: body.id };
 }
 
+/** True when GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN are all set. */
+function isGmailApiConfigured() {
+  const hasClientId = Boolean(process.env.GMAIL_CLIENT_ID);
+  const hasClientSecret = Boolean(process.env.GMAIL_CLIENT_SECRET);
+  const hasRefreshToken = Boolean(process.env.GMAIL_REFRESH_TOKEN);
+  if (!hasClientId || !hasClientSecret || !hasRefreshToken) {
+    // Diagnostic only — booleans, never the secret values themselves.
+    // Added while tracking down why the Gmail API branch wasn't firing in
+    // production despite `wrangler secret list` confirming all three are
+    // registered on the Worker.
+    logger.warn(
+      'Gmail API not configured',
+      { hasClientId, hasClientSecret, hasRefreshToken },
+      'MAILER_SERVICE'
+    );
+  }
+  return hasClientId && hasClientSecret && hasRefreshToken;
+}
+
+let gmailOAuthClient;
+
+/**
+ * Lazily builds an OAuth2 client from the refresh token minted once via
+ * scripts/get-gmail-refresh-token.js. googleapis' OAuth2Client caches and
+ * auto-refreshes the short-lived access token internally — no manual token
+ * refresh logic needed here.
+ */
+function getGmailOAuthClient() {
+  if (gmailOAuthClient) return gmailOAuthClient;
+  if (!isGmailApiConfigured()) return undefined;
+  gmailOAuthClient = new google.auth.OAuth2(process.env.GMAIL_CLIENT_ID, process.env.GMAIL_CLIENT_SECRET);
+  gmailOAuthClient.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
+  return gmailOAuthClient;
+}
+
+/**
+ * Gmail's API takes a full RFC 2822 message, base64url-encoded — there is no
+ * separate {to, subject, html} shape like nodemailer/Resend accept. Building
+ * it by hand (rather than pulling in a MIME-builder dependency) keeps this
+ * to what the three fields this app ever sends actually need.
+ */
+function buildRawMimeMessage({ from, to, subject, html, replyTo }) {
+  const headers = [
+    `From: ${from}`,
+    `To: ${to}`,
+    replyTo ? `Reply-To: ${replyTo}` : null,
+    `Subject: =?UTF-8?B?${Buffer.from(subject || '', 'utf8').toString('base64')}?=`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+  ].filter(Boolean);
+  const raw = `${headers.join('\r\n')}\r\n\r\n${html || ''}`;
+  return Buffer.from(raw, 'utf8').toString('base64url');
+}
+
+/**
+ * Sends one message through the Gmail API (users.messages.send) instead of
+ * raw SMTP. Takes priority over Resend/SMTP when configured — this is the
+ * intended replacement for buyer-side outbound mail, not an additional
+ * fallback.
+ */
+async function deliverViaGmailApi(message, label) {
+  const auth = getGmailOAuthClient();
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  logger.info(`Dispatching ${label} to ${message.to} via Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
+  const raw = buildRawMimeMessage({
+    from: process.env.GMAIL_SENDER_EMAIL ? `"Procucev Enterprise" <${process.env.GMAIL_SENDER_EMAIL}>` : fromAddress(),
+    to: message.to,
+    subject: message.subject,
+    html: message.html,
+    replyTo: message.replyTo,
+  });
+  const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
+  logger.info(`${label} sent successfully to ${message.to}`, { messageId: res.data.id }, 'MAILER_SERVICE');
+  return { sent: true, messageId: res.data.id };
+}
+
 /**
  * Send one message through the shared transporter.
  *
- * No-ops (without throwing) during test runs and when neither Resend nor
- * SMTP is configured, so every caller can fire-and-forget. A genuine
- * transport failure is propagated to the caller — it is real and worth
- * logging/retrying.
+ * No-ops (without throwing) during test runs and when neither the Gmail API,
+ * Resend, nor SMTP is configured, so every caller can fire-and-forget. A
+ * genuine transport failure is propagated to the caller — it is real and
+ * worth logging/retrying.
  */
 async function deliver(message, label) {
   if (process.env.NODE_ENV === 'test') {
     return { sent: false, reason: 'test environment' };
+  }
+
+  if (isGmailApiConfigured()) {
+    return deliverViaGmailApi(message, label);
   }
 
   if (process.env.RESEND_API_KEY) {
@@ -1098,7 +1200,7 @@ async function sendRfqAcknowledgementEmail(params) {
 }
 
 function isConfigured() {
-  return Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+  return isGmailApiConfigured() || Boolean(process.env.RESEND_API_KEY) || Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD);
 }
 
 function isVendorConfigured() {
@@ -1141,5 +1243,6 @@ module.exports = {
   sendVendorCreditsExhaustedEmail,
   isConfigured,
   isVendorConfigured,
+  isGmailApiConfigured,
 };
 

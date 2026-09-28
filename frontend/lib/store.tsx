@@ -26,6 +26,8 @@ import {
   UserSession,
   RFQUpdatePayload,
   MajorMinorCategory,
+  RFQFollowUpBreakdown,
+  VendorFollowUpRecord,
 } from './types';
 import { authClient } from './authClient';
 import { installApiFetchPatch } from './apiFetchPatch';
@@ -237,8 +239,8 @@ interface AppContextType {
    */
   deleteRFQ: (identifier: string) => Promise<void>;
   triggerWhatsAppChaser: (rfqNumber: string, vendorName?: string) => void;
-  triggerChannelChaser: (rfqNumber: string, channel: 'call' | 'whatsapp' | 'sms' | 'email', vendorName?: string, customNote?: string) => void;
-  triggerBatchChannelChaser: (rfqNumber: string, channels: ('call' | 'whatsapp' | 'sms')[]) => void;
+  triggerChannelChaser: (rfqNumber: string, channel: 'call' | 'whatsapp' | 'sms' | 'email', vendorName?: string, customNote?: string, suppressToast?: boolean) => void;
+  triggerBatchChannelChaser: (rfqNumber: string, channels: ('call' | 'whatsapp' | 'sms')[], suppressToast?: boolean) => void;
   submitVendorBid: (rfqNumber: string, unitPrice: number, leadTimeDays: number, remarks: string) => void;
   approvePO: (
     rfqNumber: string,
@@ -1740,7 +1742,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     rfqNumber: string,
     channel: 'call' | 'whatsapp' | 'sms' | 'email',
     vendorName = 'Apex Supplies Ltd.',
-    customNote?: string
+    customNote?: string,
+    suppressToast = false
   ) => {
     const timeNow = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     
@@ -1789,33 +1792,88 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setRfqs((prev) =>
       prev.map((r) => {
         if (r.rfqNumber === rfqNumber && r.followUpData) {
-          const updatedVendors = r.followUpData.vendors.map((v) => {
-            if (v.vendorName.toLowerCase().includes(vendorName.toLowerCase()) || vendorName.toLowerCase().includes(v.vendorName.toLowerCase())) {
+          const baseFollowUp: RFQFollowUpBreakdown = {
+            ...r.followUpData,
+            callStats: {
+              total: r.followUpData.callStats?.total ?? 0,
+              connected: r.followUpData.callStats?.connected ?? 0,
+              avgDuration: r.followUpData.callStats?.avgDuration ?? '1m 30s',
+            },
+            whatsappStats: {
+              total: r.followUpData.whatsappStats?.total ?? 0,
+              delivered: r.followUpData.whatsappStats?.delivered ?? 0,
+              read: r.followUpData.whatsappStats?.read ?? 0,
+              replied: r.followUpData.whatsappStats?.replied ?? 0,
+            },
+            smsStats: {
+              total: r.followUpData.smsStats?.total ?? 0,
+              delivered: r.followUpData.smsStats?.delivered ?? 0,
+              clicked: r.followUpData.smsStats?.clicked ?? 0,
+            },
+            emailStats: {
+              total: r.followUpData.emailStats?.total ?? 5,
+              sent24h: r.followUpData.emailStats?.sent24h ?? 0,
+              opened: r.followUpData.emailStats?.opened ?? 1,
+            },
+            vendors: Array.isArray(r.followUpData.vendors) && r.followUpData.vendors.length > 0
+              ? r.followUpData.vendors
+              : [
+                  {
+                    vendorId: 'v-1',
+                    vendorName: vendorName || 'Vendor Pool',
+                    phone: '+91 98765 43210',
+                    contactPerson: 'Sales Coordinator',
+                    call: {
+                      status: 'scheduled',
+                      lastAttempt: timeNow,
+                      duration: '0m',
+                    },
+                    whatsapp: {
+                      status: 'delivered',
+                      lastAttempt: timeNow,
+                      messagePreview: 'RFQ Invitation dispatched.',
+                      linkClicked: false,
+                    },
+                    sms: {
+                      status: 'sent',
+                      lastAttempt: timeNow,
+                    },
+                    overallStatus: 'Pending',
+                    lastInteraction: timeNow,
+                    attemptsCount: 0,
+                    bidStatus: 'Pending',
+                  },
+                ],
+          };
+
+          const updatedVendors = baseFollowUp.vendors.map((v) => {
+            if (v.vendorName.toLowerCase().includes(vendorName.toLowerCase()) || vendorName.toLowerCase().includes(v.vendorName.toLowerCase()) || vendorName === 'All Pending Suppliers') {
               return {
                 ...v,
-                attemptsCount: v.attemptsCount + 1,
+                attemptsCount: (v.attemptsCount || 0) + 1,
                 lastInteraction: timeNow,
                 overallStatus: 'Follow-up Active' as const,
                 call: channel === 'call' ? {
-                  ...v.call,
+                  ...(v.call || {}),
                   status: 'completed' as const,
                   lastAttempt: timeNow,
                   duration: '1m 30s',
                   summary: 'AI Voice Call connected with sales coordinator. Acknowledged RFQ requirements.',
                 } : v.call,
                 whatsapp: channel === 'whatsapp' ? {
-                  ...v.whatsapp,
+                  ...(v.whatsapp || {}),
                   status: 'read' as const,
                   lastAttempt: timeNow,
                   messagePreview: 'Urgent RFQ follow-up link delivered.',
                   linkClicked: true,
                 } : v.whatsapp,
                 sms: channel === 'sms' ? {
-                  ...v.sms,
+                  ...(v.sms || {}),
                   status: 'delivered' as const,
                   lastAttempt: timeNow,
                 } : v.sms,
                 email24h: channel === 'email' ? {
+                  ...(v.email24h || {}),
                   status: 'reminded_24h' as const,
                   lastAttempt: timeNow,
                   is24hReminderSent: true,
@@ -1826,23 +1884,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             return v;
           });
 
-          const callTotal = channel === 'call' ? r.followUpData.callStats.total + 1 : r.followUpData.callStats.total;
-          const callConnected = channel === 'call' ? r.followUpData.callStats.connected + 1 : r.followUpData.callStats.connected;
-          const waTotal = channel === 'whatsapp' ? r.followUpData.whatsappStats.total + 1 : r.followUpData.whatsappStats.total;
-          const waDelivered = channel === 'whatsapp' ? r.followUpData.whatsappStats.delivered + 1 : r.followUpData.whatsappStats.delivered;
-          const waRead = channel === 'whatsapp' ? r.followUpData.whatsappStats.read + 1 : r.followUpData.whatsappStats.read;
-          const smsTotal = channel === 'sms' ? r.followUpData.smsStats.total + 1 : r.followUpData.smsStats.total;
-          const smsDelivered = channel === 'sms' ? r.followUpData.smsStats.delivered + 1 : r.followUpData.smsStats.delivered;
-          const emailSent24h = channel === 'email' ? (r.followUpData.emailStats?.sent24h || 0) + 1 : (r.followUpData.emailStats?.sent24h || 0);
+          const callTotal = channel === 'call' ? baseFollowUp.callStats.total + 1 : baseFollowUp.callStats.total;
+          const callConnected = channel === 'call' ? baseFollowUp.callStats.connected + 1 : baseFollowUp.callStats.connected;
+          const waTotal = channel === 'whatsapp' ? baseFollowUp.whatsappStats.total + 1 : baseFollowUp.whatsappStats.total;
+          const waDelivered = channel === 'whatsapp' ? baseFollowUp.whatsappStats.delivered + 1 : baseFollowUp.whatsappStats.delivered;
+          const waRead = channel === 'whatsapp' ? baseFollowUp.whatsappStats.read + 1 : baseFollowUp.whatsappStats.read;
+          const smsTotal = channel === 'sms' ? baseFollowUp.smsStats.total + 1 : baseFollowUp.smsStats.total;
+          const smsDelivered = channel === 'sms' ? baseFollowUp.smsStats.delivered + 1 : baseFollowUp.smsStats.delivered;
+          const emailSent24h = channel === 'email' ? (baseFollowUp.emailStats?.sent24h || 0) + 1 : (baseFollowUp.emailStats?.sent24h || 0);
 
-          const updatedRfq = {
+          const updatedRfq: RFQItem = {
             ...r,
+            chasingActive: true,
             followUpData: {
-              ...r.followUpData,
-              callStats: { ...r.followUpData.callStats, total: callTotal, connected: callConnected },
-              whatsappStats: { ...r.followUpData.whatsappStats, total: waTotal, delivered: waDelivered, read: waRead },
-              smsStats: { ...r.followUpData.smsStats, total: smsTotal, delivered: smsDelivered },
-              emailStats: { total: r.followUpData.emailStats?.total || 5, sent24h: emailSent24h, opened: (r.followUpData.emailStats?.opened || 1) },
+              ...baseFollowUp,
+              callStats: { ...baseFollowUp.callStats, total: callTotal, connected: callConnected },
+              whatsappStats: { ...baseFollowUp.whatsappStats, total: waTotal, delivered: waDelivered, read: waRead },
+              smsStats: { ...baseFollowUp.smsStats, total: smsTotal, delivered: smsDelivered },
+              emailStats: { total: baseFollowUp.emailStats?.total || 5, sent24h: emailSent24h, opened: (baseFollowUp.emailStats?.opened || 1) },
               vendors: updatedVendors,
             },
           };
@@ -1854,18 +1913,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       })
     );
 
-    showToast(toastTitle, toastDesc, 'success');
+    if (!suppressToast) {
+      showToast(toastTitle, toastDesc, 'success');
+    }
   };
 
-  const triggerBatchChannelChaser = (rfqNumber: string, channels: ('call' | 'whatsapp' | 'sms')[]) => {
+  const triggerBatchChannelChaser = (
+    rfqNumber: string,
+    channels: ('call' | 'whatsapp' | 'sms')[],
+    suppressToast = false
+  ) => {
     channels.forEach((ch) => {
-      triggerChannelChaser(rfqNumber, ch, 'All Pending Suppliers');
+      triggerChannelChaser(rfqNumber, ch, 'All Pending Suppliers', undefined, true);
     });
-    showToast(
-      'Multi-Channel Batch Broadcast Active!',
-      `AI chasing dispatched across ${channels.map((c) => c.toUpperCase()).join(' + ')} for ${rfqNumber}.`,
-      'success'
-    );
+    if (!suppressToast) {
+      showToast(
+        'Multi-Channel Batch Broadcast Active!',
+        `AI chasing dispatched across ${channels.map((c) => c.toUpperCase()).join(' + ')} for ${rfqNumber}.`,
+        'success'
+      );
+    }
   };
 
   const triggerWhatsAppChaser = (rfqNumber: string, vendorName = 'Apex Supplies Ltd.') => {

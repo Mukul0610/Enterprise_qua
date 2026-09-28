@@ -29,6 +29,7 @@ const emailIngestionService = require('./emailIngestionService');
 const geminiService = require('./geminiService');
 const rfqIngestionService = require('./rfqIngestionService');
 const storeService = require('./storeService');
+const domainQueries = require('../db/domainQueries');
 const mailerService = require('./mailerService');
 const emailGatewayQueries = require('../db/emailGatewayQueries');
 const buyerProfileQueries = require('../db/buyerProfileQueries');
@@ -141,7 +142,12 @@ function resolveVendorConfig(env = process.env) {
         : env.EMAIL_GATEWAY_SECURE || 'true'
     ).toLowerCase() !== 'false',
     user: (env.VENDOR_EMAIL_GATEWAY_USER || 'srinu20252026@gmail.com').trim(),
-    password: env.VENDOR_EMAIL_GATEWAY_PASSWORD || 'oycrikpkvnjirwgo',
+    // No hardcoded fallback — a Gmail App Password is a live credential and
+    // must come from the environment only. An unset password here means the
+    // IMAP connection attempt fails/is skipped, same as any other
+    // unconfigured gateway var, rather than silently authenticating with a
+    // secret baked into source.
+    password: env.VENDOR_EMAIL_GATEWAY_PASSWORD || '',
     address: (
       env.VENDOR_EMAIL_GATEWAY_ADDRESS ||
       env.VENDOR_EMAIL_GATEWAY_USER ||
@@ -536,10 +542,17 @@ async function resolveVendorFromEmail(fromAddress, targetRfq = null) {
   const direct = storeService.getVendorById(email, 'all');
   if (direct) return direct;
 
-  const allVendors = storeService.getVendors ? await storeService.getVendors() : [];
-  const found = allVendors.find(
-    (v) => (v.email && v.email.toLowerCase() === email) || (v.corporateEmail && v.corporateEmail.toLowerCase() === email)
-  );
+  // A bounded single-row lookup, not storeService.getVendors() — that method
+  // re-syncs from the DB with a full unbounded table read on every call (see
+  // its own doc comment), and this runs once per inbound email the gateway
+  // processes, which would multiply that cost by every email received. No DB
+  // configured means there's nothing to bound against, so that in-memory
+  // fallback is still needed in that case (e.g. under test).
+  const found = pool.hasStorage()
+    ? await domainQueries.getVendorByEmailFromDB(email)
+    : (await storeService.getVendors()).find(
+        (v) => (v.email && v.email.toLowerCase() === email) || (v.corporateEmail && v.corporateEmail.toLowerCase() === email)
+      );
   if (found) return found;
 
   if (targetRfq) {

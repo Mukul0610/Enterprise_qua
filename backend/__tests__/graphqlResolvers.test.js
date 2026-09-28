@@ -1,5 +1,7 @@
 const rootResolvers = require('../src/graphql/resolvers');
 const storeService = require('../src/services/storeService');
+const domainQueries = require('../src/db/domainQueries');
+const domainPool = require('../src/db/pool');
 const { getTestToken, TEST_USERS } = require('./testHelpers');
 
 function contextFor(role) {
@@ -170,6 +172,66 @@ describe('GraphQL Resolvers Direct Unit Tests', () => {
     expect(await rootResolvers.vendor({ id: 'non-existent-vendor' })).toBeNull();
     expect(await rootResolvers.vendor({ email: 'unknown@email.com' })).toBeNull();
     expect(await rootResolvers.vendor({})).toBeNull();
+  });
+
+  // When a DB pool IS configured, both resolvers route through the bounded
+  // getVendorsPageFromDB/getVendorByEmailFromDB helpers instead of a full
+  // in-memory scan — this is the fix for the D1 row-read exhaustion incident
+  // (see storeService.hydrateFromDB's own comment). Mocked here since the
+  // rest of this suite deliberately runs with no DB configured.
+  describe('vendors/vendor resolvers with a DB pool configured', () => {
+    let originalPool;
+    beforeEach(() => {
+      originalPool = domainPool.pool;
+      domainPool.pool = { query: jest.fn() };
+    });
+    afterEach(() => {
+      domainPool.pool = originalPool;
+      jest.restoreAllMocks();
+    });
+
+    test('vendors resolver pages through domainQueries.getVendorsPageFromDB', async () => {
+      const dbVendor = { id: 'v-db-1', email: 'db-vendor@example.com', source: 'excel' };
+      const pageSpy = jest
+        .spyOn(domainQueries, 'getVendorsPageFromDB')
+        .mockResolvedValue({ rows: [dbVendor], total: 1 });
+
+      const result = await rootResolvers.vendors({ majorCategory: 'IT', search: 'db', limit: 10, offset: 0 });
+
+      expect(pageSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 10, offset: 0, search: 'db', category: 'IT' })
+      );
+      expect(result).toEqual([dbVendor]);
+
+      // The `source` filter is applied client-side after the DB page load.
+      const filteredOut = await rootResolvers.vendors({ source: 'buyer_manual' });
+      expect(filteredOut).toEqual([]);
+    });
+
+    test('vendor resolver by email uses the bounded single-row DB lookup', async () => {
+      const emailSpy = jest.spyOn(domainQueries, 'getVendorByEmailFromDB');
+
+      // Public vendor (no buyerId/buyerAccountId) is visible to anyone.
+      emailSpy.mockResolvedValueOnce({ id: 'v-db-3', email: 'public@example.com' });
+      expect(await rootResolvers.vendor({ email: 'public@example.com' })).toEqual({
+        id: 'v-db-3',
+        email: 'public@example.com',
+      });
+
+      // A buyer-scoped vendor is only returned to a matching buyerId.
+      emailSpy.mockResolvedValueOnce({ id: 'v-db-2', email: 'scoped@example.com', buyerId: 'buyer-9' });
+      const unlinkedBuyerToken = require('../src/services/authService').generateSessionToken({
+        id: 'usr-unscoped',
+        email: 'unscoped-buyer@procucev.com',
+        name: 'Unscoped Buyer',
+        role: 'buyer',
+      });
+      const unscopedCtx = { req: { headers: { authorization: `Bearer ${unlinkedBuyerToken}` } } };
+      expect(await rootResolvers.vendor({ email: 'scoped@example.com' }, unscopedCtx)).toBeNull();
+
+      emailSpy.mockResolvedValueOnce(null);
+      expect(await rootResolvers.vendor({ email: 'not-found@example.com' })).toBeNull();
+    });
   });
 
   // The seeded companies are gone, so these start empty. An account created at

@@ -288,7 +288,7 @@ export const UI_STRINGS = {
 
     attachHeading: 'Supporting Documents',
     attachHint:
-      'Attach a BOQ, drawings, specs, or signed requisition (.xlsx, .xls, .csv, .pdf, .docx, .txt, .eml, .msg up to 10 MB). They are stored with the RFQ, and you can optionally read the line items out of them into the table below.',
+      'Attach a BOQ, drawings, specs, or signed requisition (.xlsx, .xls, .csv, .pdf, .docx, .txt, .eml, .msg up to 15 MB). They are stored with the RFQ, and you can optionally read the line items out of them into the table below.',
     attachAction: 'Attach Documents',
     attachingAction: 'Uploading…',
     extractAction: 'Extract Line Items',
@@ -394,7 +394,7 @@ export const UI_STRINGS = {
     processingDocumentLabel: 'Processing Document & Extracting Line-Items with AI OCR...',
     dropZoneHeading: 'Click to Browse or Drag & Drop RFQ Document / BOQ Spreadsheet',
     dropZoneHint:
-      'Supports Excel (.xlsx, .xls), CSV, PDF drawings, Word specifications (.docx), text files (.txt), or forwarded requisition emails (.eml, .msg) up to 10 MB.',
+      'Supports Excel (.xlsx, .xls), CSV, PDF drawings, Word specifications (.docx), text files (.txt), or forwarded requisition emails (.eml, .msg) up to 15 MB.',
     extractFooterHint: 'Your document is read by Gemini AI, then you confirm the line items in Step 2.',
     attachmentStoreFailedMessage:
       'The RFQ was created, but {fileName} could not be stored with it, so it will not appear under Supporting Documents. {reason} You can attach it again from the RFQ details screen.',
@@ -465,7 +465,7 @@ export const UI_STRINGS = {
     // Step 1 manual attachments. Stored and shown back verbatim; never extracted.
     attachTitle: 'Supporting Documents',
     attachMessage:
-      'Attach a drawing, specification sheet, indent form or document (.xlsx, .xls, .csv, .pdf, .docx, .txt, .eml, .msg up to 10 MB) to the RFQ. These are stored with the RFQ for reference and are not read by AI — you key the line items yourself on the next step.',
+      'Attach a drawing, specification sheet, indent form or document (.xlsx, .xls, .csv, .pdf, .docx, .txt, .eml, .msg up to 15 MB) to the RFQ. These are stored with the RFQ for reference and are not read by AI — you key the line items yourself on the next step.',
     attachAction: 'Choose Files',
     attachingLabel: 'Attaching…',
     attachedHeading: 'Attached ({count})',

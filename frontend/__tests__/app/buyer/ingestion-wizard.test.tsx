@@ -803,7 +803,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
     mockCreateRFQ.mockResolvedValue({ success: true, rfq: mockCreatedRFQ() });
   });
 
-  it('shows the empty-roster state and omits assignedVendors when the buyer has no uploaded vendors', async () => {
+  it('shows the empty-roster state and blocks dispatch when the buyer has no uploaded vendors for Version 1', async () => {
     serveBootstrap([]);
     renderWizard();
 
@@ -829,8 +829,8 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
 
-    await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
-    expect(mockCreateRFQ.mock.calls[0][0].assignedVendors).toEqual([]);
+    await waitFor(() => expect(screen.getByText(/Version 1 \(Client Sourcing\) requires at least one private vendor/i)).toBeInTheDocument());
+    expect(mockCreateRFQ).not.toHaveBeenCalled();
   });
 
   it('lists the buyer-uploaded vendors, shows category/rating, and dispatches strictly to them on save', async () => {

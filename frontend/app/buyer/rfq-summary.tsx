@@ -266,11 +266,7 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">{SCREEN.title}</h1>
-            <span className="badge badge-purple">{SCREEN.screenTag}</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">{SCREEN.subtitle}</p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">{SCREEN.title}</h1>
         </div>
         <button onClick={onCreateRFQ} className="btn btn-primary btn-sm font-bold flex items-center gap-1.5 shrink-0">
           <Plus size={14} /> {RFQ.createRFQAction}

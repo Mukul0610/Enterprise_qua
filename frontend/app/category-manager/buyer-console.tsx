@@ -60,18 +60,16 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
   // from the real buyer directory and the real RFQs each account created.
   const compiledBuyers = useMemo(() => {
     return buyerAccounts.map((account) => {
-      const rfqsList = rfqs.filter((r) => r.buyerAccountId === account.id);
+      const rfqsList = rfqs.filter((r) =>
+        (r.buyerAccountId && r.buyerAccountId === account.id) ||
+        (r.raisedByEmail && account.corporateEmail && r.raisedByEmail.toLowerCase() === account.corporateEmail.toLowerCase()) ||
+        (r.buyerAccountName && account.organizationName && r.buyerAccountName.toLowerCase() === account.organizationName.toLowerCase())
+      );
       const totalSpend = rfqsList.reduce((sum, r) => sum + (r.budget || 0), 0);
       const activeCount = rfqsList.filter((r) => r.status !== 'PO Generated').length;
       const totalQuotes = rfqsList.reduce((sum, r) => sum + (r.quotesCount || 0), 0);
       const avgQuotesPerRfq = rfqsList.length > 0 ? Math.round((totalQuotes / rfqsList.length) * 10) / 10 : null;
 
-      // Some real buyer accounts have no contactPerson/organizationName on
-      // file (e.g. a web-registration that never completed profile setup) —
-      // both used to be read unguarded below (.toLowerCase(), .split(' '),
-      // .length inside avatarStyleFor), which threw on render and crashed
-      // this entire screen for every buyer whenever even one account had a
-      // null field.
       const displayName = account.contactPerson || 'Unnamed Contact';
       const displayCompany = account.organizationName || 'Unnamed Organization';
       const style = avatarStyleFor(displayCompany);
@@ -84,7 +82,6 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
         logoLetter: displayCompany.charAt(0).toUpperCase(),
         logoBg: style.bg,
         avatarColor: style.avatar,
-        // A real, configured account preference — not derived or invented.
         preferredMode: account.sourcingMode,
         avgQuotesPerRfq,
         rfqsList,
@@ -135,15 +132,9 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
       {/* Title Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Buyer Wise Command Console & Analytics
-            </h1>
-            <span className="badge badge-purple">Screen 2.3</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Category Manager Central Command: check buyer wise status of RFQ summaries, drill down into line-item details, and inspect company analytics.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            Buyer Wise Command Console & Analytics
+          </h1>
         </div>
       </div>
 
@@ -393,6 +384,12 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
                         setSelectedBuyerId(b.id);
                         setDrillDownDismissed(false);
                         setExpandedRfqNumber(null);
+                        setTimeout(() => {
+                          const el = document.getElementById('buyer-drilldown-section');
+                          if (el) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                          }
+                        }, 50);
                       }
                     }}
                     className="btn btn-secondary btn-xs font-bold flex items-center gap-1"
@@ -411,7 +408,7 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
       {/* DETAILED DRILL DOWN SECTION (EXPANDS ON SELECTION) */}
       {/* ═══════════════════════════════════════════════════════════════ */}
       {selectedBuyer && (
-        <div className="glass-panel p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-md space-y-4 animate-slide-up">
+        <div id="buyer-drilldown-section" className="glass-panel p-6 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-md space-y-4 animate-slide-up scroll-mt-6">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-gray-800">
             <div>
               <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
@@ -428,8 +425,14 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
           </div>
 
           {selectedBuyer.rfqsList.length === 0 ? (
-            <div className="text-center py-10 text-xs text-slate-400 dark:text-gray-550">
-              No active RFQ records found for this buyer profile in the category database.
+            <div className="text-center py-10 text-xs text-slate-500 dark:text-gray-400 space-y-2 bg-slate-50/50 dark:bg-gray-950/40 rounded-xl p-6 border border-slate-200/60 dark:border-gray-800">
+              <div className="w-8 h-8 rounded-full bg-indigo-100 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-400 flex items-center justify-center mx-auto font-bold text-xs">
+                {selectedBuyer.logoLetter}
+              </div>
+              <p className="font-semibold text-slate-700 dark:text-slate-200">No active RFQ records found for this buyer profile ({selectedBuyer.name}).</p>
+              <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                Buyer account is active ({selectedBuyer.company}). Any RFQs created and dispatched by this buyer will appear here with live quotes and evaluation analytics.
+              </p>
             </div>
           ) : (
             <div className="space-y-3">

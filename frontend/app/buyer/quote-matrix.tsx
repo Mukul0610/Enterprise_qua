@@ -82,15 +82,11 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
           >
             <ArrowLeft size={14} /> Back to Command Center
           </button>
-          <div className="flex items-center gap-2">
+          <div>
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Comparative Quote Evaluation Matrix
             </h1>
-            <span className="badge badge-purple">Screen 1.3</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Side-by-side parametric evaluation of line-item vendor bids synthesized by QUA AI.
-          </p>
         </div>
 
         {/* RFQ Switcher Dropdown */}

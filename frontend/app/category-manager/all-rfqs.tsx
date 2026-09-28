@@ -100,7 +100,6 @@ export default function AllRFQsConsole({ onNavigateToMatrix, onViewDetails }: Al
           </div>
           <div>
             <h1 className="text-xl font-black text-slate-900 dark:text-white">{S.title}</h1>
-            <p className="text-xs text-slate-500 dark:text-gray-450">{S.subtitle}</p>
           </div>
         </div>
         <button

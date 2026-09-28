@@ -2299,4 +2299,125 @@ describe('lib/store.tsx - channel chasers and bids', () => {
       expect(ctx().auditLogs[0].action).toContain('PO');
     });
   });
+
+  describe('updateBuyerVendor & deleteBuyerVendor', () => {
+    it('updates a buyer vendor and syncs to backend', async () => {
+      const ctx = await mountStore();
+      let createdVendor: any = null;
+      await act(async () => {
+        createdVendor = ctx().addBuyerVendor({
+          name: 'Store Test Vendor',
+          email: 'storetest@vendor.com',
+          phone: '+91 9876543210',
+          categories: ['Industrial Valves'],
+          rating: 4.5,
+          location: 'Mumbai',
+        });
+      });
+      expect(createdVendor).toBeTruthy();
+
+      await act(async () => {
+        ctx().updateBuyerVendor(createdVendor.id, { name: 'Updated Store Vendor' });
+        // Also call with non-matching ID to cover the ternary false branch
+        ctx().updateBuyerVendor('non-existent-vendor-id-999', { name: 'Ignored' });
+      });
+      expect(ctx().buyerVendors.find((v: { id: string }) => v.id === createdVendor.id)?.name).toBe('Updated Store Vendor');
+
+      await act(async () => {
+        ctx().deleteBuyerVendor(createdVendor.id);
+      });
+      expect(ctx().buyerVendors.find((v: { id: string }) => v.id === createdVendor.id)).toBeUndefined();
+    });
+
+    it('handles addBuyerVendor API error and network failure in update/delete', async () => {
+      const ctx = await mountStore();
+
+      mockFetch.mockImplementation((url: string) => {
+        if (typeof url === 'string' && url.includes('/api/vendors')) {
+          return Promise.resolve({
+            ok: false,
+            status: 400,
+            json: async () => ({ success: false, error: 'Validation failed' }),
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ success: true, data: [] }),
+        });
+      });
+
+      let failedVendorResult: any = 'not-null';
+      await act(async () => {
+        failedVendorResult = await ctx().addBuyerVendor({
+          name: 'Fail Vendor',
+          email: 'fail@vendor.com',
+          phone: '1234567890',
+          categories: ['Valves'],
+          rating: 4.0,
+          location: 'Delhi',
+        });
+      });
+      expect(failedVendorResult).toBeNull();
+
+      // Network throw on addBuyerVendor
+      mockFetch.mockRejectedValue(new Error('Network error on add'));
+      let netErrResult: any = 'not-null';
+      await act(async () => {
+        netErrResult = await ctx().addBuyerVendor({
+          name: 'Net Err Vendor',
+          email: 'neterr@vendor.com',
+          phone: '1234567890',
+          categories: ['Valves'],
+          rating: 4.0,
+          location: 'Delhi',
+        });
+      });
+      expect(netErrResult).toBeNull();
+
+      // res.json() parse failure on addBuyerVendor
+      mockFetch.mockImplementation(() =>
+        Promise.resolve({
+          ok: false,
+          status: 500,
+          json: () => Promise.reject(new Error('JSON parse error')),
+        })
+      );
+      let jsonErrResult: any = 'not-null';
+      await act(async () => {
+        jsonErrResult = await ctx().addBuyerVendor({
+          name: 'Json Err Vendor',
+          email: 'jsonerr@vendor.com',
+          phone: '1234567890',
+          categories: ['Valves'],
+          rating: 4.0,
+          location: 'Delhi',
+        });
+      });
+      expect(jsonErrResult).toBeNull();
+
+      // Network rejection on update & delete
+      mockFetch.mockRejectedValue(new Error('Network error'));
+      await act(async () => {
+        ctx().updateBuyerVendor('v-net-err', { name: 'Net Err' });
+        ctx().deleteBuyerVendor('v-net-err');
+      });
+    });
+
+    it('exercises payment link methods for buyer and vendor', async () => {
+      const ctx = await mountStore();
+
+      // checkBuyerPaymentLinkStatus when activeBuyerAccount is null / present
+      const nullBuyerLinkStatus = await ctx().checkBuyerPaymentLinkStatus('link-1');
+      expect(nullBuyerLinkStatus).toBeNull();
+
+      // checkVendorPaymentLinkStatus when myVendor is null
+      const nullVendorLinkStatus = await ctx().checkVendorPaymentLinkStatus('link-1');
+      expect(nullVendorLinkStatus).toBeNull();
+
+      // createBuyerPaymentLink when activeBuyerAccount is missing
+      const noBuyerPayResult = await ctx().createBuyerPaymentLink('annual_pro');
+      expect(noBuyerPayResult).toBeNull();
+    });
+  });
 });

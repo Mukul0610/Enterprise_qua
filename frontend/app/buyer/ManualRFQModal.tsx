@@ -287,16 +287,23 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       phone?: string | null;
     }> | undefined = undefined;
 
-    if (form.sourcingMode === 'mode_1' && Array.isArray(buyerVendors)) {
-      const myUploadedVendors = buyerVendors.filter((v) => isBuyerUploaded(v));
-      if (myUploadedVendors.length > 0) {
-        mode1AssignedVendors = myUploadedVendors.map((v) => ({
-          id: v.id,
-          name: v.name || 'Enterprise Vendor',
-          email: v.email || null,
-          contactPerson: v.contactPerson || v.name || null,
-          phone: v.phone || null,
-        }));
+    if (form.sourcingMode === 'mode_1') {
+      if (Array.isArray(buyerVendors)) {
+        const myUploadedVendors = buyerVendors.filter((v) => isBuyerUploaded(v));
+        if (myUploadedVendors.length > 0) {
+          mode1AssignedVendors = myUploadedVendors.map((v) => ({
+            id: v.id,
+            name: v.name || 'Enterprise Vendor',
+            email: v.email || null,
+            contactPerson: v.contactPerson || v.name || null,
+            phone: v.phone || null,
+          }));
+        }
+      }
+      if (!mode1AssignedVendors || mode1AssignedVendors.length === 0) {
+        setIsSaving(false);
+        setSubmitError('Version 1 (Client Sourcing) requires at least one private vendor to be added/selected before creating the RFQ.');
+        return;
       }
     }
 

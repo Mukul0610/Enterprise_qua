@@ -165,9 +165,9 @@ export default function RoleNavigation({ onLogout }: RoleNavigationProps) {
                     aria-label={item.screenTag ? `${item.screenTag}: ${item.label}` : item.label}
                     aria-current={isActive ? 'page' : undefined}
                     title={item.description}
-                    className={`group w-full flex items-center gap-2.5 px-2 py-2 rounded-xl border transition-all text-left ${
+                    className={`group w-full flex items-center gap-2.5 px-3 py-2 rounded-xl border transition-all text-left ${
                       isActive
-                        ? `${workspace.accentActive} border-transparent`
+                        ? `${workspace.accentActive} border-transparent shadow-xs`
                         : `border-transparent text-slate-600 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-gray-800/60 ${workspace.accentRing}`
                     }`}
                   >
@@ -182,27 +182,7 @@ export default function RoleNavigation({ onLogout }: RoleNavigationProps) {
                     </span>
 
                     <span className="min-w-0 flex-1">
-                      <span className="flex items-center gap-1.5">
-                        <span className="truncate text-[11.5px] font-bold">{item.label}</span>
-                        {item.shortTag && (
-                          <span
-                            className={`mono shrink-0 px-1 py-px rounded text-[8.5px] font-black ${
-                              isActive
-                                ? 'bg-white/20 text-white'
-                                : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-500'
-                            }`}
-                          >
-                            {item.shortTag}
-                          </span>
-                        )}
-                      </span>
-                      <span
-                        className={`block truncate text-[9.5px] leading-snug mt-0.5 ${
-                          isActive ? 'text-white/80' : 'text-slate-400 dark:text-gray-500'
-                        }`}
-                      >
-                        {item.description}
-                      </span>
+                      <span className="truncate text-[12px] font-semibold block">{item.label}</span>
                     </span>
 
                     {isActive && (

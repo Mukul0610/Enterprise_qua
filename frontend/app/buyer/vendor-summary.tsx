@@ -1002,9 +1002,6 @@ export default function VendorSummary({ onViewEvaluation, onNavigateToWizard }: 
             <Building2 className="text-indigo-600 dark:text-indigo-400" size={24} />
             Vendor Directory &amp; Management
           </h1>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
-            Manage your organization&apos;s empanelled suppliers, select vendors, add new suppliers, and edit company profiles.
-          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button
@@ -1014,14 +1011,6 @@ export default function VendorSummary({ onViewEvaluation, onNavigateToWizard }: 
             className="btn btn-primary btn-sm flex items-center gap-1.5 shadow-sm"
           >
             <Plus size={14} /> Add Vendor
-          </button>
-          <button
-            type="button"
-            data-testid="open-bulk-upload-modal"
-            onClick={() => setBulkUploadModalOpen(true)}
-            className="btn btn-secondary btn-sm flex items-center gap-1.5 shadow-sm"
-          >
-            <UploadCloud size={14} /> Import Vendors (Excel)
           </button>
           {/* Upload Vendor Wizard Button */}
           {onNavigateToWizard && (

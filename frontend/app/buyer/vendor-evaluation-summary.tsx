@@ -433,11 +433,7 @@ export default function VendorEvaluationSummary({
               <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
                 Mode 3 360-Degree Vendor Evaluation Summary Report
               </h1>
-              <span className="badge badge-purple">24/24 Mandatory Criteria Verified</span>
             </div>
-            <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
-              Procucev QUA AI 6-Pillar Capability Score, OCR Audit & Automated Direct Dispatch Governance.
-            </p>
           </div>
         </div>
 

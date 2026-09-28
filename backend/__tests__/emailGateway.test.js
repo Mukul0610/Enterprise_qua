@@ -2539,8 +2539,8 @@ Hello team, sending catalog.
       const buyerConf = emailGatewayService.resolveConfig(FULL_ENV);
       const vendorConf = emailGatewayService.resolveVendorConfig({
         ...FULL_ENV,
-        VENDOR_IMAP_USER: 'vendor-watch@gmail.com',
-        VENDOR_IMAP_PASSWORD: 'app-pass-secret',
+        VENDOR_EMAIL_GATEWAY_USER: 'vendor-watch@gmail.com',
+        VENDOR_EMAIL_GATEWAY_PASSWORD: 'app-pass-secret',
       });
       const resDual = emailGatewayService.startPolling(buyerConf, vendorConf);
       expect(resDual.started).toBe(true);
@@ -2566,8 +2566,8 @@ Hello team, sending catalog.
 
       const vendorConf = emailGatewayService.resolveVendorConfig({
         ...FULL_ENV,
-        VENDOR_IMAP_USER: 'vendor-timer@gmail.com',
-        VENDOR_IMAP_PASSWORD: 'app-pass-secret',
+        VENDOR_EMAIL_GATEWAY_USER: 'vendor-timer@gmail.com',
+        VENDOR_EMAIL_GATEWAY_PASSWORD: 'app-pass-secret',
         VENDOR_EMAIL_GATEWAY_POLL_MS: '5000',
       });
 

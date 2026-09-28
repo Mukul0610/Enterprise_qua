@@ -583,8 +583,8 @@ export const BUYER_PROFILE_LIMITS = {
  * Global constraints for RFQ supporting document attachments and AI extraction.
  */
 export const RFQ_DOCUMENT_LIMITS = {
-  MAX_FILE_SIZE_BYTES: 10 * 1024 * 1024,
-  MAX_FILE_SIZE_MB: 10,
+  MAX_FILE_SIZE_BYTES: 15 * 1024 * 1024,
+  MAX_FILE_SIZE_MB: 15,
   MAX_DOCUMENTS_PER_RFQ: 10,
   SUPPORTED_EXTENSIONS: '.xlsx,.xls,.csv,.pdf,.docx,.doc,.txt,.eml,.msg',
   SUPPORTED_FORMATS_LABEL:

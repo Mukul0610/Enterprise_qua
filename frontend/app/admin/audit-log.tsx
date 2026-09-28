@@ -52,15 +52,11 @@ export default function AuditLog({ onBackToInfra }: AuditLogProps) {
           >
             <ArrowLeft size={14} /> Back to Infrastructure Control
           </button>
-          <div className="flex items-center gap-2">
+          <div>
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Immutable Compliance Audit Trail
             </h1>
-            <span className="badge badge-purple">Screen 4.2</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Tamper-evident cryptographically signed event log of all system transactions, bids, and PO approvals.
-          </p>
         </div>
 
         <button

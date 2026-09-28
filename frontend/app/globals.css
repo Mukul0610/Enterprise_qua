@@ -362,38 +362,40 @@ h1, h2, h3, h4, h5, h6 {
   animation: pulseGlow 2s infinite ease-in-out;
 }
 
-/* Modal overlay */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(15, 23, 42, 0.6);
-  backdrop-filter: blur(8px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 999;
-  padding: 20px;
-  animation: fadeIn 0.2s ease-out;
-}
-.dark .modal-overlay {
-  background: rgba(0, 0, 0, 0.8);
-}
+@layer components {
+  /* Modal overlay */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(8px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 999;
+    padding: 20px;
+    animation: fadeIn 0.2s ease-out;
+  }
+  .dark .modal-overlay {
+    background: rgba(0, 0, 0, 0.8);
+  }
 
-.modal-content {
-  background: #ffffff;
-  color: var(--text-primary);
-  border: 1px solid var(--border-medium);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-xl);
-  width: 100%;
-  max-width: min(96vw, 1150px);
-  max-height: 90vh;
-  overflow-y: auto;
-  position: relative;
-}
-.dark .modal-content {
-  background: #0f1422;
-  border-color: rgba(255, 255, 255, 0.15);
+  .modal-content {
+    background: #ffffff;
+    color: var(--text-primary);
+    border: 1px solid var(--border-medium);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+    width: 100%;
+    max-width: min(96vw, 1150px);
+    max-height: 90vh;
+    overflow-y: auto;
+    position: relative;
+  }
+  .dark .modal-content {
+    background: #0f1422;
+    border-color: rgba(255, 255, 255, 0.15);
+  }
 }
 
 /* Custom Input Styles

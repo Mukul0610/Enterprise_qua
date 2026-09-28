@@ -207,6 +207,23 @@ describe('vendorMatching module', () => {
       expect(result[2].vendor.id).toBe('v2');
     });
 
+    it('sorts matching vendors with equal scores by rating and falls back to vendor email', () => {
+      const tiePool: VendorEntry[] = [
+        { email: 'low@rating.com', name: 'Low Rated', majorCategory: 'Cat1', rating: 3.5 } as unknown as VendorEntry,
+        { email: 'high@rating.com', name: 'High Rated', majorCategory: 'Cat1', rating: 4.8 } as unknown as VendorEntry,
+        { email: 'norating@test.com', name: 'No Rating', majorCategory: 'Cat1' } as unknown as VendorEntry,
+      ];
+      const result = selectVendorsForCategories(tiePool, ['Cat1', 'Cat2', 'Cat3', 'Cat4', 'Cat5'], 2);
+      expect(result.length).toBe(2);
+      expect(result[0].vendor.email).toBe('high@rating.com');
+      expect(result[1].vendor.email).toBe('low@rating.com');
+
+      const directMatches = selectVendorsForCategories(tiePool, ['Cat1']);
+      expect(directMatches[0].vendor.email).toBe('high@rating.com');
+      expect(directMatches[1].vendor.email).toBe('low@rating.com');
+      expect(directMatches[2].vendor.email).toBe('norating@test.com');
+    });
+
     it('handles empty inputs safely', () => {
       expect(selectVendorsForCategories([], ['Cat1'])).toEqual([]);
       expect(selectVendorsForCategories(null as any, ['Cat1'])).toEqual([]);

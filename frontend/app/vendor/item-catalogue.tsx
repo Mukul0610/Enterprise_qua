@@ -304,7 +304,6 @@ export default function ItemCatalogue() {
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Product Catalogue Management
             </h1>
-            <span className="badge badge-purple">Screen 3.4</span>
             <span className={`badge text-[10px] font-extrabold uppercase ${
               vendorSubscription === 'select'
                 ? 'bg-purple-100 dark:bg-purple-950 text-purple-700 dark:text-purple-300 border border-purple-300'
@@ -313,9 +312,6 @@ export default function ItemCatalogue() {
               {vendorSubscription === 'select' ? 'Select Model (Active)' : 'Select Model Required'}
             </span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Build and manage your vendor item catalogue for automated RFQ matching, including Minimum Order Quantity (MOQ).
-          </p>
         </div>
       </div>
 

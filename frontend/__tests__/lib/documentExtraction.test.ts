@@ -292,4 +292,58 @@ describe('buildExtractionRequest', () => {
     expect(res.fileName).toBe('specification.docx');
     expect(res.documentText !== undefined || res.inlineData !== undefined).toBe(true);
   });
+
+  test('sends a .pdf file as documentText or inlineData', async () => {
+    const file = new File(['%PDF-1.4 mock pdf binary content stream BT /F1 12 Tf (Centrifugal Pump 500 GPM) Tj ET endstream'], 'drawing.pdf', {
+      type: 'application/pdf',
+    });
+
+    const res = await buildExtractionRequest(file);
+    expect(res.fileName).toBe('drawing.pdf');
+    expect(res.documentText !== undefined || res.inlineData !== undefined).toBe(true);
+  });
+});
+
+describe('isTextFile and isWordDocument', () => {
+  test.each(['indent.txt', 'specs.md', 'output.log'])('identifies %s as text file', (name) => {
+    expect(require('@/lib/documentExtraction').isTextFile(name)).toBe(true);
+  });
+
+  test.each(['requisition.docx', 'tender.doc'])('identifies %s as word document', (name) => {
+    expect(require('@/lib/documentExtraction').isWordDocument(name)).toBe(true);
+  });
+
+  test('extractDocxText parses uncompressed word document xml', async () => {
+    const { extractDocxText } = require('@/lib/documentExtraction');
+    const fn = 'word/document.xml';
+    const xml = '<w:document><w:body><w:p><w:r><w:t>Centrifugal Pump 500 GPM</w:t></w:r></w:p></w:body></w:document>';
+    const enc = new TextEncoder();
+    const fnBytes = enc.encode(fn);
+    const xmlBytes = enc.encode(xml);
+    const header = new Uint8Array(30 + fnBytes.length + xmlBytes.length);
+    header[0] = 0x50; header[1] = 0x4b; header[2] = 0x03; header[3] = 0x04;
+    header[8] = 0; header[9] = 0; // compMethod = 0
+    header[18] = xmlBytes.length & 0xff; header[19] = (xmlBytes.length >> 8) & 0xff;
+    header[26] = fnBytes.length & 0xff; header[27] = 0;
+    header.set(fnBytes, 30);
+    header.set(xmlBytes, 30 + fnBytes.length);
+
+    const extracted = await extractDocxText(header.buffer);
+    expect(extracted).toContain('Centrifugal Pump 500 GPM');
+  });
+
+  test('extractPdfText parses text streams with Tj and TJ operators', async () => {
+    const { extractPdfText, buildExtractionRequest } = require('@/lib/documentExtraction');
+    const pdfContent = '%PDF-1.4\n1 0 obj\n<< /Length 120 >>\nstream\nBT\n/F1 12 Tf\n(Centrifugal Water Pump 500 GPM) Tj\n[(Stainless Steel 316L Pipes)] TJ\nET\nendstream\nendobj\n%%EOF';
+    const enc = new TextEncoder();
+    const buffer = enc.encode(pdfContent).buffer;
+
+    const text = await extractPdfText(buffer);
+    expect(text).toContain('Centrifugal Water Pump 500 GPM');
+    expect(text).toContain('Stainless Steel 316L Pipes');
+
+    const file = new File([pdfContent], 'specs.pdf', { type: 'application/pdf' });
+    const req = await buildExtractionRequest(file);
+    expect(req.documentText).toContain('Centrifugal Water Pump 500 GPM');
+  });
 });

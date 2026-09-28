@@ -353,6 +353,32 @@ describe('Database pool (Neon PostgreSQL)', () => {
         errorMessage: 'Database connection failed.',
       });
     });
+
+    // Regression coverage for a real production incident: confirmed live via
+    // `wrangler tail` that this query occasionally hangs indefinitely (Neon
+    // compute cold-starting, or a stalled socket the pool's own
+    // connectionTimeoutMillis doesn't cover, since that only bounds
+    // acquiring a connection, not a query already in flight on one) — the
+    // Workers runtime then hard-kills the whole request with an opaque
+    // "hung" error instead of this function's normal isConnected:false
+    // response. A hard timeout turns that into the same clean response every
+    // other failure gets.
+    test('reports unreachable instead of hanging forever when the query never resolves', async () => {
+      jest.useFakeTimers();
+      process.env.DATABASE_URL = 'postgres://user:pass@ep.neon.tech/db';
+      dbPool.pool = { query: jest.fn(() => new Promise(() => {})) }; // never resolves
+
+      const healthPromise = dbPool.checkDatabaseHealth();
+      jest.advanceTimersByTime(8000);
+      const health = await healthPromise;
+
+      expect(health).toMatchObject({
+        isConnected: false,
+        poolStatus: 'UNREACHABLE',
+        errorMessage: 'Database health check timed out after 8000ms',
+      });
+      jest.useRealTimers();
+    });
   });
 
   // ── Shutdown ──────────────────────────────────────────────────────────────

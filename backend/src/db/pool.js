@@ -233,11 +233,32 @@ async function checkDatabaseHealth() {
     // One round trip rather than three: the health check runs on every admin
     // page load and on boot, and three separate counts meant three billable
     // queries for one answer.
-    const result = await query(
-      `select (select count(*) from "user" where is_active = true) as user_count,
+    //
+    // Bounded with a hard timeout — confirmed live via `wrangler tail` that
+    // this occasionally hangs indefinitely (Neon compute cold-starting, or a
+    // stalled TCP socket the `pg` driver's own connectionTimeoutMillis
+    // doesn't cover, since that only bounds acquiring a connection, not a
+    // query already in flight on one). Cloudflare's runtime then hard-kills
+    // the whole request with an opaque "Worker hung" error instead of this
+    // catch block's normal isConnected:false response. A timeout here turns
+    // that into the same clean error response every other failure gets.
+    let timeoutHandle;
+    const timeout = new Promise((_, reject) => {
+      timeoutHandle = setTimeout(() => reject(new Error('Database health check timed out after 8000ms')), 8000);
+    });
+    let result;
+    try {
+      result = await Promise.race([
+        query(
+          `select (select count(*) from "user" where is_active = true) as user_count,
               (select count(*) from vendors) as vendor_count,
               (select count(*) from rfqs) as rfq_count`
-    );
+        ),
+        timeout,
+      ]);
+    } finally {
+      clearTimeout(timeoutHandle);
+    }
     const row = (result.rows && result.rows[0]) || {};
     return {
       isConfigured: true,

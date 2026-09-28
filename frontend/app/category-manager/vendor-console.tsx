@@ -228,15 +228,9 @@ export default function VendorConsole({ onNavigateToMatrix, onNavigateToEvaluati
       {/* Title Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Vendor Summary & Performance Analytics
-            </h1>
-            <span className="badge badge-purple">Screen 2.5</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Category Manager Central Command: check vendor performance metrics, quote compliance, awarded spend share, and drill down into bid details.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            Vendor Summary & Performance Analytics
+          </h1>
         </div>
         <button
           onClick={() => setUploadModalOpen(true)}

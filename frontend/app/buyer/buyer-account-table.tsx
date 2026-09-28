@@ -363,15 +363,9 @@ export default function BuyerAccountTable() {
       {/* ── Top Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Integrated Buyer Directory & Public System Database
-            </h1>
-            <span className="badge badge-purple">Screen 1.7</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Backend master table for adding existing buyer account details, aligning legacy enterprise profiles, and managing sourcing access.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            Integrated Buyer Directory & Public System Database
+          </h1>
         </div>
 
         <div className="flex items-center gap-2 flex-wrap">

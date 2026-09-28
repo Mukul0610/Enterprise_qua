@@ -167,6 +167,7 @@ describe('Store Service — remaining branch coverage', () => {
     function emptyDomainQueriesMock(overrides = {}) {
       return {
         getVendorsFromDB: jest.fn().mockResolvedValue([]),
+        getVendorsPageFromDB: jest.fn().mockResolvedValue({ rows: [], total: 0 }),
         getRFQsFromDB: jest.fn().mockResolvedValue([]),
         getEvaluationsFromDB: jest.fn().mockResolvedValue([]),
         getVendorCatalogueFromDB: jest.fn().mockResolvedValue([]),
@@ -199,7 +200,7 @@ describe('Store Service — remaining branch coverage', () => {
         jest.doMock('../src/db/pool', () => ({ pool: {}, hasStorage: () => true }));
         jest.doMock('../src/db/domainQueries', () =>
           emptyDomainQueriesMock({
-            getVendorsFromDB: jest.fn().mockResolvedValue(dbVendors),
+            getVendorsPageFromDB: jest.fn().mockResolvedValue({ rows: dbVendors, total: dbVendors.length }),
             getRFQsFromDB: jest.fn().mockResolvedValue(dbRfqs),
           })
         );
@@ -210,8 +211,29 @@ describe('Store Service — remaining branch coverage', () => {
 
       expect(result).toEqual({ hydrated: true, source: 'postgres' });
       expect(freshStore.isHydratedFromDB).toBe(true);
-      expect(await freshStore.getVendors()).toEqual(dbVendors);
+      expect(freshStore.vendors).toEqual(dbVendors);
+      expect(freshStore.vendorsTotal).toBe(dbVendors.length);
       expect(freshStore.getRFQs()).toEqual(dbRfqs);
+    });
+
+    test('bounds the boot-time vendor read instead of reading the whole table', async () => {
+      let freshStore;
+      let pageSpy;
+      let fullTableSpy;
+      jest.isolateModules(() => {
+        jest.doMock('../src/db/pool', () => ({ pool: {}, hasStorage: () => true }));
+        pageSpy = jest.fn().mockResolvedValue({ rows: [], total: 0 });
+        fullTableSpy = jest.fn().mockResolvedValue([]);
+        jest.doMock('../src/db/domainQueries', () =>
+          emptyDomainQueriesMock({ getVendorsPageFromDB: pageSpy, getVendorsFromDB: fullTableSpy })
+        );
+        freshStore = require('../src/services/storeService');
+      });
+
+      await freshStore.hydrateFromDB();
+
+      expect(pageSpy).toHaveBeenCalledWith({ limit: expect.any(Number), offset: 0 });
+      expect(fullTableSpy).not.toHaveBeenCalled();
     });
 
     test('replaces evaluations, vendor catalogue, AI feed and audit logs when rows exist', async () => {
@@ -307,7 +329,7 @@ describe('Store Service — remaining branch coverage', () => {
         jest.doMock('../src/db/pool', () => ({ pool: {}, hasStorage: () => true }));
         jest.doMock('../src/db/domainQueries', () =>
           emptyDomainQueriesMock({
-            getVendorsFromDB: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
+            getVendorsPageFromDB: jest.fn().mockRejectedValue(new Error('ECONNREFUSED')),
           })
         );
         freshStore = require('../src/services/storeService');
