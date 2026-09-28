@@ -386,12 +386,8 @@ export default function OpportunityFeed({
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Vendor Workspace & Opportunity Feed
             </h1>
-            <span className="badge badge-purple">Screen 3.1</span>
             <span className="badge badge-amber font-mono font-bold text-[10px]">⭐ Premium Vendor</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Exclusive enterprise buyer RFQ invitations, active bidding countdowns, and network sourcing feed.
-          </p>
         </div>
       </div>
 

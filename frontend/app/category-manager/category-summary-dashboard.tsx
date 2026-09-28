@@ -212,15 +212,9 @@ export default function CategorySummaryDashboard() {
       {/* Title & Timeframe Selector Bar */}
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-              <Layers className="text-indigo-600 dark:text-indigo-400" /> Category Governance &amp; Demand-Supply Analytics
-            </h1>
-            <span className="badge badge-purple font-mono">Screen 2.6</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Real-time summary of buyer procurement demand, vendor supply density, and RFQ volume trends across all {taxonomy.length} Major &amp; {totalMinorCategories} Minor categories.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white flex items-center gap-2">
+            <Layers className="text-indigo-600 dark:text-indigo-400" /> Category Governance &amp; Demand-Supply Analytics
+          </h1>
         </div>
 
         {/* Timeframe Filter Bar */}

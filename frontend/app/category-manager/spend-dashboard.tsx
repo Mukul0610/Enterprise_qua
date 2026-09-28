@@ -125,15 +125,11 @@ export default function SpendDashboard({
           >
             <ArrowLeft size={14} /> Back to Operational Monitoring Kanban
           </button>
-          <div className="flex items-center gap-2">
+          <div>
             <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
               Mode Performance & RFQ Analytics Dashboard
             </h1>
-            <span className="badge badge-purple">Screen 2.2</span>
           </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            RFQ generation rates, vendor spec downloads, SLA turnaround & AI follow-up efficiencies across Mode 1, Mode 2, and Mode 3 engines.
-          </p>
         </div>
       </div>
 

@@ -323,7 +323,7 @@ export default function IngestionWizard({
       if (file.size > RFQ_DOCUMENT_LIMITS.MAX_FILE_SIZE_BYTES) {
         showToast(
           'File Too Large',
-          `"${file.name}" exceeds the 10 MB file size limit (${formatFileSize(file.size)}).`,
+          `"${file.name}" exceeds the 15 MB file size limit (${formatFileSize(file.size)}).`,
           'warning'
         );
       } else {
@@ -357,12 +357,18 @@ export default function IngestionWizard({
         const derivedTitle = result.data.title || '';
         const derivedBudget = result.data.estimatedBudget ?? null;
         const derivedMajor = extracted[0]?.majorCategory || '';
+        const derivedLocation = result.data.deliveryLocation || '';
+        const derivedPincode = result.data.deliveryPincode || '';
+        const derivedDate = result.data.targetDeliveryDate || '';
 
         setForm((prev) => ({
           ...prev,
           title: prev.title || derivedTitle,
           estimatedBudget: prev.estimatedBudget ?? derivedBudget,
           majorCategory: prev.majorCategory || derivedMajor,
+          deliveryLocation: prev.deliveryLocation || derivedLocation,
+          deliveryPincode: prev.deliveryPincode || derivedPincode,
+          targetDeliveryDate: prev.targetDeliveryDate || derivedDate,
           lineItems: extracted.length > 0 ? extracted : prev.lineItems,
         }));
 
@@ -474,8 +480,22 @@ export default function IngestionWizard({
       return;
     }
 
-    if (!validateManualRFQForm(form).isValid) {
-      showToast('Validation Error', 'Please complete all required fields and line items before dispatching.', 'warning');
+    const validation = validateManualRFQForm(form);
+    if (!validation.isValid) {
+      const missing: string[] = [];
+      if (validation.formErrors.title) missing.push('RFQ Title');
+      if (validation.formErrors.deliveryLocation) missing.push('Delivery Location');
+      if (validation.formErrors.deliveryPincode) missing.push('Delivery Pincode');
+      if (validation.formErrors.targetDeliveryDate) missing.push('Target Delivery Date (cannot be in the past)');
+      if (validation.formErrors.lineItems) missing.push('At least 1 complete line item');
+      const lineItemErrCount = Object.keys(validation.lineItemErrors).length;
+      if (lineItemErrCount > 0) {
+        missing.push(`${lineItemErrCount} line item(s) missing name, quantity, or unit`);
+      }
+      const errorMsg = missing.length > 0
+        ? `Validation Error – Please complete: ${missing.join(', ')}.`
+        : 'Validation Error – Please complete all required fields and line items before dispatching.';
+      showToast('Validation Error', errorMsg, 'warning');
       return;
     }
 
@@ -507,28 +527,24 @@ export default function IngestionWizard({
         phone: v.phone || null,
       });
 
-      // A vendor only ever sees an RFQ if it's their own private-roster match
-      // (addedByBuyerCompany) or they're explicitly on assignedVendors —
-      // category match alone no longer grants visibility (CM invite-gating,
-      // see storeService.vendorCoversRFQ). Mode 2 previously left
-      // assignedVendors empty, so the buyer's private roster only got in via
-      // the addedByBuyerCompany fallback and nothing else was ever invited.
-      // Explicitly scoped to buyer-uploaded vendors only, same as Mode 1 —
-      // no marketplace/category-matched vendors here by design.
       let mode1AssignedVendors: AssignedVendorEntry[] | undefined = undefined;
 
       if ((form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2') && Array.isArray(buyerVendors)) {
         const allMyUploadedVendors = buyerVendors.filter((v) => isBuyerUploaded(v));
-        // Category-filtered to match what the panel above actually displays
-        // (and what the buyer sees as "matched") — falls back to the full
-        // roster only when no category signal exists yet to filter by.
         const { signals: dispatchSignals } = extractRfqCategorySignals(updatedForm);
-        const myUploadedVendors = dispatchSignals.length > 0
+        const matched = dispatchSignals.length > 0
           ? allMyUploadedVendors.filter((v) => matchVendorAgainstSignals(v, dispatchSignals).isMatch)
-          : allMyUploadedVendors;
+          : [];
+        const myUploadedVendors = matched.length > 0 ? matched : allMyUploadedVendors;
         if (myUploadedVendors.length > 0) {
           mode1AssignedVendors = myUploadedVendors.map(toAssignedVendorEntry);
         }
+      }
+
+      if (form.sourcingMode === 'mode_1' && (!mode1AssignedVendors || mode1AssignedVendors.length === 0)) {
+        setSubmitError('Version 1 (Client Sourcing) requires at least one private vendor to be added/selected before creating the RFQ.');
+        showToast('Private Vendor Required', 'Version 1 requires at least one private vendor in your roster before dispatching.', 'warning');
+        return;
       }
 
       // ALL_CATEGORIES_OPTION is a UI-only sentinel that opts a line item out
@@ -583,15 +599,9 @@ export default function IngestionWizard({
       {/* Header */}
       <div className="flex items-center justify-between pb-4 border-b border-slate-200 dark:border-slate-800">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              AI RFQ Ingestion & Multi-Mode Sourcing Dispatch
-            </h1>
-            <span className="badge badge-purple">Screen 1.2</span>
-          </div>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Create RFQ directly, upload BOQ documents or forwarded requisition emails, extract line items with AI, and dispatch to verified suppliers.
-          </p>
+          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
+            AI RFQ Ingestion & Multi-Mode Sourcing Dispatch
+          </h1>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -648,7 +658,7 @@ export default function IngestionWizard({
               Upload Source Documents & Forwarded Emails
             </h2>
             <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
-              Upload BOQ files (<span className="font-semibold text-slate-700 dark:text-slate-300">.xlsx, .xls, .csv, .pdf, .docx, .txt</span>) or Forwarded Requisition Emails (<span className="font-semibold text-indigo-600 dark:text-indigo-400">.eml, .msg</span>) — <span className="inline-flex items-center font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-1.5 py-0.5 rounded text-[11px]">Max 10 MB per file</span>
+              Upload BOQ files (<span className="font-semibold text-slate-700 dark:text-slate-300">.xlsx, .xls, .csv, .pdf, .docx, .txt</span>) or Forwarded Requisition Emails (<span className="font-semibold text-indigo-600 dark:text-indigo-400">.eml, .msg</span>) — <span className="inline-flex items-center font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-950/60 px-1.5 py-0.5 rounded text-[11px]">Max 15 MB per file</span>
             </p>
           </div>
 
@@ -715,7 +725,7 @@ export default function IngestionWizard({
             {isExtracting ? 'Gemini AI is parsing document contents...' : 'Drag and drop BOQ spreadsheets or .eml / .msg emails here'}
           </h3>
           <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">
-            Supports Excel (.xlsx, .xls), CSV, PDF specs, Word (.docx), Plain Text (.txt), and Outlook/MIME Email (.eml, .msg) — <span className="font-semibold text-slate-700 dark:text-slate-300">Max 10 MB</span>.
+            Supports Excel (.xlsx, .xls), CSV, PDF specs, Word (.docx), Plain Text (.txt), and Outlook/MIME Email (.eml, .msg) — <span className="font-semibold text-slate-700 dark:text-slate-300">Max 15 MB</span>.
           </p>
         </div>
 
@@ -1293,9 +1303,11 @@ export default function IngestionWizard({
                       {(() => {
                         const uploaded = buyerVendors.filter((v) => isBuyerUploaded(v));
                         const { signals } = extractRfqCategorySignals(form);
-                        return signals.length > 0
-                          ? uploaded.filter((v) => matchVendorAgainstSignals(v, signals).isMatch).length
-                          : uploaded.length;
+                        const matched = signals.length > 0
+                          ? uploaded.filter((v) => matchVendorAgainstSignals(v, signals).isMatch)
+                          : [];
+                        const effective = matched.length > 0 ? matched : uploaded;
+                        return effective.length;
                       })()} Suppliers Found
                     </span>
                   </h3>
@@ -1312,9 +1324,10 @@ export default function IngestionWizard({
             {(() => {
               const allMyVendors = buyerVendors.filter((v) => isBuyerUploaded(v));
               const { signals: mode1Signals } = extractRfqCategorySignals(form);
-              const myVendors = mode1Signals.length > 0
+              const matched = mode1Signals.length > 0
                 ? allMyVendors.filter((v) => matchVendorAgainstSignals(v, mode1Signals).isMatch)
-                : allMyVendors;
+                : [];
+              const myVendors = matched.length > 0 ? matched : allMyVendors;
               if (myVendors.length === 0) {
                 return (
                   <div className="p-6 text-center rounded-xl bg-white dark:bg-gray-900/60 border border-slate-200 dark:border-gray-800 space-y-2">

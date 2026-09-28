@@ -544,7 +544,7 @@ const GEMINI_CONFIG = {
   // chain stops rather than starting a request it will have to abandon.
   MIN_ATTEMPT_MS: Number(process.env.GEMINI_MIN_ATTEMPT_MS || 3000),
   // Documents larger than this are rejected before a request is billed.
-  MAX_DOCUMENT_BYTES: Number(process.env.GEMINI_MAX_DOCUMENT_BYTES || 10 * 1024 * 1024),
+  MAX_DOCUMENT_BYTES: Number(process.env.GEMINI_MAX_DOCUMENT_BYTES || 15 * 1024 * 1024),
   MAX_DOCUMENT_TEXT_CHARS: Number(process.env.GEMINI_MAX_DOCUMENT_TEXT_CHARS || 120000),
   // Deterministic output: extraction must not paraphrase or invent values.
   TEMPERATURE: 0,
@@ -557,14 +557,14 @@ const GEMINI_CONFIG = {
 // back verbatim and are never sent to Gemini: the manual flow exists precisely
 // because the buyer is keying the line items themselves.
 //
-// Content lives in Cloudflare R2 rather than on the RFQ record. A 10MB PDF is
-// ~13.3MB of base64, and the bootstrap payload returns every RFQ, so inlining
+// Content lives in Cloudflare R2 rather than on the RFQ record. A 15MB PDF is
+// ~20MB of base64, and the bootstrap payload returns every RFQ, so inlining
 // attachments would make that response grow without bound.
 const RFQ_ATTACHMENT_CONFIG = {
   // Object key prefix within the R2 bucket (was the local disk directory
   // before the R2 migration — same env var, reinterpreted).
   STORAGE_DIR: process.env.RFQ_ATTACHMENT_DIR || 'uploads/rfq-attachments',
-  MAX_BYTES: Number(process.env.RFQ_ATTACHMENT_MAX_BYTES || 10 * 1024 * 1024),
+  MAX_BYTES: Number(process.env.RFQ_ATTACHMENT_MAX_BYTES || 15 * 1024 * 1024),
   MAX_PER_RFQ: Number(process.env.RFQ_ATTACHMENT_MAX_PER_RFQ || 10),
   // Allow-list rather than a block-list: anything not named here is refused, so a
   // new executable or script type cannot be introduced by omission.
@@ -604,7 +604,7 @@ const EMAIL_INGESTION_CONFIG = {
   // Outlook's Compound File Binary format, which is not RFC822 and is refused
   // with an instruction to re-export rather than failing silently.
   MSG_PATTERN: /\.msg$/i,
-  MAX_BYTES: Number(process.env.EMAIL_INGESTION_MAX_BYTES || 10 * 1024 * 1024),
+  MAX_BYTES: Number(process.env.EMAIL_INGESTION_MAX_BYTES || 15 * 1024 * 1024),
   MAX_ATTACHMENTS: Number(process.env.EMAIL_INGESTION_MAX_ATTACHMENTS || 10),
   // Cap on how much of a decoded text attachment is appended, so one oversized
   // CSV cannot crowd the body out of the extractor's context window.
@@ -911,7 +911,7 @@ const EMAIL_INGESTION_MESSAGES = {
   NO_CONTENT:
     'This email has no readable body and no PDF, image or CSV attachment to extract from. If the requisition is in a spreadsheet, upload it through the BOQ Spreadsheet / Drawing tab.',
   TOO_LARGE: `That email is larger than the ${Math.floor(
-    Number(process.env.EMAIL_INGESTION_MAX_BYTES || 10 * 1024 * 1024) / (1024 * 1024)
+    Number(process.env.EMAIL_INGESTION_MAX_BYTES || 15 * 1024 * 1024) / (1024 * 1024)
   )}MB limit. Forward just the requisition without the earlier thread, or upload the attachment on its own.`,
   UNREADABLE:
     'This email could not be parsed. Re-export it from your mail client as a .eml file, or add the line items manually.',

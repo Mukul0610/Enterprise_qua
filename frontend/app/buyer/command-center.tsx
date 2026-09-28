@@ -196,9 +196,6 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
           <h1 className="text-xl font-extrabold tracking-tight text-slate-900 dark:text-white flex items-center gap-2 flex-wrap">
             <span>Enterprise Sourcing Dashboard</span>
           </h1>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-            Active RFQ pipeline tracking · Autonomous multi-channel follow-ups (Voice, WhatsApp, SMS) · Parametric quote matrix
-          </p>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <button

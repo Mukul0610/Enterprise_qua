@@ -65,4 +65,16 @@ describe('apiFetchPatch', () => {
 
     expect(window.fetch).toBe(patchedFetch);
   });
+
+  it('handles URL instances and passes them through', async () => {
+    process.env.NEXT_PUBLIC_BACKEND_URL = 'https://backend.example.workers.dev';
+    const mockFetch = jest.fn().mockResolvedValue({ ok: true });
+    window.fetch = mockFetch as unknown as typeof window.fetch;
+
+    const { installApiFetchPatch } = require('../lib/apiFetchPatch');
+    installApiFetchPatch();
+
+    await window.fetch(new URL('https://example.com/other'));
+    expect(mockFetch).toHaveBeenCalled();
+  });
 });

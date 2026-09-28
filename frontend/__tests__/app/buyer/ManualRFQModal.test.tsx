@@ -22,9 +22,11 @@ jest.mock('@/lib/rfqClient', () => ({
 // historical, un-provided case every other test in this file relies on);
 // individual Mode 1 roster tests override this to return a real value.
 jest.mock('@/lib/store', () => ({
-  useApp: jest.fn(() => {
-    throw new Error('useApp must be used within an AppProvider');
-  }),
+  useApp: jest.fn(() => ({
+    buyerVendors: [
+      { id: 'v-default-1', name: 'Default Enterprise Vendor', email: 'vendor@test.com', source: 'buyer_uploaded' },
+    ],
+  })),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -165,6 +167,11 @@ import { setCategoryTaxonomy } from '@/lib/categoryTaxonomy';
 beforeEach(() => {
   jest.clearAllMocks();
   setCategoryTaxonomy(categoriesData);
+  (useApp as jest.Mock).mockReturnValue({
+    buyerVendors: [
+      { id: 'v-default-1', name: 'Default Enterprise Vendor', email: 'vendor@test.com', source: 'buyer_uploaded' },
+    ],
+  });
   rfqClient.createRFQ.mockResolvedValue({ success: true, rfq: savedRFQ() });
   // A distinct id and name per upload: the list is keyed on the id, and two
   // documents in one selection must not collide.
@@ -551,7 +558,7 @@ describe('ManualRFQModal: sourcing mode', () => {
 
   it('locks Mode 2 and Mode 3 for a version_1 buyer and blocks selecting them', async () => {
     (useApp as jest.Mock).mockReturnValue({
-      buyerVendors: [],
+      buyerVendors: [{ id: 'v-1', name: 'Vendor 1', source: 'buyer_uploaded' }],
       activeBuyerAccount: { subscriptionPlan: 'version_1' },
     });
     renderModal();
@@ -813,7 +820,7 @@ describe('ManualRFQModal: extraction from an attached document', () => {
 });
 
 describe('ManualRFQModal: Mode 1 private vendor roster preview', () => {
-  it('shows the empty-roster state and omits assignedVendors when the buyer has no uploaded vendors', async () => {
+  it('shows the empty-roster state and blocks dispatch when the buyer has no uploaded vendors for Version 1', async () => {
     (useApp as jest.Mock).mockReturnValue({ buyerVendors: [] });
     renderModal();
 
@@ -824,8 +831,10 @@ describe('ManualRFQModal: Mode 1 private vendor roster preview', () => {
     fillDelivery();
     clickSave();
 
-    await waitFor(() => expect(rfqClient.createRFQ).toHaveBeenCalled());
-    expect(rfqClient.createRFQ.mock.calls[0][0].assignedVendors).toEqual([]);
+    await waitFor(() => {
+      expect(screen.getByText(/Version 1 \(Client Sourcing\) requires at least one private vendor/i)).toBeInTheDocument();
+    });
+    expect(rfqClient.createRFQ).not.toHaveBeenCalled();
   });
 
   it('lists the buyer-uploaded vendors and dispatches strictly to them on save', async () => {

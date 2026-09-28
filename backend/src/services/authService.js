@@ -588,7 +588,7 @@ async function verifyOtp(email, code, ipAddress, mobile) {
  * Register a new user / enterprise entity. The only path that creates an account.
  */
 async function registerUser(payload, ipAddress) {
-  const { name, email, password, mobile, orgName } = payload;
+  const { name, email, password, mobile, orgName, role } = payload;
   if (!email) throw new Error(AUTH_MESSAGES.REGISTRATION_EMAIL_REQUIRED);
   if (!password) throw new Error(AUTH_MESSAGES.EMAIL_PASSWORD_REQUIRED);
   if (!mobile) throw new Error(AUTH_MESSAGES.MOBILE_REQUIRED);
@@ -598,16 +598,19 @@ async function registerUser(payload, ipAddress) {
   }
 
   const normalizedEmail = email.trim().toLowerCase();
+  const isVendor = role === 'vendor';
+  const insertFn = isVendor ? identityQueries.insertVendorAccount : identityQueries.insertBuyerAccount;
 
-  const result = await identityQueries.insertBuyerAccount({
+  const result = await insertFn({
     email: normalizedEmail,
     password,
     phone: mobile,
     fullName: name,
     organizationName: orgName,
+    companyName: orgName,
   });
 
-  if (!result.created) {
+  if (!result.created && !isVendor) {
     throw new Error(AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS);
   }
 

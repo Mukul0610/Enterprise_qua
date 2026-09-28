@@ -439,7 +439,13 @@ describe('LoginPage', () => {
       typeInto(/^Password$/i, 'Pass@1234');
     };
 
-    it('creates a real account and signs the new user in', async () => {
+    const completeDualOtp = (emailOtp = '123456', mobileOtp = '123456') => {
+      fireEvent.change(screen.getByLabelText(/Email OTP/i), { target: { value: emailOtp } });
+      fireEvent.change(screen.getByLabelText(/Mobile OTP/i), { target: { value: mobileOtp } });
+      fireEvent.click(screen.getByRole('button', { name: /Verify & Activate Account/i }));
+    };
+
+    it('creates a real account and signs the new user in after dual OTP verification', async () => {
       (authClient.register as jest.Mock).mockResolvedValue({
         success: true,
         user: BUYER_SESSION,
@@ -450,6 +456,9 @@ describe('LoginPage', () => {
       openRegister();
       fillValidForm();
       fireEvent.click(submitButton(/Create Account/i));
+
+      expect(screen.getByText(/Dual OTP Identity Verification/i)).toBeInTheDocument();
+      completeDualOtp('123456', '654321');
 
       await waitFor(() => {
         expect(authClient.register).toHaveBeenCalledWith(
@@ -466,6 +475,47 @@ describe('LoginPage', () => {
       expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.buyer);
     });
 
+    it('creates a vendor partner account when vendor role is selected', async () => {
+      const vendorUser = {
+        id: 'usr-v-1',
+        email: 'vendor@supplier.com',
+        name: 'Rajesh Kumar',
+        role: 'vendor' as const,
+        vendorId: 'vnd-1',
+      };
+      (authClient.register as jest.Mock).mockResolvedValue({
+        success: true,
+        user: vendorUser,
+        token: 'jwt-vendor',
+      });
+
+      render(<LoginPage />);
+      openRegister();
+      fireEvent.click(screen.getByRole('button', { name: /Vendor Partner/i }));
+
+      typeInto(/Authorized Representative Name/i, 'Rajesh Kumar');
+      typeInto(/Corporate Email ID/i, 'vendor@supplier.com');
+      typeInto(/Mobile Number/i, '9811223344');
+      typeInto(/^Password$/i, 'Pass@1234');
+
+      fireEvent.click(submitButton(/Create Account/i));
+      expect(screen.getByText(/Dual OTP Identity Verification/i)).toBeInTheDocument();
+      completeDualOtp();
+
+      await waitFor(() => {
+        expect(authClient.register).toHaveBeenCalledWith(
+          expect.objectContaining({
+            name: 'Rajesh Kumar',
+            email: 'vendor@supplier.com',
+            password: 'Pass@1234',
+            mobile: '9811223344',
+            role: 'vendor',
+          })
+        );
+      });
+      expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
+    });
+
     it('never fabricates a GSTIN for the new buyer record', async () => {
       (authClient.register as jest.Mock).mockResolvedValue({
         success: true,
@@ -477,6 +527,7 @@ describe('LoginPage', () => {
       openRegister();
       fillValidForm();
       fireEvent.click(submitButton(/Create Account/i));
+      completeDualOtp();
 
       await waitFor(() => expect(addBuyerAccount).toHaveBeenCalled());
       expect(addBuyerAccount.mock.calls[0][0]).toMatchObject({ gstin: '', primaryPlantLocation: '' });
@@ -533,6 +584,7 @@ describe('LoginPage', () => {
       openRegister();
       fillValidForm();
       fireEvent.click(submitButton(/Create Account/i));
+      completeDualOtp();
 
       await waitFor(() => {
         expect(showToast).toHaveBeenCalledWith(
@@ -544,12 +596,48 @@ describe('LoginPage', () => {
       expect(setIsLoggedIn).not.toHaveBeenCalled();
     });
 
-    it('offers no simulated OTP codes during registration', () => {
+    it('rejects incomplete OTP inputs during dual OTP verification', async () => {
+      render(<LoginPage />);
+      openRegister();
+      fillValidForm();
+      fireEvent.click(submitButton(/Create Account/i));
+
+      expect(screen.getByText(/Dual OTP Identity Verification/i)).toBeInTheDocument();
+      completeDualOtp('123', '456');
+
+      expect(showToast).toHaveBeenCalledWith(
+        'Incomplete OTPs',
+        'Please enter both the 6-digit Email OTP and 6-digit Mobile OTP.',
+        'warning'
+      );
+      expect(authClient.register).not.toHaveBeenCalled();
+    });
+
+    it('navigates back to the registration form when clicking Back on dual OTP step', () => {
+      render(<LoginPage />);
+      openRegister();
+      fillValidForm();
+      fireEvent.click(submitButton(/Create Account/i));
+
+      expect(screen.getByText(/Dual OTP Identity Verification/i)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /Back/i }));
+      expect(screen.getByLabelText(/Full Name/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Dual OTP Identity Verification/i)).not.toBeInTheDocument();
+    });
+
+    it('switches between Buyer and Vendor Partner registration forms', () => {
       render(<LoginPage />);
       openRegister();
 
-      expect(screen.queryByLabelText(/Mobile OTP/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Email OTP Code:/i)).not.toBeInTheDocument();
+      expect(screen.getByText('Create Buyer Account')).toBeInTheDocument();
+      expect(screen.getByText('5 Free RFQs')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /Vendor Partner/i }));
+      expect(screen.getByText('Create Vendor Partner Account')).toBeInTheDocument();
+      expect(screen.getByText('5 Free Quotes')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: /^Buyer$/i }));
+      expect(screen.getByText('Create Buyer Account')).toBeInTheDocument();
     });
   });
 
@@ -606,6 +694,15 @@ describe('LoginPage', () => {
       const company = screen.getByLabelText(/Company Name/i);
       fireEvent.change(company, { target: { value: 'Navin Chaudhary Enterprises' } });
       expect(company).toHaveValue('Navin Chaudhary Enterprises');
+    });
+
+    it('switches between password and email OTP modes in sign-in', () => {
+      render(<LoginPage />);
+      const otpModeBtn = screen.getByRole('button', { name: /Email OTP/i });
+      fireEvent.click(otpModeBtn);
+      const passwordModeBtn = screen.getByRole('button', { name: /Password/i });
+      fireEvent.click(passwordModeBtn);
+      expect(screen.getByLabelText(/^Password$/i)).toBeInTheDocument();
     });
   });
 });

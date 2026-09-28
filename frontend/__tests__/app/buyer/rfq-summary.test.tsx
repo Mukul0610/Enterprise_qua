@@ -90,11 +90,9 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
   });
 
   describe('header & empty state', () => {
-    it('renders the screen title and tag from UI_STRINGS', () => {
+    it('renders the screen title from UI_STRINGS', () => {
       renderScreen([buildRFQ()]);
       expect(screen.getByRole('heading', { name: SCREEN.title })).toBeInTheDocument();
-      expect(screen.getByText(SCREEN.screenTag)).toBeInTheDocument();
-      expect(screen.getByText(SCREEN.subtitle)).toBeInTheDocument();
     });
 
     it('shows a guided empty state with no RFQs and no table', () => {

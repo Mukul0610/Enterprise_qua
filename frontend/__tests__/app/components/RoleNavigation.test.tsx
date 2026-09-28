@@ -114,10 +114,7 @@ describe('RoleNavigation Sidebar Dashboard', () => {
         expect(link).toHaveAttribute('href', item.route);
         expect(link).not.toHaveAttribute('aria-current');
         expect(screen.getByText(item.label)).toBeInTheDocument();
-        expect(screen.getByText(item.description)).toBeInTheDocument();
-        if (item.shortTag) {
-          expect(screen.getByText(item.shortTag)).toBeInTheDocument();
-        }
+        expect(link).toHaveAttribute('title', item.description);
       });
     }
   );

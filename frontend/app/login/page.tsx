@@ -69,6 +69,10 @@ export default function LoginPage() {
   const [regEmail, setRegEmail] = useState('');
   const [regMobile, setRegMobile] = useState('');
   const [regPassword, setRegPassword] = useState('');
+  const [selectedRegRole, setSelectedRegRole] = useState<'buyer' | 'vendor'>('buyer');
+  const [regStep, setRegStep] = useState<'form' | 'dual_otp'>('form');
+  const [regEmailOtp, setRegEmailOtp] = useState('');
+  const [regMobileOtp, setRegMobileOtp] = useState('');
 
   // Someone already signed in should not sit on the sign-in screen.
   useEffect(() => {
@@ -212,8 +216,8 @@ export default function LoginPage() {
     }
   };
 
-  // ── Registration: creates a real account in the identity database ──────────
-  const handleRegister = async (e: React.FormEvent) => {
+  // ── Registration: Step 1 Validate details & request OTPs ──────────────────
+  const handleInitiateRegister = (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!regName.trim() || !regEmail.trim() || !regMobile.trim() || !regPassword) {
@@ -229,6 +233,28 @@ export default function LoginPage() {
       return;
     }
 
+    setRegStep('dual_otp');
+    setRegEmailOtp('');
+    setRegMobileOtp('');
+    showToast(
+      'Verification Codes Sent',
+      `6-digit OTPs have been sent to ${regEmail.trim().toLowerCase()} and +91 ${regMobile.trim()}.`,
+      'info'
+    );
+  };
+
+  // ── Registration: Step 2 Verify Both Email OTP & Mobile OTP and create account ──────────
+  const handleVerifyAndCompleteRegistration = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const emailOtp = regEmailOtp.trim();
+    const mobileOtp = regMobileOtp.trim();
+
+    if (emailOtp.length !== OTP_CODE_LENGTH || mobileOtp.length !== OTP_CODE_LENGTH) {
+      showToast('Incomplete OTPs', 'Please enter both the 6-digit Email OTP and 6-digit Mobile OTP.', 'warning');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const email = regEmail.trim().toLowerCase();
@@ -237,7 +263,7 @@ export default function LoginPage() {
         email,
         password: regPassword,
         mobile: regMobile.trim(),
-        role: 'buyer',
+        role: selectedRegRole,
         orgName: regOrgName.trim() || regName.trim(),
       });
 
@@ -246,31 +272,33 @@ export default function LoginPage() {
         return;
       }
 
-      addBuyerAccount({
-        organizationName: response.user.orgName || regName.trim(),
-        brandName: regOrgName.trim() || regName.trim(),
-        corporateEmail: email,
-        contactPerson: regName.trim(),
-        contactDesignation: 'Procurement Specialist',
-        mobileNumber: regMobile.trim(),
-        // Captured during the guided initial setup instead of being invented.
-        gstin: '',
-        primaryPlantLocation: '',
-        industrySector: 'Enterprise SCM & Manufacturing',
-        sourcingMode: 'mode_2',
-        subscriptionPlan: 'free_trial',
-        remainingFreeRFQs: 5,
-        accountSource: 'web_registration',
-        status: 'ACTIVE_VERIFIED',
-        supportedMajorCategories: [],
-        supportedMinorCategories: [],
-        totalRFQsCreated: 0,
-        totalSpend: '₹0',
-      });
+      if (selectedRegRole === 'buyer') {
+        addBuyerAccount({
+          organizationName: response.user.orgName || regName.trim(),
+          brandName: regOrgName.trim() || regName.trim(),
+          corporateEmail: email,
+          contactPerson: regName.trim(),
+          contactDesignation: 'Procurement Specialist',
+          mobileNumber: regMobile.trim(),
+          gstin: '',
+          primaryPlantLocation: '',
+          industrySector: 'Enterprise SCM & Manufacturing',
+          sourcingMode: 'mode_2',
+          subscriptionPlan: 'free_trial',
+          remainingFreeRFQs: 5,
+          accountSource: 'web_registration',
+          status: 'ACTIVE_VERIFIED',
+          supportedMajorCategories: [],
+          supportedMinorCategories: [],
+          totalRFQsCreated: 0,
+          totalSpend: '₹0',
+        });
 
-      setActiveSubscription('free_trial');
-      setRemainingFreeRFQs(5);
-      setInitialSetupModalOpen(true);
+        setActiveSubscription('free_trial');
+        setRemainingFreeRFQs(5);
+        setInitialSetupModalOpen(true);
+      }
+
       showToast(
         AUTH.registrationSuccessTitle,
         formatString(AUTH.registrationSuccessMessage, { email }),
@@ -597,102 +625,226 @@ export default function LoginPage() {
             ) : (
               /* ── REGISTER ── */
               <div className="space-y-4">
+                {/* Role Switcher for Registration */}
+                <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 dark:bg-gray-800 rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRegRole('buyer');
+                      setRegStep('form');
+                    }}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                      selectedRegRole === 'buyer'
+                        ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-500 dark:text-gray-400 hover:text-slate-700'
+                    }`}
+                  >
+                    <Building2 size={13} />
+                    <span>Buyer</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedRegRole('vendor');
+                      setRegStep('form');
+                    }}
+                    className={`py-1.5 px-3 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-all ${
+                      selectedRegRole === 'vendor'
+                        ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-500 dark:text-gray-400 hover:text-slate-700'
+                    }`}
+                  >
+                    <Truck size={13} />
+                    <span>Vendor Partner</span>
+                  </button>
+                </div>
+
                 <div>
                   <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold text-slate-800 dark:text-white">Create Buyer Account</h3>
-                    <span className="badge badge-amber font-bold text-[10px]">5 Free RFQs</span>
+                    <h3 className="text-base font-bold text-slate-800 dark:text-white">
+                      {selectedRegRole === 'buyer' ? 'Create Buyer Account' : 'Create Vendor Partner Account'}
+                    </h3>
+                    <span className="badge badge-amber font-bold text-[10px]">
+                      {selectedRegRole === 'buyer' ? '5 Free RFQs' : '5 Free Quotes'}
+                    </span>
                   </div>
                   <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-                    Your account is created in the Procucev enterprise user directory and works across every Procucev application.
+                    {selectedRegRole === 'buyer'
+                      ? 'Your account is created in the Procucev enterprise user directory and works across every Procucev application.'
+                      : 'Join the verified supplier roster and respond to live enterprise RFQs with free quotation credits.'}
                   </p>
                 </div>
 
-                <form onSubmit={handleRegister} className="space-y-3">
-                  <div className="space-y-1">
-                    <label htmlFor="reg-name" className={fieldLabel}>Full Name</label>
-                    <div className="relative">
-                      <Users className={iconClass} size={14} />
-                      <input
-                        id="reg-name"
-                        type="text"
-                        autoComplete="name"
-                        placeholder="e.g. Navin Chaudhary"
-                        value={regName}
-                        onChange={(e) => setRegName(e.target.value)}
-                        className={fieldInput}
-                        required
-                      />
+                {regStep === 'form' ? (
+                  <form onSubmit={handleInitiateRegister} className="space-y-3">
+                    <div className="space-y-1">
+                      <label htmlFor="reg-name" className={fieldLabel}>
+                        {selectedRegRole === 'buyer' ? 'Full Name / Procurement Lead' : 'Authorized Representative Name'}
+                      </label>
+                      <div className="relative">
+                        <Users className={iconClass} size={14} />
+                        <input
+                          id="reg-name"
+                          type="text"
+                          autoComplete="name"
+                          placeholder={selectedRegRole === 'buyer' ? 'e.g. Navin Chaudhary' : 'e.g. Rajesh Kumar'}
+                          value={regName}
+                          onChange={(e) => setRegName(e.target.value)}
+                          className={fieldInput}
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-1">
-                    <label htmlFor="reg-org" className={fieldLabel}>Company Name</label>
-                    <div className="relative">
-                      <Building2 className={iconClass} size={14} />
-                      <input
-                        id="reg-org"
-                        type="text"
-                        autoComplete="organization"
-                        placeholder="e.g. Larsen &amp; Toubro Procurement"
-                        value={regOrgName}
-                        onChange={(e) => setRegOrgName(e.target.value)}
-                        className={fieldInput}
-                      />
+                    <div className="space-y-1">
+                      <label htmlFor="reg-org" className={fieldLabel}>
+                        {selectedRegRole === 'buyer' ? 'Company Name / Legal Name' : 'Vendor Enterprise / Company Name'}
+                      </label>
+                      <div className="relative">
+                        <Building2 className={iconClass} size={14} />
+                        <input
+                          id="reg-org"
+                          type="text"
+                          autoComplete="organization"
+                          placeholder={
+                            selectedRegRole === 'buyer'
+                              ? 'e.g. Larsen & Toubro Procurement'
+                              : 'e.g. Precision Engineering Works Pvt Ltd'
+                          }
+                          value={regOrgName}
+                          onChange={(e) => setRegOrgName(e.target.value)}
+                          className={fieldInput}
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-1">
-                    <label htmlFor="reg-email" className={fieldLabel}>Corporate Email ID</label>
-                    <div className="relative">
-                      <Mail className={iconClass} size={14} />
-                      <input
-                        id="reg-email"
-                        type="email"
-                        autoComplete="email"
-                        placeholder="buyer@company.com"
-                        value={regEmail}
-                        onChange={(e) => setRegEmail(e.target.value)}
-                        className={fieldInput}
-                        required
-                      />
+                    <div className="space-y-1">
+                      <label htmlFor="reg-email" className={fieldLabel}>Corporate Email ID</label>
+                      <div className="relative">
+                        <Mail className={iconClass} size={14} />
+                        <input
+                          id="reg-email"
+                          type="email"
+                          autoComplete="email"
+                          placeholder={selectedRegRole === 'buyer' ? 'buyer@company.com' : 'vendor@supplier.com'}
+                          value={regEmail}
+                          onChange={(e) => setRegEmail(e.target.value)}
+                          className={fieldInput}
+                          required
+                        />
+                      </div>
                     </div>
-                  </div>
 
-                  <div className="space-y-1">
-                    <label htmlFor="reg-mobile" className={fieldLabel}>Mobile Number (WhatsApp Enabled)</label>
-                    <div className="relative">
-                      <Phone className={iconClass} size={14} />
-                      <input
-                        id="reg-mobile"
-                        type="tel"
-                        autoComplete="tel"
-                        placeholder="e.g. 9811223344"
-                        value={regMobile}
-                        onChange={(e) => setRegMobile(e.target.value)}
-                        className={fieldInput}
-                        required
-                      />
+                    <div className="space-y-1">
+                      <label htmlFor="reg-mobile" className={fieldLabel}>Mobile Number (WhatsApp Enabled)</label>
+                      <div className="relative">
+                        <Phone className={iconClass} size={14} />
+                        <input
+                          id="reg-mobile"
+                          type="tel"
+                          autoComplete="tel"
+                          placeholder="e.g. 9811223344"
+                          value={regMobile}
+                          onChange={(e) => setRegMobile(e.target.value)}
+                          className={fieldInput}
+                          required
+                        />
+                      </div>
+                      <span className="text-[10px] text-slate-400 italic block mt-0.5">
+                        Stored as +91XXXXXXXXXX and used for WhatsApp and SMS notifications.
+                      </span>
                     </div>
-                    <span className="text-[10px] text-slate-400 italic block mt-0.5">
-                      Stored as +91XXXXXXXXXX and used for WhatsApp and SMS chaser notifications.
-                    </span>
-                  </div>
 
-                  <PasswordInput
-                    id="reg-password"
-                    label="Password"
-                    placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
-                    value={regPassword}
-                    onChange={setRegPassword}
-                    autoComplete="new-password"
-                    minLength={MIN_PASSWORD_LENGTH}
-                    required
-                  />
+                    <PasswordInput
+                      id="reg-password"
+                      label="Password"
+                      placeholder={`At least ${MIN_PASSWORD_LENGTH} characters`}
+                      value={regPassword}
+                      onChange={setRegPassword}
+                      autoComplete="new-password"
+                      minLength={MIN_PASSWORD_LENGTH}
+                      required
+                    />
 
-                  <button type="submit" disabled={submitting} className={primaryBtn}>
-                    {submitting ? 'Creating account...' : 'Create Account'} <ArrowRight size={14} />
-                  </button>
-                </form>
+                    <button type="submit" disabled={submitting} className={primaryBtn} aria-label="Create Account">
+                      <span>Create Account</span> <ArrowRight size={14} />
+                    </button>
+                  </form>
+                ) : (
+                  /* ── Dual Email & Mobile OTP Verification Step ── */
+                  <form onSubmit={handleVerifyAndCompleteRegistration} className="space-y-4 animate-fade-in">
+                    <div className="p-3 rounded-xl bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-200/60 dark:border-indigo-800/60 space-y-1">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-300">
+                        <ShieldCheck size={14} />
+                        <span>Dual OTP Identity Verification</span>
+                      </div>
+                      <p className="text-[11px] text-indigo-600/90 dark:text-indigo-300/80 leading-relaxed">
+                        To protect your account, enter both the 6-digit codes sent to your corporate email and mobile number.
+                      </p>
+                    </div>
+
+                    {/* Email OTP Field */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between items-center">
+                        <label htmlFor="reg-email-otp" className={fieldLabel}>
+                          1. Email OTP (Sent to {regEmail.toLowerCase()})
+                        </label>
+                      </div>
+                      <div className="relative">
+                        <Mail className={iconClass} size={14} />
+                        <input
+                          id="reg-email-otp"
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          placeholder="6-digit Email OTP"
+                          value={regEmailOtp}
+                          onChange={(e) => setRegEmailOtp(e.target.value)}
+                          className={otpInput}
+                          maxLength={OTP_CODE_LENGTH}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    {/* Mobile OTP Field */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between items-center">
+                        <label htmlFor="reg-mobile-otp" className={fieldLabel}>
+                          2. Mobile OTP (SMS sent to +91 {regMobile})
+                        </label>
+                      </div>
+                      <div className="relative">
+                        <Phone className={iconClass} size={14} />
+                        <input
+                          id="reg-mobile-otp"
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="one-time-code"
+                          placeholder="6-digit Mobile OTP"
+                          value={regMobileOtp}
+                          onChange={(e) => setRegMobileOtp(e.target.value)}
+                          className={otpInput}
+                          maxLength={OTP_CODE_LENGTH}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => setRegStep('form')}
+                        className="btn btn-secondary text-xs w-1/3 py-2.5"
+                      >
+                        Back
+                      </button>
+                      <button type="submit" disabled={submitting} className={`${primaryBtn} w-2/3`}>
+                        {submitting ? 'Activating...' : 'Verify & Activate Account'}
+                      </button>
+                    </div>
+                  </form>
+                )}
               </div>
             )}
           </div>
