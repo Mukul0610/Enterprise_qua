@@ -591,6 +591,82 @@ describe('Controllers Error & Edge-Case Coverage', () => {
     expect(emailBlockedRes.status).toHaveBeenCalledWith(403);
   });
 
+  // Regression coverage for two bugs found together: a buyer could never save
+  // category taxonomy for a vendor they themselves uploaded (assertVendorOwnership
+  // was given a plain email string instead of the vendor object, so its buyer-
+  // ownership branch could never match), and updateVendorCategories's internal
+  // unscoped getVendorById lookup returned undefined for any buyer-scoped vendor,
+  // silently reporting {success:true, data:null} even when ownership passed.
+  test('updateCategories: a buyer can save category taxonomy for a vendor they uploaded', async () => {
+    const next = jest.fn();
+    const buyerEmail = 'buyer-owns-vendor@procucev.com';
+    const buyerAccount = { id: 'buyer-acc-cat-test', organizationName: 'Cat Test Buyers Ltd' };
+    jest.spyOn(storeService, 'getBuyerAccountByEmail').mockResolvedValue(buyerAccount);
+
+    const created = storeService.addVendor(
+      { name: 'Buyer Uploaded Vendor Co', email: 'buyer-uploaded-vendor@example.com', majorCategory: 'Electricals' },
+      buyerEmail,
+      buyerAccount.id
+    );
+    expect(created.buyerId).toBe(buyerAccount.id);
+
+    const res = mockRes();
+    await vendorController.updateCategories(
+      {
+        params: { id: created.id },
+        body: { clientMappedCategories: [], vendorSelectedCategories: ['Switchgear'] },
+        user: { role: 'buyer', email: buyerEmail },
+      },
+      res,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(403);
+    expect(res.status).not.toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({ vendorSelectedCategories: ['Switchgear'] }),
+      })
+    );
+
+    storeService.getBuyerAccountByEmail.mockRestore();
+  });
+
+  test('updateCategories: a vendor can save its own taxonomy even when linked to a buyer account', async () => {
+    const next = jest.fn();
+    const vendorEmail = 'buyer-linked-vendor@example.com';
+    const created = storeService.addVendor(
+      { name: 'Buyer Linked Vendor Co', email: vendorEmail, majorCategory: 'Electricals' },
+      null,
+      'buyer-acc-cat-test-2'
+    );
+    expect(created.buyerId).toBe('buyer-acc-cat-test-2');
+
+    const res = mockRes();
+    await vendorController.updateCategories(
+      {
+        params: { id: created.id },
+        body: { clientMappedCategories: [], vendorSelectedCategories: ['Cables'] },
+        user: { role: 'vendor', email: vendorEmail },
+      },
+      res,
+      next
+    );
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(403);
+    // The bug returned {success:true, data:null} instead of a 404/403 — assert
+    // data is the real updated record, not null, so a stale mock can't hide it.
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        success: true,
+        data: expect.objectContaining({ id: created.id, vendorSelectedCategories: ['Cables'] }),
+      })
+    );
+  });
+
   test('vendorController.bulkImportVendors: role gating, payload shape, and mixed valid/invalid rows', async () => {
     const next = jest.fn();
     const categoryManagerUser = { role: 'category_manager', email: 'cm@procucev.com' };

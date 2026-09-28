@@ -606,12 +606,21 @@ async function updateCategories(req, res, next) {
   try {
     const { id } = req.params;
     const { clientMappedCategories, vendorSelectedCategories } = req.body;
-    const existing = storeService.getVendorById(id, 'all'); // resolving by route-param id for an action on this vendor, not a buyer-scoped list
+    // DB-fallback-aware, matching updateVendor's lookup — this.vendors is a
+    // capped in-memory subset, so a buyer-uploaded vendor that's genuinely
+    // persisted but not in that subset would otherwise 404 here even though
+    // the profile PUT right before this one (same save action) succeeded.
+    const existing = await storeService.getVendorByIdWithDBFallback(id, 'all');
     if (!existing) {
       logger.warn(`Vendor not found for taxonomy update: ${id}`, { id }, 'VENDOR_CONTROLLER');
       return res.status(404).json({ success: false, error: `Vendor with ID ${id} not found.` });
     }
-    if (!(await assertVendorOwnership(req, res, existing.email))) return;
+    // Pass the full vendor object, not just its email — assertVendorOwnership's
+    // buyer-ownership branch only matches an object carrying buyerId/
+    // buyerAccountId/buyerEmail; a plain string always fails that check and
+    // fell through to a 403, so a buyer could never save category taxonomy
+    // for a vendor they themselves uploaded.
+    if (!(await assertVendorOwnership(req, res, existing))) return;
     logger.info(`Updating category taxonomy for vendor ${id}`, { id, clientMappedCategories, vendorSelectedCategories }, 'VENDOR_CONTROLLER');
     const updated = storeService.updateVendorCategories(existing.id, { clientMappedCategories, vendorSelectedCategories });
     res.json({ success: true, data: updated });
