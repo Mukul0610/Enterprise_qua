@@ -2599,7 +2599,15 @@ class StoreService {
   // 10. DUAL-STREAM CATEGORY RECONCILIATION
   // ==========================================
   updateVendorCategories(vendorId, { clientMappedCategories = [], vendorSelectedCategories = [] }) {
-    const vendor = this.getVendorById(vendorId);
+    // Scoped 'all': the controller has already authorized the caller (see
+    // vendorController.updateCategories) by the time this runs, so re-scoping
+    // by buyer here is redundant — and was actively wrong: an unscoped lookup
+    // returns undefined for any vendor carrying a buyerId/buyerAccountId
+    // (every buyer-uploaded vendor), silently returning null from this whole
+    // function. The controller then responded 200 {success:true, data:null},
+    // and the frontend's follow-up read of data.clientMappedCategories on
+    // that null threw a TypeError right after reporting the save succeeded.
+    const vendor = this.getVendorById(vendorId, 'all');
     if (!vendor) return null;
 
     // Check alignment
