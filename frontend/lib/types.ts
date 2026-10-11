@@ -1836,6 +1836,7 @@ export type RFQExtractionReason =
   | 'DOCUMENT_TOO_LARGE'
   | 'UNSUPPORTED_TYPE'
   | 'AI_FAILED'
+  | 'QUOTA_EXCEEDED'
   | 'NO_ITEMS_FOUND'
   | 'NETWORK';
 

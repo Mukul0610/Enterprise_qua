@@ -31,6 +31,7 @@ const EXTRACTION_STATUS = {
   DOCUMENT_TOO_LARGE: 'DOCUMENT_TOO_LARGE',
   UNSUPPORTED_TYPE: 'UNSUPPORTED_TYPE',
   AI_FAILED: 'AI_FAILED',
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   NO_ITEMS_FOUND: 'NO_ITEMS_FOUND',
 };
 
@@ -454,6 +455,17 @@ function setActiveKeyIndex(idx) {
   activeKeyIndex = Number(idx) || 0;
 }
 
+function resolveExtractionFailureStatus(failures) {
+  const attemptedFailures = failures.filter((failure) => !failure.startsWith('skipped '));
+  if (
+    attemptedFailures.length > 0 &&
+    attemptedFailures.every((failure) => /\bresponded 429\b|quota|resource_exhausted|rate.?limit/i.test(failure))
+  ) {
+    return EXTRACTION_STATUS.QUOTA_EXCEEDED;
+  }
+  return EXTRACTION_STATUS.AI_FAILED;
+}
+
 /**
  * Call one model, returning its parsed JSON or throwing so the caller can try
  * the next model in the chain. Supports multiple API keys with recursive loop failover.
@@ -641,7 +653,7 @@ async function extractLineItems(input = {}) {
 
   return {
     ...base,
-    status: EXTRACTION_STATUS.AI_FAILED,
+    status: resolveExtractionFailureStatus(failures),
     error: failures.join(' | '),
   };
 }

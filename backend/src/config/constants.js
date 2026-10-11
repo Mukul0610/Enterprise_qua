@@ -1059,6 +1059,8 @@ const EXTRACTION_REASON_MESSAGES = {
     'This file type cannot be read by AI extraction. Upload a spreadsheet, PDF or image, or add the line items manually.',
   AI_FAILED:
     'AI extraction could not read this document. Add the line items manually to continue.',
+  QUOTA_EXCEEDED:
+    'AI extraction is temporarily unavailable because the Gemini API quota or rate limit was reached. Check the Google AI project quota or retry later; you can also add the line items manually to continue.',
   NO_ITEMS_FOUND:
     'No procurement line items could be identified in this document. Add the line items manually to continue.',
   // Shared with emailIngestionService's EMAIL_INGESTION_STATUS — a buyer
@@ -1652,4 +1654,3 @@ module.exports = {
   CHASER_DELAYS,
   SMS_DLT_TEMPLATES,
 };
-

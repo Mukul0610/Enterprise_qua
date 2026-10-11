@@ -65,6 +65,7 @@ describe('UI Strings Constants & i18n Format Tests', () => {
         'DOCUMENT_TOO_LARGE',
         'UNSUPPORTED_TYPE',
         'AI_FAILED',
+        'QUOTA_EXCEEDED',
         'NO_ITEMS_FOUND',
         'NETWORK',
       ] as const;

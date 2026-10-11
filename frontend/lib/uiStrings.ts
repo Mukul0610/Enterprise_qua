@@ -366,6 +366,8 @@ export const UI_STRINGS = {
         'This file type cannot be read by AI extraction. Upload a spreadsheet (.xlsx/.csv), PDF or image, or enter the line items manually.',
       AI_FAILED:
         'The AI could not read this document — its layout may be unusual or the scan unclear. Try a spreadsheet or clearer PDF, or enter the line items manually.',
+      QUOTA_EXCEEDED:
+        'AI extraction reached the Gemini API quota or rate limit. Check the Google AI project quota or retry later, or enter the line items manually.',
       NO_ITEMS_FOUND:
         'No procurement line items could be identified in this document. Check that quantities are stated, or enter the line items manually.',
       NETWORK:

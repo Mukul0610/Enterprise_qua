@@ -344,6 +344,20 @@ describe('Gemini document extraction service', () => {
       expect(global.fetch).toHaveBeenCalledTimes(gemini.resolveModelChain().length);
     });
 
+    test('reports QUOTA_EXCEEDED when every model is rate limited', async () => {
+      GEMINI_CONFIG.API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () => '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}',
+      });
+
+      const res = await gemini.extractLineItems({ documentText: 'Pump | 12' });
+
+      expect(res.status).toBe(EXTRACTION_STATUS.QUOTA_EXCEEDED);
+      expect(global.fetch).toHaveBeenCalledTimes(gemini.resolveModelChain().length);
+    });
+
     // A model that never responds must not hang the request forever.
     test('aborts a model that exceeds the configured timeout', async () => {
       GEMINI_CONFIG.API_KEY = 'test-key';
@@ -683,6 +697,24 @@ describe('POST /api/rfqs/extract', () => {
 
     expect(res.statusCode).toBe(422);
     expect(res.body.reason).toBe(EXTRACTION_STATUS.AI_FAILED);
+  });
+
+  test('returns actionable quota guidance when Gemini rate limits every model', async () => {
+    GEMINI_CONFIG.API_KEY = 'test-key';
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}',
+    });
+
+    const res = await request(app)
+      .post('/api/rfqs/extract')
+      .set(authHeader('buyer'))
+      .send({ fileName: 'BOQ.xlsx', documentText: 'Pump | 12' });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body.reason).toBe(EXTRACTION_STATUS.QUOTA_EXCEEDED);
+    expect(res.body.error).toMatch(/quota or rate limit/i);
   });
 
   // Defends the contract between extraction and classification: if the taxonomy
@@ -1675,7 +1707,6 @@ describe('geminiService.generateJson', () => {
     });
   });
 });
-
 
 
 
