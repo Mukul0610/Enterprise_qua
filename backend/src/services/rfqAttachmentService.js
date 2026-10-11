@@ -43,9 +43,9 @@ const ATTACHMENT_STATUS = {
  * Returning null rather than a key is what stops a malformed/foreign id from
  * ever reaching a request: an id that fails the pattern never reaches R2.
  */
-function resolveObjectKey(id) {
-  if (typeof id !== 'string' || !RFQ_ATTACHMENT_CONFIG.ID_PATTERN.test(id)) return null;
-  return `${RFQ_ATTACHMENT_CONFIG.STORAGE_DIR}/${id}`;
+function resolveObjectKey(id, config = RFQ_ATTACHMENT_CONFIG) {
+  if (typeof id !== 'string' || !config.ID_PATTERN.test(id)) return null;
+  return `${config.STORAGE_DIR}/${id}`;
 }
 
 /** True when the buyer may attach a document of this type. */
@@ -90,15 +90,15 @@ function safeFileName(fileName) {
  * @param {string} input.content base64-encoded file body
  * @returns {Promise<{status: string, attachment: Object|null, error: string|null}>}
  */
-async function saveAttachment({ fileName, mimeType, content } = {}) {
+async function saveAttachment({ fileName, mimeType, content } = {}, config = RFQ_ATTACHMENT_CONFIG, access = null) {
   const failure = (status, error = null) => ({ status, attachment: null, error });
 
   if (!content) return failure(ATTACHMENT_STATUS.NO_CONTENT);
-  if (!isAllowedType(mimeType)) return failure(ATTACHMENT_STATUS.UNSUPPORTED_TYPE);
+  if (!config.ALLOWED_MIME_TYPES.includes(mimeType)) return failure(ATTACHMENT_STATUS.UNSUPPORTED_TYPE);
 
   const size = decodedByteLength(content);
   if (size === 0) return failure(ATTACHMENT_STATUS.NO_CONTENT);
-  if (size > RFQ_ATTACHMENT_CONFIG.MAX_BYTES) return failure(ATTACHMENT_STATUS.TOO_LARGE);
+  if (size > config.MAX_BYTES) return failure(ATTACHMENT_STATUS.TOO_LARGE);
 
   const binding = r2Client.getBinding();
   const client = binding ? null : r2Client.getClient();
@@ -124,13 +124,14 @@ async function saveAttachment({ fileName, mimeType, content } = {}) {
     filename: encodeURIComponent(meta.fileName),
     size: String(size),
     uploadedat: meta.uploadedAt,
+    ...(access ? { rfqid: encodeURIComponent(access.rfqId), vendorid: encodeURIComponent(access.vendorId) } : {}),
   };
 
   try {
     if (binding) {
       // Native R2 binding — see r2Client.js's getBinding() for why this is
       // preferred over the S3Client path below on Workers.
-      await binding.put(resolveObjectKey(id), Buffer.from(content, 'base64'), {
+      await binding.put(resolveObjectKey(id, config), Buffer.from(content, 'base64'), {
         httpMetadata: { contentType: mimeType },
         customMetadata,
       });
@@ -138,7 +139,7 @@ async function saveAttachment({ fileName, mimeType, content } = {}) {
       await client.send(
         new PutObjectCommand({
           Bucket: r2Client.bucket(),
-          Key: resolveObjectKey(id),
+          Key: resolveObjectKey(id, config),
           Body: Buffer.from(content, 'base64'),
           ContentType: mimeType,
           Metadata: customMetadata,
@@ -173,8 +174,8 @@ async function bufferBody(body) {
  * @returns {Promise<{meta: Object, content: Buffer}|null>} null when the id is
  *   unknown, malformed, R2 isn't configured, or the object is missing.
  */
-async function loadAttachment(id) {
-  const key = resolveObjectKey(id);
+async function loadAttachment(id, config = RFQ_ATTACHMENT_CONFIG) {
+  const key = resolveObjectKey(id, config);
   if (!key) return null;
 
   const binding = r2Client.getBinding();
@@ -190,7 +191,7 @@ async function loadAttachment(id) {
       // no case-normalisation dance needed the way S3's header-based
       // metadata requires below.
       const metadata = object.customMetadata || {};
-      return {
+      const result = {
         meta: {
           id,
           fileName: metadata.filename ? decodeURIComponent(metadata.filename) : 'attachment',
@@ -200,6 +201,13 @@ async function loadAttachment(id) {
         },
         content,
       };
+      if (metadata.rfqid && metadata.vendorid) {
+        result.access = {
+          rfqId: decodeURIComponent(metadata.rfqid),
+          vendorId: decodeURIComponent(metadata.vendorid),
+        };
+      }
+      return result;
     }
 
     const response = await client.send(new GetObjectCommand({ Bucket: r2Client.bucket(), Key: key }));
@@ -207,7 +215,7 @@ async function loadAttachment(id) {
     // S3/R2 returns custom metadata keys lowercased regardless of how they
     // were set (HTTP header names are case-insensitive) — read them lowercase.
     const metadata = response.Metadata || {};
-    return {
+    const result = {
       meta: {
         id,
         fileName: metadata.filename ? decodeURIComponent(metadata.filename) : 'attachment',
@@ -217,6 +225,13 @@ async function loadAttachment(id) {
       },
       content,
     };
+    if (metadata.rfqid && metadata.vendorid) {
+      result.access = {
+        rfqId: decodeURIComponent(metadata.rfqid),
+        vendorId: decodeURIComponent(metadata.vendorid),
+      };
+    }
+    return result;
   } catch (err) {
     logger.error(`Failed to read RFQ attachment ${id}`, err, 'RFQ_ATTACHMENT');
     return null;

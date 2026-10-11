@@ -138,6 +138,7 @@ interface AppContextType {
   isLoadingDB: boolean;
   dbConnected: boolean;
   refreshFromDB: () => Promise<void>;
+  refreshRFQs: () => Promise<void>;
   refreshAIFeed: () => Promise<void>;
   refreshActiveBuyerAccount: () => Promise<void>;
 
@@ -639,6 +640,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setAzureHealth(d.azureHealth);
         }
         setDbConnected(true);
+        await refreshRFQs();
+        await refreshVendorCredits();
       }
     } catch (err) {
       console.error('Failed to load reference data:', err);
@@ -2422,6 +2425,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         isLoadingDB,
         dbConnected,
         refreshFromDB,
+        refreshRFQs,
         refreshAIFeed,
         categoryTaxonomy,
         categoryTaxonomyError,

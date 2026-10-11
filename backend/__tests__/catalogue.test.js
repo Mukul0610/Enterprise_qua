@@ -1,6 +1,7 @@
 const request = require('supertest');
 const app = require('../src/app');
 const authService = require('../src/services/authService');
+const storeService = require('../src/services/storeService');
 const { authHeader } = require('./testHelpers');
 
 // A real seeded vendor's own session (v-001), distinct from the generic
@@ -70,6 +71,45 @@ describe('Vendor Item SKU Catalogue API', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data.sku).toBe('SKU-VALVE-200');
     createdProdId = res.body.data.id;
+  });
+
+  test('POST /api/catalogue rejects duplicate SKUs within the vendor catalogue', async () => {
+    const res = await request(app)
+      .post('/api/catalogue')
+      .set(authHeader('vendor'))
+      .send({
+        name: 'Duplicate SKU',
+        sku: 'sku-valve-200',
+        category: 'Valves & Actuators',
+        unitPrice: 100,
+        leadTimeDays: 3,
+        moq: 1,
+      });
+    expect(res.statusCode).toBe(409);
+    expect(res.body.error).toMatch(/already exists/i);
+  });
+
+  test('POST /api/catalogue enforces the 100-product limit on the server', async () => {
+    const catalogueSpy = jest.spyOn(storeService, 'getVendorCatalogue').mockReturnValue(
+      Array.from({ length: 100 }, (_, index) => ({ sku: `SKU-${index}` }))
+    );
+    try {
+      const res = await request(app)
+        .post('/api/catalogue')
+        .set(authHeader('vendor'))
+        .send({
+          name: 'Capacity overflow',
+          sku: 'SKU-CAPACITY-OVERFLOW',
+          category: 'Valves & Actuators',
+          unitPrice: 100,
+          leadTimeDays: 3,
+          moq: 1,
+        });
+      expect(res.statusCode).toBe(409);
+      expect(res.body.error).toMatch(/100 products/i);
+    } finally {
+      catalogueSpy.mockRestore();
+    }
   });
 
   test('POST /api/catalogue requires authentication', async () => {

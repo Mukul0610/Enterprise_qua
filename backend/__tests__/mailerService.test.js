@@ -485,6 +485,78 @@ describe('mailerService', () => {
     });
   });
 
+  describe('buildRfqAutoClosureAcknowledgementEmail / sendRfqAutoClosureAcknowledgementEmail', () => {
+    test('builds the auto-closure acknowledgement email with RFQ details and recipient', async () => {
+      const email = mailerService.buildRfqAutoClosureAcknowledgementEmail('buyer@example.com', {
+        rfq: {
+          rfqNumber: 'RFQ260409000901',
+          title: 'Industrial Pumps',
+          category: 'Pumps',
+          deliveryLocation: 'Mumbai',
+        },
+        quotesCount: 3,
+        recipientName: 'Acme Buyer',
+      });
+
+      expect(email.from).toBeDefined();
+      expect(email.to).toBe('buyer@example.com');
+      expect(email.subject).toContain('RFQ260409000901');
+      expect(email.subject).toContain('Automatically Closed');
+      expect(email.html).toContain('Acme Buyer');
+      expect(email.html).toContain('Industrial Pumps');
+      expect(email.html).toContain('3 vendor(s)');
+      // Button links to the RFQ status in the buyer portal.
+      expect(email.html).toContain('/buyer/rfq-details?rfq=RFQ260409000901');
+
+      const res = await mailerService.sendRfqAutoClosureAcknowledgementEmail('buyer@example.com', {
+        rfq: { rfqNumber: 'RFQ260409000901' },
+        quotesCount: 3,
+      });
+      expect(res).toEqual({ sent: false, reason: 'test environment' });
+    });
+
+    test('falls back to generic greeting and default RFQ fields when optional context is absent', () => {
+      const email = mailerService.buildRfqAutoClosureAcknowledgementEmail('buyer@example.com', {});
+      expect(email.subject).toContain('RFQ');
+      expect(email.html).toContain('Hello,');
+      // Default placeholders for missing category / delivery location.
+      expect(email.html).toContain('0 vendor(s)');
+    });
+  });
+
+  describe('buildComplexRfqPortalRedirectEmail / sendComplexRfqPortalRedirectEmail', () => {
+    test('builds the portal redirect email with the item count and vendor portal link', async () => {
+      const email = mailerService.buildComplexRfqPortalRedirectEmail('vendor@example.com', {
+        rfq: { rfqNumber: 'RFQ260409000902', title: 'Multi-Item Overhaul' },
+        vendorName: 'Apex Supplies',
+        itemCount: 11,
+      });
+
+      expect(email.from).toBeDefined();
+      expect(email.to).toBe('vendor@example.com');
+      expect(email.subject).toContain('RFQ260409000902');
+      expect(email.subject).toContain('11 Items');
+      expect(email.html).toContain('Apex Supplies');
+      expect(email.html).toContain('11 Line Items');
+      // Button links to the vendor quotation form for this opportunity.
+      expect(email.html).toContain('/vendor/quotation-form?opportunity=RFQ260409000902');
+
+      const res = await mailerService.sendComplexRfqPortalRedirectEmail('vendor@example.com', {
+        rfq: { rfqNumber: 'RFQ260409000902' },
+        vendorName: 'Apex Supplies',
+        itemCount: 11,
+      });
+      expect(res).toEqual({ sent: false, reason: 'test environment' });
+    });
+
+    test('falls back to generic greeting and default fields when optional context is absent', () => {
+      const email = mailerService.buildComplexRfqPortalRedirectEmail('vendor@example.com', {});
+      expect(email.subject).toContain('RFQ');
+      expect(email.subject).toContain('0 Items');
+      expect(email.html).toContain('Hello,');
+    });
+  });
+
   describe('buildVendorIssueAcknowledgementEmail / sendVendorIssueAcknowledgementEmail', () => {
     test('builds vendor issue acknowledgment email with buyer in CC and issue details', async () => {
       const email = mailerService.buildVendorIssueAcknowledgementEmail('vendor@example.com', {
@@ -757,11 +829,14 @@ describe('mailerService', () => {
         vendorCode: 'V-1001',
         majorCategory: 'Industrial Valves',
         minorCategories: ['Ball Valves', 'Gate Valves'],
+        contactPhone: '+91 98765 43210',
       });
       expect(email1.to).toBe('vendor@test.com');
       expect(email1.subject).toContain('Tata Steel has mapped your supply categories');
       expect(email1.html).toContain('Rajesh');
       expect(email1.html).toContain('Ball Valves');
+      expect(email1.html).toContain('Mobile Number');
+      expect(email1.html).toContain('+91 98765 43210');
 
       const email2 = mailerService.buildVendorCategoryMappingEmail({
         to: 'vendor2@test.com',
@@ -776,14 +851,26 @@ describe('mailerService', () => {
         recipientName: 'Suresh',
         buyerOrganizationName: 'L&T',
         vendorCode: 'V-2002',
+        contactPhone: '+91 98765 43210',
       });
       expect(email.to).toBe('vendor@test.com');
       expect(email.subject).toBe('Complete Your Category Mapping to Receive Enquiries');
       expect(email.html).toContain('Suresh');
       expect(email.html).toContain('L&T');
+      expect(email.html).toContain('Mobile Number');
+      expect(email.html).toContain('+91 98765 43210');
 
       const emailFallback = mailerService.buildVendorSelfMappingEmail({ to: 'v@test.com' });
       expect(emailFallback.html).toContain('Hello,');
+    });
+
+    test('escapes the vendor phone number rendered in onboarding templates', () => {
+      const email = mailerService.buildVendorSelfMappingEmail({
+        to: 'vendor@test.com',
+        contactPhone: '<script>alert(1)</script>',
+      });
+      expect(email.html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+      expect(email.html).not.toContain('<script>alert(1)</script>');
     });
 
     test('buildVendorCategoryMappingEmail uses a buyer-saved custom subject/message when provided', () => {
@@ -823,6 +910,7 @@ describe('mailerService', () => {
       expect(email.to).toBe('onboard@test.com');
       expect(email.subject).toContain('Welcome to Procucev');
       expect(email.html).toContain('SecretPassword123');
+      expect(email.html).toContain('Mobile Number');
       expect(email.html).toContain('+919876543210');
 
       const emailFallback = mailerService.buildVendorOnboardingEmail({
@@ -1574,5 +1662,227 @@ describe('mailerService', () => {
       expect(res).toEqual({ sent: false, reason: 'test environment' });
     });
   });
-});
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Builder branch coverage: exercise both the populated and the minimal/empty
+  // context sides of the conditional template fragments.
+  // ──────────────────────────────────────────────────────────────────────────
+  describe('email builder conditional-branch coverage', () => {
+    test('buildRfqInviteEmail covers reminder + credit-status banners and the empty-item fallback', () => {
+      const reminder = mailerService.buildRfqInviteEmail('vendor@x.com', {
+        rfq: { rfqNumber: 'RFQ-INV-1', title: 'Pumps', extractedEntities: [] },
+        recipientName: 'Vendor One',
+        buyerEmail: 'buyer@x.com',
+        cc: 'cc@x.com',
+        freeCreditsRemaining: 3,
+        isSubscribed: false,
+        isReminder: true,
+      });
+      expect(reminder.to).toBe('vendor@x.com');
+
+      const subscribed = mailerService.buildRfqInviteEmail('vendor@x.com', {
+        rfq: { rfqNumber: 'RFQ-INV-2', items: [{ name: 'Item', quantity: 1 }] },
+        isSubscribed: true,
+        freeCreditsRemaining: 0,
+      });
+      expect(subscribed.subject).toBeDefined();
+
+      const viaLineItems = mailerService.buildRfqInviteEmail('vendor@x.com', {
+        rfq: { rfqNumber: 'RFQ-INV-3', lineItems: [{ name: 'LI', quantity: 2 }] },
+      });
+      expect(viaLineItems.html).toBeDefined();
+
+      // Multi-item + buyerAccountName => the items.length > 1 sample-format and
+      // the named-buyer greeting branches.
+      const multiItem = mailerService.buildRfqInviteEmail('vendor@x.com', {
+        rfq: {
+          rfqNumber: 'RFQ-INV-4',
+          buyerAccountName: 'Named Buyer Co',
+          extractedEntities: [
+            { itemName: 'Pump', quantity: 2, unit: 'Nos' },
+            { name: 'Valve', quantity: 5 },
+          ],
+        },
+        isReminder: false,
+      });
+      expect(multiItem.html).toContain('Named Buyer Co');
+
+      const bare = mailerService.buildRfqInviteEmail('vendor@x.com', { rfq: {} });
+      expect(bare.html).toBeDefined();
+    });
+
+    test('buildQuoteFailureEmail covers the missingFields fallback and generic greeting', () => {
+      const withMissing = mailerService.buildQuoteFailureEmail('vendor@x.com', {
+        rfqNumber: 'RFQ-QF-1',
+        missingFields: ['Unit Price (₹)', 'Lead Time'],
+      });
+      expect(withMissing.html).toContain('Unit Price (₹)');
+
+      const bare = mailerService.buildQuoteFailureEmail('vendor@x.com', { rfqNumber: 'RFQ-QF-2' });
+      expect(bare.html).toContain('Hello,');
+    });
+
+    test('buildVendorCreditsExhaustedEmail covers no-items, no-budget and no-delivery-location fallbacks', () => {
+      const bare = mailerService.buildVendorCreditsExhaustedEmail('vendor@x.com', {
+        rfq: { rfqNumber: 'RFQ-CE-1' },
+        vendorName: '',
+      });
+      expect(bare.subject).toContain('RFQ-CE-1');
+      expect(bare.html).toContain('Hello,');
+
+      const withBudgetAndItems = mailerService.buildVendorCreditsExhaustedEmail('vendor@x.com', {
+        rfq: {
+          rfqNumber: 'RFQ-CE-2',
+          budget: 500000,
+          deliveryLocation: 'Pune',
+          extractedEntities: [{ itemName: 'Pump', quantity: 2, unit: 'Nos', technicalSpecs: 'ISO' }],
+        },
+        vendorName: 'Credit Vendor',
+      });
+      expect(withBudgetAndItems.html).toContain('Pune');
+    });
+
+    test('buildVendorCategoryMismatchEmail covers absent and present buyerAccountName / vendorName', () => {
+      const bare = mailerService.buildVendorCategoryMismatchEmail('vendor@x.com', { rfqNumber: 'RFQ-CM-1' });
+      expect(bare.html).toContain('Hello,');
+
+      const full = mailerService.buildVendorCategoryMismatchEmail('vendor@x.com', {
+        rfq: { rfqNumber: 'RFQ-CM-2', title: 'Valves', category: 'Valves' },
+        vendorName: 'Mismatch Vendor',
+        vendorCurrentCategory: 'Pumps',
+        buyerAccountName: 'Buyer Co',
+      });
+      expect(full.html).toContain('Mismatch Vendor');
+    });
+
+    test('buildVendorIssueAcknowledgementEmail covers the no-cc / generic-greeting fallbacks', () => {
+      const bare = mailerService.buildVendorIssueAcknowledgementEmail('vendor@x.com', { rfqNumber: 'RFQ-ISS-1' });
+      expect(bare.cc).toBeUndefined();
+      expect(bare.html).toContain('Hello,');
+    });
+
+    test('buildRfqAutoClosureAcknowledgementEmail covers populated category / delivery-location rows', () => {
+      const full = mailerService.buildRfqAutoClosureAcknowledgementEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-AC-1', title: 'Pumps', category: 'Pumps', deliveryLocation: 'Mumbai' },
+        quotesCount: 2,
+        recipientName: 'Buyer One',
+      });
+      expect(full.html).toContain('Mumbai');
+      expect(full.html).toContain('Pumps');
+    });
+
+    test('buildQuoteReceivedEmail covers the 48h-sealed path and both greeting/vendor variants', () => {
+      // Sealed: brand-new, non-v0, non-email RFQ within the 48h window.
+      const sealed = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-QR-1', title: 'Pumps', createdAt: new Date().toISOString() },
+        quote: { vendorName: 'Vendor A', unitPrice: 1000 },
+        recipientName: 'Buyer One',
+      });
+      expect(sealed.subject).toContain('Sealed for 48h');
+      expect(sealed.html).toContain('Vendor A');
+
+      // Sealed with no vendorName / recipientName => generic greeting branches.
+      const sealedBare = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-QR-2', createdAt: new Date().toISOString() },
+        quote: {},
+      });
+      expect(sealedBare.html).toContain('A vendor has');
+    });
+
+    test('buildQuoteReceivedEmail unsealed path covers present and null quote fields', () => {
+      // Unsealed because the RFQ is closed; full quote fields present.
+      const closedFull = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-QR-3', title: 'Valves', status: 'Closed' },
+        quote: { vendorName: 'Vendor B', unitPrice: 500, totalPrice: 1000, leadTimeDays: 7, paymentTerms: 'Net 30', warrantyYears: 2 },
+        recipientName: 'Buyer Two',
+      });
+      expect(closedFull.subject).not.toContain('Sealed');
+      expect(closedFull.html).toContain('Vendor B');
+
+      // Unsealed via email source; null numeric fields exercise the '-' branches.
+      const emailSrc = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-QR-4', source: 'email_gateway' },
+        quote: {},
+      });
+      expect(emailSrc.html).toContain('A vendor has');
+    });
+
+    test('buildVendorCreditsExhaustedEmail covers item spec/location variants per row', () => {
+      const withSpecs = mailerService.buildVendorCreditsExhaustedEmail('vendor@x.com', {
+        rfq: {
+          rfqNumber: 'RFQ-CE-3',
+          deliveryLocation: 'Chennai',
+          extractedEntities: [
+            { name: 'Item NoSpec', quantity: 1 },
+            { itemName: 'Item WithSpec', specifications: 'Grade B', quantity: 3, uom: 'Sets', location: 'Hosur' },
+          ],
+        },
+        vendorName: 'Spec Vendor',
+      });
+      expect(withSpecs.html).toContain('Grade B');
+      expect(withSpecs.html).toContain('Hosur');
+    });
+
+    test('builders invoked in single-object form exercise their default-arg branches', () => {
+      // normalizeToAndContext-based builders accept a single {to, ...} object;
+      // calling them that way (maybeContext undefined) hits the default-arg path.
+      expect(mailerService.buildQuoteFailureEmail({ to: 'v@x.com', rfqNumber: 'RFQ-SOF-1' }).to).toBe('v@x.com');
+      expect(mailerService.buildVendorCreditsExhaustedEmail({ to: 'v@x.com', rfq: { rfqNumber: 'RFQ-SOF-2' } }).to).toBe('v@x.com');
+      expect(mailerService.buildVendorIssueAcknowledgementEmail({ to: 'v@x.com', rfqNumber: 'RFQ-SOF-3' }).to).toBe('v@x.com');
+      expect(mailerService.buildVendorCategoryMismatchEmail({ to: 'v@x.com', rfqNumber: 'RFQ-SOF-4' }).to).toBe('v@x.com');
+      expect(mailerService.buildComplexRfqPortalRedirectEmail({ to: 'v@x.com', rfq: { rfqNumber: 'RFQ-SOF-5' }, itemCount: 12 }).to).toBe('v@x.com');
+      expect(mailerService.buildRfqAutoClosureAcknowledgementEmail({ to: 'b@x.com', rfq: { rfqNumber: 'RFQ-SOF-6' } }).to).toBe('b@x.com');
+      expect(mailerService.buildRfqFinalComparisonEmail({ to: 'b@x.com', rfq: { rfqNumber: 'RFQ-SOF-7' } }).to).toBe('b@x.com');
+    });
+
+    test('buildRatingRevisionEmail covers the generic greeting when recipientName is absent', () => {
+      const bare = mailerService.buildRatingRevisionEmail({
+        to: 'vendor@x.com',
+        vendorName: 'Rated Vendor',
+        buyerCompany: 'Buyer Co',
+        previousRating: 3,
+        newRating: 4,
+        previousScore: 60,
+        newScore: 80,
+      });
+      expect(bare.html).toContain('Hello,');
+      const named = mailerService.buildRatingRevisionEmail({
+        to: 'vendor@x.com',
+        recipientName: 'Vendor Lead',
+        vendorName: 'Rated Vendor',
+        buyerCompany: 'Buyer Co',
+        previousRating: 3,
+        newRating: 4,
+        previousScore: 60,
+        newScore: 80,
+      });
+      expect(named.html).toContain('Vendor Lead');
+    });
+
+    test('buildRfqFinalComparisonEmail covers present and missing quote fields across rows', () => {
+      const email = mailerService.buildRfqFinalComparisonEmail('buyer@x.com', {
+        rfq: { rfqNumber: 'RFQ-FC-9', title: 'Pumps' },
+        quotes: [
+          { vendorName: 'V1', unitPrice: 100, leadTimeDays: 5, warrantyYears: 1, aiMatchScore: 90, complianceStatus: 'Compliant' },
+          { vendorName: 'V2' }, // all optional fields missing => '-' branches
+        ],
+        recipientName: 'Buyer FC',
+      });
+      expect(email.html).toContain('V1');
+      expect(email.html).toContain('V2');
+    });
+
+    test('sendOtpEmail with no expiry argument uses the default 10-minute window on the main module', async () => {
+      const res = await mailerService.sendOtpEmail('nodefault@example.com', '1234');
+      expect(res).toEqual({ sent: false, reason: 'test environment' });
+    });
+
+    test('sendOtpEmail builds the registration subject variant on the main module (deliver no-ops in test env)', async () => {
+      // sendOtpEmail evaluates buildOtpEmail(...) as the argument to deliver()
+      // before deliver's test-env short-circuit, so the registration branch is
+      // exercised on the live module instance even though nothing is sent.
+      const res = await mailerService.sendOtpEmail('newuser@example.com', '4321', 60, { isRegistration: true });
+      expect(res).toEqual({ sent: false, reason: 'test environment' });
+    });
+  });
+});

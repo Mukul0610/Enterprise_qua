@@ -726,6 +726,15 @@ function row(label, value) {
   return `<tr><td style="padding: 6px 10px; font-weight: bold; width: 40%;">${label}</td><td style="padding: 6px 10px;">${value}</td></tr>`;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── OTP ──────────────────────────────────────────────────────────────────────
 
 function buildOtpEmail(to, code, expiresInSeconds, context = {}) {
@@ -1238,6 +1247,104 @@ async function sendRfqFinalComparisonEmail(toOrParams, maybeContext) {
   return deliver(buildRfqFinalComparisonEmail(toOrParams, maybeContext), 'RFQ final comparison email');
 }
 
+// ── RFQ Auto-Closure Immediate Acknowledgement email → owning buyer ─────────
+
+function buildRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext) {
+  const { to, context } = normalizeToAndContext(toOrParams, maybeContext);
+  const { rfq = {}, quotesCount = 0, recipientName } = context;
+  const rfqNumber = rfq.rfqNumber || 'RFQ';
+  const rfqTitle = rfq.title || 'Procurement Requisition';
+  const subject = `All Invited Vendors Quoted – RFQ #${rfqNumber} Automatically Closed`;
+
+  const inner = `
+    <p>${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}</p>
+    <p>Good news! All invited vendors have successfully submitted valid quotations for RFQ <strong>#${rfqNumber}</strong> (<em>${rfqTitle}</em>) before the deadline.</p>
+    
+    <div style="background: #f0fdf4; border: 1px solid #86efac; color: #166534; padding: 14px; border-radius: 6px; margin: 16px 0;">
+      <strong>✓ 100% Vendor Participation Achieved — RFQ Closed Automatically</strong><br/>
+      Total <strong>${quotesCount}</strong> valid quote(s) have been received. In accordance with autonomous procurement workflow rules, this RFQ has been closed immediately to preserve bidding integrity.
+    </div>
+
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin: 16px 0;">
+      <table style="width: 100%; border-collapse: collapse;">
+        ${row('RFQ Number', rfqNumber)}
+        ${row('Requirement', rfqTitle)}
+        ${row('Category', rfq.category || '-')}
+        ${row('Delivery Location', rfq.deliveryLocation || '-')}
+        ${row('Total Bids Received', `${quotesCount} vendor(s)`)}
+        ${row('Status', 'Closed & Sealed')}
+      </table>
+    </div>
+
+    <p style="color: #334155; font-size: 13px;">
+      ⏳ <strong>Comparison Notification:</strong> Your comprehensive quotation comparison matrix and SMS summary are being compiled and will be delivered to your inbox and mobile in <strong>5 minutes</strong>.
+    </p>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${getPublicFrontendUrl()}/buyer/rfq-details?rfq=${encodeURIComponent(rfqNumber)}" style="background: #16a34a; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px;">View RFQ Status in Portal</a>
+    </div>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject,
+    html: wrapEmail('PROCUCEV ENTERPRISE', 'RFQ Auto-Closure Notice', inner),
+  };
+}
+
+async function sendRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext) {
+  return deliver(buildRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext), 'RFQ auto-closure acknowledgement email');
+}
+
+// ── Complex RFQ (>10 items) Portal Redirection Email → vendor ───────────────
+
+function buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
+  const { to, context } = normalizeToAndContext(toOrParams, maybeContext);
+  const { rfq = {}, vendorName, itemCount = 0 } = context;
+  const rfqNumber = rfq.rfqNumber || 'RFQ';
+  const rfqTitle = rfq.title || 'Procurement Requisition';
+  const base = getPublicFrontendUrl();
+  const portalUrl = `${base}/vendor/quotation-form?opportunity=${encodeURIComponent(rfqNumber)}`;
+  const subject = `Portal Bidding Required for RFQ #${rfqNumber} (${itemCount} Items)`;
+
+  const inner = `
+    <p>${vendorName ? `Dear <strong>${vendorName}</strong>,` : 'Hello,'}</p>
+    <p>We received your email quotation submission for RFQ <strong>#${rfqNumber}</strong> (<em>${rfqTitle}</em>).</p>
+    
+    <div style="background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; padding: 14px; border-radius: 6px; margin: 16px 0;">
+      <strong>Notice: Complex RFQ Sourcing Requirement (${itemCount} Line Items)</strong><br/>
+      For procurement requisitions with more than 10 line items, bids must be submitted directly through the Procucev Vendor Portal to ensure precise item-wise pricing, tax computation, and specification compliance.
+    </div>
+
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin: 16px 0;">
+      <h4 style="margin: 0 0 8px 0; color: #0f172a; font-size: 13px;">Simple Steps to Submit Your Bid:</h4>
+      <ol style="margin: 0; padding-left: 20px; color: #334155; font-size: 13px; line-height: 1.6;">
+        <li>Log in to the <strong>Procucev Vendor Portal</strong> using the button below.</li>
+        <li>Download the pre-filled <strong>RFQ Excel Spreadsheet</strong> with all ${itemCount} items.</li>
+        <li>Enter your item-wise unit rates, taxes, and lead times in the Excel sheet.</li>
+        <li>Upload the priced Excel file and attach any supporting compliance/catalogue documents.</li>
+      </ol>
+    </div>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${portalUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px;">Open Vendor Portal & Submit Bid</a>
+    </div>
+    <p style="font-size: 12px; color: #64748b; text-align: center;">If you have any questions, please reply directly or access the clarification desk on the portal.</p>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject,
+    html: wrapEmail('PROCUCEV ENTERPRISE', 'Portal Bidding Required', inner),
+  };
+}
+
+async function sendComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
+  return deliver(buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext), 'Complex RFQ portal redirect email');
+}
+
 // ── Vendor Issue / Query reply notification → vendor (with buyer CC) ─────────
 
 function buildVendorIssueAcknowledgementEmail(toOrParams, maybeContext) {
@@ -1468,6 +1575,7 @@ function buildVendorCategoryMappingEmail({
   customSubject,
   customMessage,
   tempPassword,
+  contactPhone,
 }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
   const minorHtml = categoryList(minorCategories);
@@ -1482,6 +1590,7 @@ function buildVendorCategoryMappingEmail({
       ${row('Buyer', buyer)}
       ${row('Your vendor code', vendorCode)}
       ${row('Registered Email', to)}
+      ${contactPhone ? row('Mobile Number', escapeHtml(contactPhone)) : ''}
       ${tempPassword ? row('Temporary Password', tempPassword) : ''}
       ${row('Primary category', majorCategory)}
     </table>
@@ -1516,7 +1625,7 @@ function buildVendorCategoryMappingEmail({
  * something wrong: the buyer simply had no purchasing history to categorise them
  * from. Nothing about the buyer's spend or other suppliers is disclosed.
  */
-function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName, vendorCode, customSubject, customMessage, tempPassword }) {
+function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName, vendorCode, customSubject, customMessage, tempPassword, contactPhone }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
 
   const defaultMessage = `
@@ -1532,6 +1641,7 @@ function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName,
       ${row('Buyer', buyer)}
       ${row('Your vendor code', vendorCode)}
       ${row('Registered Email', to)}
+      ${contactPhone ? row('Mobile Number', escapeHtml(contactPhone)) : ''}
       ${tempPassword ? row('Temporary Password', tempPassword) : ''}
       ${row('Action required', 'Select your supply categories')}
     </table>
@@ -1584,8 +1694,8 @@ function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, 
           </tr>
           ${contactPhone ? `
           <tr>
-            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Contact Number</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${contactPhone}</td>
+            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Mobile Number</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(contactPhone)}</td>
           </tr>
           ` : ''}
         </table>
@@ -1834,6 +1944,10 @@ module.exports = {
   sendQuoteFailureEmail,
   buildRfqFinalComparisonEmail,
   sendRfqFinalComparisonEmail,
+  buildRfqAutoClosureAcknowledgementEmail,
+  sendRfqAutoClosureAcknowledgementEmail,
+  buildComplexRfqPortalRedirectEmail,
+  sendComplexRfqPortalRedirectEmail,
   buildVendorIssueAcknowledgementEmail,
   sendVendorIssueAcknowledgementEmail,
   buildVendorCategoryMismatchEmail,

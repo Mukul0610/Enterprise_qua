@@ -5,6 +5,7 @@ const { generateStandardRFQEmail } = require('../services/emailService');
 const rfqIngestionService = require('../services/rfqIngestionService');
 const geminiService = require('../services/geminiService');
 const rfqAttachmentService = require('../services/rfqAttachmentService');
+const quoteAttachmentService = require('../services/quoteAttachmentService');
 const rfqSummaryService = require('../services/rfqSummaryService');
 const { logger } = require('../services/loggerService');
 const emailGatewayService = require('../services/emailGatewayService');
@@ -846,6 +847,86 @@ async function downloadRFQAttachment(req, res, next) {
   }
 }
 
+async function uploadQuoteAttachment(req, res, next) {
+  try {
+    if (req.user?.role !== 'vendor') {
+      return res.status(403).json({ success: false, error: 'Only vendors can attach bid documents.' });
+    }
+    const rfq = await storeService.getRFQByIdAsync(req.params.id);
+    const vendor = storeService.getVendorById(req.user.email, 'all');
+    if (!rfq || !(await canAccessRfq(req, rfq)) || !vendor) {
+      return res.status(404).json({ success: false, error: 'RFQ or vendor profile not found.' });
+    }
+
+    const result = await quoteAttachmentService.saveQuoteAttachment(
+      {
+        fileName: req.body?.fileName,
+        mimeType: req.body?.mimeType,
+        content: req.body?.content,
+      },
+      { rfqId: rfq.id, vendorId: vendor.id }
+    );
+    if (result.status !== rfqAttachmentService.ATTACHMENT_STATUS.SAVED) {
+      const status = result.status === rfqAttachmentService.ATTACHMENT_STATUS.WRITE_FAILED ? 500 : 422;
+      return res.status(status).json({
+        success: false,
+        reason: result.status,
+        error: ATTACHMENT_ERRORS[result.status] || ATTACHMENT_ERRORS.WRITE_FAILED,
+      });
+    }
+    return res.status(201).json({ success: true, data: result.attachment });
+  } catch (err) {
+    logger.error('Error storing vendor bid attachment', err, 'RFQ_CONTROLLER');
+    return next(err);
+  }
+}
+
+async function downloadQuoteAttachment(req, res, next) {
+  try {
+    const rfq = await storeService.getRFQByIdAsync(req.params.id);
+    if (!rfq || !(await canAccessRfq(req, rfq))) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    if (req.user?.role === 'buyer' && storeService.isWithin48HourWindow(rfq)) {
+      return res.status(403).json({ success: false, error: 'Bid documents remain sealed during the bidding window.' });
+    }
+
+    const attachmentId = req.params.attachmentId;
+    const quote = (rfq.quotes || []).find((item) =>
+      (item.attachments || []).some((attachment) => attachment.id === attachmentId)
+    );
+    if (!quote) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    if (req.user?.role === 'vendor') {
+      const vendor = storeService.getVendorById(req.user.email, 'all');
+      if (!vendor || quote.vendorId !== vendor.id) {
+        return res.status(404).json({ success: false, error: 'Document not found.' });
+      }
+    }
+
+    const stored = await quoteAttachmentService.loadQuoteAttachment(attachmentId);
+    if (
+      !stored ||
+      stored.access?.rfqId !== rfq.id ||
+      stored.access?.vendorId !== quote.vendorId
+    ) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    res.setHeader('Content-Type', stored.meta.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', stored.content.length);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename="${stored.meta.fileName.replace(/["\r\n]/g, '')}"`);
+    return res.send(stored.content);
+  } catch (err) {
+    logger.error('Error reading vendor bid attachment', err, 'RFQ_CONTROLLER');
+    return next(err);
+  }
+}
+
 /**
  * Apply a buyer's edit to one of their own RFQs.
  *
@@ -954,6 +1035,16 @@ async function addQuote(req, res, next) {
     }
 
     const { unitPrice, totalPrice, leadTimeDays, warrantyYears, paymentTerms, remarks, vendorCategory, complianceStatus, lineItemQuotes } = req.body;
+    const requestedAttachments = req.body?.attachments;
+    if (requestedAttachments !== undefined && !Array.isArray(requestedAttachments)) {
+      return res.status(400).json({ success: false, error: 'Bid documents must be provided as a list.' });
+    }
+    if (
+      requestedAttachments &&
+      (requestedAttachments.length > 5 || requestedAttachments.some((item) => !item?.id))
+    ) {
+      return res.status(400).json({ success: false, error: 'Attach no more than five valid bid documents.' });
+    }
     if (!unitPrice) {
       logger.warn(`Failed to add quote to RFQ ${id}: Missing unitPrice`, { id }, 'RFQ_CONTROLLER');
       return res.status(400).json({ success: false, error: 'unitPrice is required.' });
@@ -1011,6 +1102,19 @@ async function addQuote(req, res, next) {
       });
     }
 
+    const bidAttachments = [];
+    for (const requested of requestedAttachments || []) {
+      const stored = await quoteAttachmentService.loadQuoteAttachment(requested.id);
+      if (
+        !stored ||
+        stored.access?.rfqId !== targetRfq.id ||
+        stored.access?.vendorId !== vendorRecord.id
+      ) {
+        return res.status(400).json({ success: false, error: 'One or more bid documents are invalid or belong to another RFQ.' });
+      }
+      bidAttachments.push(stored.meta);
+    }
+
     const quote = {
       vendorId: vendorRecord.id,
       vendorName: vendorRecord.name,
@@ -1030,6 +1134,7 @@ async function addQuote(req, res, next) {
       // compares portal and email quotes the same way regardless of
       // submission channel.
       ...(Array.isArray(lineItemQuotes) && lineItemQuotes.length > 0 ? { lineItemQuotes } : {}),
+      ...(bidAttachments.length > 0 ? { attachments: bidAttachments } : {}),
     };
     logger.info(`Adding quote from ${quote.vendorName} to RFQ ${id}`, { id, vendorName: quote.vendorName, price: quote.unitPrice }, 'RFQ_CONTROLLER');
     const updatedRFQ = storeService.addQuoteToRFQ(id, quote);
@@ -1263,6 +1368,8 @@ module.exports = {
   pollEmailGateway,
   uploadRFQAttachment,
   downloadRFQAttachment,
+  uploadQuoteAttachment,
+  downloadQuoteAttachment,
   updateRFQ,
   deleteRFQ,
   downloadRFQ,

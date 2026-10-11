@@ -1,4 +1,4 @@
-import { UI_STRINGS, formatString } from '../../lib/uiStrings';
+import { UI_STRINGS, formatString, extractionReasonMessage } from '../../lib/uiStrings';
 
 describe('UI Strings Constants & i18n Format Tests', () => {
   test('exports application title and engine information', () => {
@@ -53,5 +53,45 @@ describe('UI Strings Constants & i18n Format Tests', () => {
     expect(formatString('')).toBe('');
     expect(formatString('Static Text without params')).toBe('Static Text without params');
     expect(formatString('Hello {missingParam}', {})).toBe('Hello {missingParam}');
+  });
+
+  describe('extraction failure strings and extractionReasonMessage', () => {
+    test('exposes a manual-entry action and a reason-specific message for every reason', () => {
+      expect(UI_STRINGS.rfqExtraction.manualEntryAction).toBe('Enter line items manually');
+      expect(UI_STRINGS.rfqExtraction.manualEntryStarted).toBeDefined();
+      const reasons = [
+        'NOT_CONFIGURED',
+        'NO_CONTENT',
+        'DOCUMENT_TOO_LARGE',
+        'UNSUPPORTED_TYPE',
+        'AI_FAILED',
+        'NO_ITEMS_FOUND',
+        'NETWORK',
+      ] as const;
+      for (const reason of reasons) {
+        expect(UI_STRINGS.rfqExtraction.reasonMessages[reason]).toMatch(/manually/i);
+      }
+    });
+
+    test('prefers a non-empty server message over the reason map', () => {
+      expect(extractionReasonMessage('AI_FAILED', 'Server said the file was encrypted.')).toBe(
+        'Server said the file was encrypted.'
+      );
+    });
+
+    test('uses the reason-specific message when no server message is supplied', () => {
+      expect(extractionReasonMessage('DOCUMENT_TOO_LARGE')).toBe(
+        UI_STRINGS.rfqExtraction.reasonMessages.DOCUMENT_TOO_LARGE
+      );
+      // A blank server message is ignored in favour of the mapped reason.
+      expect(extractionReasonMessage('NETWORK', '   ')).toBe(
+        UI_STRINGS.rfqExtraction.reasonMessages.NETWORK
+      );
+    });
+
+    test('falls back to the generic unreadable-response copy for an absent or unknown reason', () => {
+      expect(extractionReasonMessage()).toBe(UI_STRINGS.rfqExtraction.unreadableResponse);
+      expect(extractionReasonMessage(undefined, '')).toBe(UI_STRINGS.rfqExtraction.unreadableResponse);
+    });
   });
 });

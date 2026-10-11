@@ -155,7 +155,16 @@ function parseExtractionJson(text) {
   try {
     return JSON.parse(candidate);
   } catch {
-    return null;
+    // One repair pass for the single most common defect in model JSON: a trailing
+    // comma before a closing } or ]. This only removes a stray separator, so it
+    // cannot turn malformed data into fabricated values; anything still invalid
+    // falls through to null and is reported as a failed extraction (fail-closed).
+    try {
+      const repaired = candidate.replace(/,(\s*[}\]])/g, '$1');
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
   }
 }
 

@@ -554,6 +554,33 @@ describe('Frontend Master Coverage Booster Suite', () => {
     expect(mockPush).toHaveBeenCalledWith('/buyer/dashboard');
   });
 
+  test('BuyerRFQDetailsPage updates its loaded RFQ after a buyer replies to an inquiry', async () => {
+    const updatedRfq = {
+      ...mockRfqs[0],
+      inquiries: [{ ...mockRfqs[0].inquiries[0], reply: 'Delivery in two batches is approved.' }],
+    };
+    (rfqClientModule.replyToRFQInquiry as jest.Mock).mockResolvedValueOnce({
+      success: true,
+      rfq: updatedRfq,
+    });
+
+    render(<BuyerRFQDetailsPage />);
+    await waitFor(() => expect(rfqClientModule.fetchRFQById).toHaveBeenCalledWith(mockQueryParam));
+
+    const replyArea = screen.getByPlaceholderText(/Type clarification response/i);
+    fireEvent.change(replyArea, { target: { value: 'Delivery in two batches is approved.' } });
+    fireEvent.keyDown(replyArea, { key: 'Enter', code: 'Enter', shiftKey: false });
+
+    await waitFor(() => {
+      expect(rfqClientModule.replyToRFQInquiry).toHaveBeenCalledWith(
+        mockRfqs[0].id,
+        mockRfqs[0].inquiries[0].id,
+        expect.objectContaining({ reply: 'Delivery in two batches is approved.' }),
+      );
+    });
+    expect(screen.getAllByText(/Delivery in two batches is approved/i).length).toBeGreaterThan(0);
+  });
+
   test('BuyerQuoteMatrixPage and CategoryManagerQuoteMatrixPage back routing', () => {
     render(<BuyerQuoteMatrixPage />);
     expect(screen.getByText(/Target Delivery/i)).toBeInTheDocument();
@@ -604,6 +631,44 @@ describe('Frontend Master Coverage Booster Suite', () => {
     const selectBtns = screen.queryAllByRole('button', { name: /Select/i });
     if (selectBtns.length > 0) {
       fireEvent.click(selectBtns[0]);
+    }
+  });
+
+  test('quote matrix reports when no RFQs are available', () => {
+    (storeModule.useApp as jest.Mock).mockReturnValueOnce({
+      rfqs: [],
+      selectedRFQForMatrix: mockRfqs[0],
+      currentRole: 'buyer',
+      setSelectedRFQForMatrix: jest.fn(),
+      showToast: mockShowToast,
+      openRFQDeepDive: mockOpenRFQDeepDive,
+      deepDiveModalOpen: false,
+      setDeepDiveModalOpen: mockSetDeepDiveModalOpen,
+      selectedRFQForDeepDive: null,
+    });
+
+    render(<QuoteMatrix scopeToOwnBuyerAccount />);
+
+    expect(screen.getByText('No RFQs Available')).toBeInTheDocument();
+    expect(screen.getByText(/Please create or ingest an RFQ first/i)).toBeInTheDocument();
+  });
+
+  test('matrix route back controls use browser history when a previous page exists', () => {
+    const historyDescriptor = Object.getOwnPropertyDescriptor(window.history, 'length');
+    Object.defineProperty(window.history, 'length', { configurable: true, value: 2 });
+
+    try {
+      const { unmount } = render(<BuyerQuoteMatrixPage />);
+      fireEvent.click(screen.getByRole('button', { name: /Back to Command Center/i }));
+      expect(mockBack).toHaveBeenCalled();
+      unmount();
+
+      render(<CategoryManagerQuoteMatrixPage />);
+      fireEvent.click(screen.getByRole('button', { name: /Back to Command Center/i }));
+      expect(mockBack).toHaveBeenCalledTimes(2);
+    } finally {
+      Reflect.deleteProperty(window.history, 'length');
+      if (historyDescriptor) Object.defineProperty(window.history, 'length', historyDescriptor);
     }
   });
 
@@ -788,5 +853,113 @@ describe('Frontend Master Coverage Booster Suite', () => {
     if (regPincodeInput) {
       fireEvent.change(regPincodeInput, { target: { value: '400701' } });
     }
+  });
+
+  test('LoginPage requests, resends and verifies an email OTP', async () => {
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Email OTP/i }));
+    fireEvent.change(screen.getByLabelText(/Registered Email ID/i), {
+      target: { value: 'CLIENT@PROCUCEV.COM' },
+    });
+    fireEvent.change(screen.getByLabelText(/Registered Mobile Number/i), {
+      target: { value: '9157154504' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Request Login OTP/i }));
+
+    await waitFor(() => expect(authClient.requestOtp).toHaveBeenCalledTimes(1));
+    expect(screen.getByLabelText(/Email Verification Code/i)).toHaveValue('123456');
+
+    fireEvent.click(screen.getByRole('button', { name: /Resend OTP/i }));
+    await waitFor(() => expect(authClient.requestOtp).toHaveBeenCalledTimes(2));
+
+    fireEvent.click(screen.getByRole('button', { name: /Verify & Sign In/i }));
+    await waitFor(() => {
+      expect(authClient.verifyOtp).toHaveBeenCalledWith(
+        'client@procucev.com',
+        '123456',
+        '9157154504',
+      );
+    });
+    expect(mockSetCurrentUserSession).toHaveBeenCalled();
+  });
+
+  test('LoginPage rejects malformed contact details and an incomplete verification code', async () => {
+    render(<LoginPage />);
+
+    fireEvent.click(screen.getByRole('button', { name: /Email OTP/i }));
+    fireEvent.change(screen.getByLabelText(/Registered Email ID/i), {
+      target: { value: 'client@procucev.com' },
+    });
+    fireEvent.change(screen.getByLabelText(/Registered Mobile Number/i), {
+      target: { value: '12345' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Request Login OTP/i }));
+
+    expect(authClient.requestOtp).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText(/Registered Mobile Number/i), {
+      target: { value: '9157154504' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /Request Login OTP/i }));
+    await waitFor(() => expect(authClient.requestOtp).toHaveBeenCalledTimes(1));
+
+    const otpInput = screen.getByLabelText(/Email Verification Code/i);
+    fireEvent.change(otpInput, { target: { value: '' } });
+    fireEvent.submit(otpInput.closest('form')!);
+
+    expect(authClient.verifyOtp).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledTimes(3);
+  });
+
+  test('LoginPage validates registration details and requests dual verification codes', async () => {
+    render(<LoginPage />);
+    const createAccountTab = screen.getAllByRole('button', { name: /Create Account/i })
+      .find((button) => button.getAttribute('type') === 'button');
+    expect(createAccountTab).toBeDefined();
+    fireEvent.click(createAccountTab!);
+
+    fireEvent.change(screen.getByLabelText(/Full Name/i), { target: { value: 'Rajesh Sharma' } });
+    fireEvent.change(screen.getByLabelText(/Company Name/i), { target: { value: 'Larsen & Toubro Ltd' } });
+    fireEvent.change(screen.getByLabelText(/GSTIN/i), { target: { value: '27AAACL1234F1Z5' } });
+    fireEvent.change(screen.getByLabelText(/Pincode/i), { target: { value: '400701' } });
+    fireEvent.change(screen.getByLabelText(/^City/i), { target: { value: 'Mumbai' } });
+    fireEvent.change(screen.getByLabelText(/^State/i), { target: { value: 'Maharashtra' } });
+    fireEvent.change(screen.getByLabelText(/Corporate Email ID/i), {
+      target: { value: 'CLIENT@PROCUCEV.COM' },
+    });
+    fireEvent.change(screen.getByLabelText(/Mobile Number/i), { target: { value: '9157154504' } });
+    fireEvent.change(screen.getByLabelText(/^Password$/i), { target: { value: 'StrongPass123' } });
+
+    const submitButton = screen.getAllByRole('button', { name: /Create Account/i })
+      .find((button) => button.getAttribute('type') === 'submit');
+    expect(submitButton).toBeDefined();
+    fireEvent.click(submitButton!);
+
+    await waitFor(() => {
+      expect(authClient.requestOtp).toHaveBeenCalledWith(
+        'client@procucev.com',
+        '9157154504',
+        'buyer',
+        true,
+      );
+      expect(screen.getByText(/Dual OTP Identity Verification/i)).toBeInTheDocument();
+    });
+  });
+
+  test('LoginPage rejects dummy registration pincodes and clears the warning for an in-progress entry', () => {
+    render(<LoginPage />);
+    const createAccountTab = screen.getAllByRole('button', { name: /Create Account/i })
+      .find((button) => button.getAttribute('type') === 'button');
+    fireEvent.click(createAccountTab!);
+
+    const pincode = screen.getByLabelText(/Pincode/i);
+    fireEvent.change(pincode, { target: { value: '000000' } });
+    expect(screen.getByText('Invalid or dummy PIN code')).toBeInTheDocument();
+
+    fireEvent.change(pincode, { target: { value: '123' } });
+    expect(pincode).toHaveValue('123');
+    expect(screen.queryByText('Invalid or dummy PIN code')).not.toBeInTheDocument();
   });
 });

@@ -9,7 +9,7 @@ import {
   formatFileSize,
   RFQ_DOCUMENT_LIMITS,
 } from '@/lib/constants';
-import { UI_STRINGS, formatString } from '@/lib/uiStrings';
+import { UI_STRINGS, formatString, extractionReasonMessage } from '@/lib/uiStrings';
 import {
   createRFQ,
   extractLineItemsFromDocument,
@@ -509,6 +509,7 @@ export default function IngestionWizard({
   const [pincodeValidating, setPincodeValidating] = useState(false);
   const [pincodePostOffices, setPincodePostOffices] = useState<PostOfficeDetail[]>([]);
   const pincodeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const lineItemsSectionRef = useRef<HTMLElement | null>(null);
 
   const validation = useMemo(() => validateManualRFQForm(form), [form]);
   const formErrors = submitAttempted ? validation.formErrors : {};
@@ -661,20 +662,33 @@ export default function IngestionWizard({
 
         showToast(
           EXTRACTION.successTitle,
-          `Extracted ${extracted.length} line items successfully from "${primaryFile.name}".`,
+          formatString(EXTRACTION.successToast, { accepted: extracted.length, fileName: primaryFile.name }),
           'success'
         );
       } else {
-        setExtractionError(result.error || EXTRACTION.unreadableResponse);
-        showToast(EXTRACTION.fallbackTitle, result.error || EXTRACTION.unreadableResponse, 'warning');
+        const msg = extractionReasonMessage(result.reason, result.error);
+        setExtractionError(msg);
+        showToast(EXTRACTION.fallbackTitle, msg, 'warning');
       }
-    } catch (err: any) {
-      const msg = err?.message || EXTRACTION.unreadableResponse;
+    } catch {
+      const msg = EXTRACTION.unreadableResponse;
       setExtractionError(msg);
       showToast(EXTRACTION.fallbackTitle, msg, 'warning');
     } finally {
       setIsExtracting(false);
     }
+  };
+
+  /**
+   * Recovery action from the failure banner: ensure there is at least one line
+   * item to key into and bring the line-item table into view, so a failed
+   * extraction leads straight into manual entry.
+   */
+  const handleEnterManually = () => {
+    setForm((prev) => (prev.lineItems.length === 0 ? addManualRFQLineItem(prev) : prev));
+    setExtractionError(null);
+    showToast(EXTRACTION.fallbackTitle, EXTRACTION.manualEntryStarted, 'info');
+    lineItemsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   /** Auto-categorize all line items with AI */
@@ -1099,14 +1113,19 @@ export default function IngestionWizard({
         )}
 
         {extractionError && (
-          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700/60 text-xs space-y-1">
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700/60 text-xs space-y-2">
             <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
-              <AlertCircle size={14} /> Document Parsing Notice
+              <AlertCircle size={14} /> {EXTRACTION.fallbackTitle}
             </div>
             <p className="text-[11px] text-amber-900/90 dark:text-amber-200">{extractionError}</p>
-            <p className="text-[11px] text-amber-800/80 dark:text-amber-300 font-semibold">
-              You can key line items directly in the table below.
-            </p>
+            <button
+              type="button"
+              onClick={handleEnterManually}
+              className="btn btn-primary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
+            >
+              <Plus size={13} />
+              <span>{EXTRACTION.manualEntryAction}</span>
+            </button>
           </div>
         )}
       </section>
@@ -1114,7 +1133,7 @@ export default function IngestionWizard({
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* MERGED SECTIONS 1, 2 & 3: RFQ DETAILS, LINE ITEMS & SOURCING  */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <section className="glass-panel p-3.5 sm:p-4 rounded-xl space-y-3 border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-xs">
+      <section ref={lineItemsSectionRef} className="glass-panel p-3.5 sm:p-4 rounded-xl space-y-3 border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-gray-800 pb-2.5">
           <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <FileText size={16} className="text-indigo-600 dark:text-indigo-400" />

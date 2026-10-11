@@ -509,27 +509,28 @@ const RFQ_CATEGORY_CLASSIFICATION = {
 const GEMINI_CONFIG = {
   API_KEY: process.env.GEMINI_API_KEY || '',
   BASE_URL: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models',
-  // Pinned to a specific GA model so extraction quality is reproducible.
-  PRIMARY_MODEL: process.env.GEMINI_PRIMARY_MODEL || 'gemini-3.1-flash-lite',
+  // Primary is the floating "latest Flash" alias so document extraction always
+  // runs on Google's newest Flash model — currently Gemini 3.8 Flash — which
+  // reads unusual layouts and scanned/multimodal documents more reliably than the
+  // older pinned model this used to default to (gemini-3.1-flash-lite). The alias
+  // also means a model retirement upgrades us automatically instead of 404'ing.
+  // Pin GEMINI_PRIMARY_MODEL in the environment if a reproducible exact version
+  // is ever required.
+  PRIMARY_MODEL: process.env.GEMINI_PRIMARY_MODEL || 'gemini-3.8-flash',
   // Tried in order when the primary model errors or is unavailable.
   //
-  // Ordered fastest-first, which is a deliberate departure from
-  // app.gemini.backup-models in the Java service.
+  // Ordered newest-and-fastest first: the newest pinned Flash models give the
+  // best extraction quality, and this endpoint answers a synchronous browser
+  // upload behind a proxy that cuts the request off at 30s, so a fallback must
+  // also finish in the seconds that remain once the primary has used most of the
+  // budget. The lite alias and lite model give a fast last resort.
   //
-  // That service extracts from inbound email in the background, so it can spend
-  // as long as it likes on progressively stronger models. This endpoint answers a
-  // synchronous browser upload behind a proxy that cuts the request off at 30s,
-  // so once the primary has used most of the budget the only useful fallback is
-  // one that can finish in the seconds that remain. Measured on the same
-  // document: gemini-3.6-flash 12.5s, gemini-3.5-flash-lite 1.8s, identical line
-  // items from both.
-  //
-  // The chain still ends on a floating alias. Google retires pinned models: when
-  // gemini-2.0-flash was withdrawn every entry in the old chain 404'd at once and
-  // extraction failed outright instead of degrading.
+  // The chain still includes floating aliases on purpose. Google retires pinned
+  // models: when gemini-2.0-flash was withdrawn every entry in the old chain
+  // 404'd at once and extraction failed outright instead of degrading.
   FALLBACK_MODELS: (
     process.env.GEMINI_FALLBACK_MODELS ||
-    'gemini-flash-latest,gemini-flash-lite-latest,gemini-3.8-flash,gemini-3.6-flash,gemini-3.7-flash'
+    'gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-latest'
   )
     .split(',')
     .map((m) => m.trim())

@@ -3,6 +3,8 @@
  * Single source of truth for UI typography, headings, labels, actions, and template messages.
  */
 
+import type { RFQExtractionReason } from './types';
+
 export const UI_STRINGS = {
   appName: 'Procucev Enterprise',
   engineVersion: 'QUA AI 2.0',
@@ -341,6 +343,34 @@ export const UI_STRINGS = {
     fallbackHint: 'Add each line item below, assign its minor category, then continue to sourcing.',
     unreadableResponse:
       'The extraction service returned an unexpected response. Add the line items manually to continue.',
+
+    // Explicit recovery action shown on the failure banner so the buyer is not
+    // left to guess that the table below is the fallback.
+    manualEntryAction: 'Enter line items manually',
+    manualEntryStarted: 'Add your line items in the table below.',
+
+    /**
+     * Reason-specific guidance for a failed extraction. Keyed by RFQExtractionReason
+     * so the banner explains exactly why the document could not be read and what to
+     * do next, rather than one generic line. Every message ends by pointing at
+     * manual entry, which is the recovery path.
+     */
+    reasonMessages: {
+      NOT_CONFIGURED:
+        'AI extraction is not available on this environment. Enter the line items manually to continue.',
+      NO_CONTENT:
+        'No readable text was found in this file. If it is a scanned image, try a clearer scan, or enter the line items manually.',
+      DOCUMENT_TOO_LARGE:
+        'This document is too large for AI extraction. Upload a smaller file (or a single sheet), or enter the line items manually.',
+      UNSUPPORTED_TYPE:
+        'This file type cannot be read by AI extraction. Upload a spreadsheet (.xlsx/.csv), PDF or image, or enter the line items manually.',
+      AI_FAILED:
+        'The AI could not read this document — its layout may be unusual or the scan unclear. Try a spreadsheet or clearer PDF, or enter the line items manually.',
+      NO_ITEMS_FOUND:
+        'No procurement line items could be identified in this document. Check that quantities are stated, or enter the line items manually.',
+      NETWORK:
+        'The extraction service could not be reached. Check your connection and retry, or enter the line items manually.',
+    } as Record<RFQExtractionReason, string>,
     /**
      * Shown for a transport failure rather than a model failure. A dev-proxy error
      * or a stopped API answers with HTML, and reporting `unreadableResponse` for
@@ -1515,4 +1545,23 @@ export function formatString(template: string, values?: Record<string, string | 
   return template.replace(/\{(\w+)\}/g, (match, key) => {
     return values[key] !== undefined ? String(values[key]) : match;
   });
+}
+
+/**
+ * Resolve a failed-extraction reason to a user-friendly, actionable message.
+ *
+ * Falls back to the generic unreadable-response copy when the reason is absent
+ * or unrecognised, and prefers a specific server-supplied message when one was
+ * returned, so the banner is always clear about why the document could not be
+ * read and what to do next.
+ */
+export function extractionReasonMessage(
+  reason?: RFQExtractionReason,
+  serverMessage?: string
+): string {
+  if (serverMessage && serverMessage.trim()) return serverMessage;
+  if (reason && UI_STRINGS.rfqExtraction.reasonMessages[reason]) {
+    return UI_STRINGS.rfqExtraction.reasonMessages[reason];
+  }
+  return UI_STRINGS.rfqExtraction.unreadableResponse;
 }

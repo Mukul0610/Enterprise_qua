@@ -82,15 +82,25 @@ export interface QuoteComparison {
   remarks: string;
   source?: 'email' | 'portal' | 'web_portal';
   submissionMethod?: 'email' | 'portal' | 'web_portal';
+  submittedAt?: string;
   taxes?: number;
   deliveryCharges?: number;
   deliveryDate?: string;
   lineItemQuotes?: LineItemQuote[];
+  attachments?: RFQQuoteAttachment[];
   scoreBreakdown?: {
     price: { score: number; weighted: number; maxWeight: number };
     leadTime: { score: number; weighted: number; maxWeight: number };
     warranty: { score: number; weighted: number; maxWeight: number };
   };
+}
+
+export interface RFQQuoteAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
 }
 
 export type FollowUpChannel = 'call' | 'whatsapp' | 'sms';
@@ -1775,6 +1785,7 @@ export interface UserSession {
   orgId: string;
   orgName: string;
   mobile?: string;
+  passwordChangeRequired?: boolean;
   authMethod?: 'PASSWORD' | 'EMAIL_OTP' | 'TEMP_PASSWORD' | 'INSTANT_DEMO';
 }
 
@@ -1976,6 +1987,7 @@ export interface AuthResponse {
   demoEmailCode?: string;
   demoMobileCode?: string;
   expiresInSeconds?: number;
+  passwordChangeRequired?: boolean;
 }
 
 export interface LoginCredentials {

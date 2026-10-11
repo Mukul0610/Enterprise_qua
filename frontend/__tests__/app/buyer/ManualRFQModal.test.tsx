@@ -786,6 +786,31 @@ describe('ManualRFQModal: extraction from an attached document', () => {
     expect(within(firstRow()).getByLabelText(MODAL.colItem)).toHaveValue('Centrifugal Water Pump');
   });
 
+  // A machine reason with no server message must resolve to reason-specific
+  // guidance, and the failure banner must offer an explicit manual-entry action.
+  it('shows reason-specific guidance and a manual-entry action on failure', async () => {
+    rfqClient.extractLineItemsFromDocument.mockResolvedValue({
+      success: false,
+      reason: 'UNSUPPORTED_TYPE',
+    });
+
+    renderModal();
+    await attachOne();
+    fireEvent.click(extractBtn());
+
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent(
+        UI_STRINGS.rfqExtraction.reasonMessages.UNSUPPORTED_TYPE
+      )
+    );
+
+    // The recovery action clears the banner and leaves a row to key into.
+    fireEvent.click(screen.getByTestId('manual-enter-fallback'));
+
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+    expect(within(firstRow()).getByLabelText(MODAL.colItem)).toBeInTheDocument();
+  });
+
   // Reported per document, so one unreadable file does not discard the other's rows.
   it('keeps the rows from a readable document when another fails', async () => {
     rfqClient.extractLineItemsFromDocument

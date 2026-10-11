@@ -518,6 +518,30 @@ describe('AuthClient.changePassword', () => {
     expect(JSON.parse(init.body)).toEqual({ currentPassword: CURRENT, newPassword: NEXT });
   });
 
+  test('stores the refreshed session returned after a forced password change', async () => {
+    signIn();
+    const user = {
+      id: 'vendor-1',
+      email: 'vendor@procucev.com',
+      name: 'Vendor',
+      role: 'vendor' as const,
+      orgId: 'org-1',
+      orgName: 'Vendor Org',
+      passwordChangeRequired: false,
+    };
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, token: 'refreshed-token', user }),
+    });
+
+    const res = await authClient.changePassword(CURRENT, NEXT);
+
+    expect(res.success).toBe(true);
+    expect(authClient.getToken()).toBe('refreshed-token');
+    expect(authClient.getSessionUser()).toEqual(user);
+  });
+
   // Nothing is posted without a token: the endpoint requires authentication, so a
   // request would be refused anyway and the real problem is the missing session.
   test('reports an expired session and makes no request when no token is held', async () => {

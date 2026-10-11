@@ -40,6 +40,27 @@ async function authenticate(req, res, next) {
   }
 
   req.user = verification.user;
+
+  const reqPath = (req.originalUrl || req.url || '').split('?')[0];
+  const isAllowedAuthEndpoint =
+    reqPath.endsWith('/api/auth/change-password') ||
+    reqPath.endsWith('/change-password') ||
+    reqPath.endsWith('/api/auth/session') ||
+    reqPath.endsWith('/session') ||
+    reqPath.endsWith('/api/auth/logout') ||
+    reqPath.endsWith('/logout');
+
+  if (
+    verification.user.role === 'vendor' &&
+    verification.user.passwordChangeRequired === true &&
+    !isAllowedAuthEndpoint
+  ) {
+    return res.status(403).json({
+      success: false,
+      passwordChangeRequired: true,
+      error: 'Change your temporary password before continuing.',
+    });
+  }
   return next();
 }
 

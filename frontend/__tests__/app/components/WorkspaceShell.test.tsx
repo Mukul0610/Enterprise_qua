@@ -37,6 +37,7 @@ describe('WorkspaceShell route guard', () => {
     (storeModule.useApp as jest.Mock).mockReturnValue({
       isLoggedIn: true,
       currentRole: 'buyer',
+      currentUserSession: null,
       setCurrentRole,
       setIsLoggedIn,
       setCurrentUserSession,
@@ -87,6 +88,23 @@ describe('WorkspaceShell route guard', () => {
 
     expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
     expect(screen.queryByText('buyer screen')).not.toBeInTheDocument();
+  });
+
+  it('sends first-login vendors to password setup without rendering the workspace', () => {
+    mockStore({
+      isLoggedIn: true,
+      currentRole: 'vendor',
+      currentUserSession: { role: 'vendor', passwordChangeRequired: true },
+    });
+
+    render(
+      <WorkspaceShell role="vendor">
+        <p>vendor screen</p>
+      </WorkspaceShell>
+    );
+
+    expect(mockReplace).toHaveBeenCalledWith('/vendor-first-login');
+    expect(screen.queryByText('vendor screen')).not.toBeInTheDocument();
   });
 
   it('mounts the initial-setup modal only inside the buyer workspace', () => {

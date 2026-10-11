@@ -64,6 +64,25 @@ describe('Gemini document extraction service', () => {
       expect(gemini.parseExtractionJson('Here you go:\n{"items":[]}\nHope that helps.')).toEqual({ items: [] });
     });
 
+    // A trailing comma before a closing ] or } is the single most common defect
+    // in model JSON; the repair pass salvages it without inventing any values.
+    test('repairs a trailing comma before a closing bracket', () => {
+      expect(gemini.parseExtractionJson('{"items":[{"itemDescription":"Pump"},]}')).toEqual({
+        items: [{ itemDescription: 'Pump' }],
+      });
+    });
+
+    test('repairs a trailing comma before a closing brace', () => {
+      expect(gemini.parseExtractionJson('{"documentTitle":"X","items":[],}')).toEqual({
+        documentTitle: 'X',
+        items: [],
+      });
+    });
+
+    test('still returns null when the repair pass cannot fix the JSON', () => {
+      expect(gemini.parseExtractionJson('{"items":[{"a": }]}')).toBeNull();
+    });
+
     test.each(['', '   ', 'no json here', '{ broken', 'null', '{ invalid json syntax }'])('returns null for %p', (input) => {
       expect(gemini.parseExtractionJson(input)).toBeNull();
     });

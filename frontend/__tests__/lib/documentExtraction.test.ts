@@ -422,6 +422,32 @@ describe('isTextFile and isWordDocument', () => {
     expect(req2.documentText).toContain('Industrial Centrifugal Water Pump 500 GPM');
   });
 
+  test('buildExtractionRequest falls back to inlineData when docx text is too short to trust', async () => {
+    const { buildExtractionRequest } = require('@/lib/documentExtraction');
+
+    // A docx whose body recovers fewer than 15 characters is treated as unreadable
+    // text, so the file is sent inline for the model to read directly instead.
+    const fn = 'word/document.xml';
+    const xml = '<w:p><w:t>Pump</w:t></w:p>';
+    const enc = new TextEncoder();
+    const fnBytes = enc.encode(fn);
+    const xmlBytes = enc.encode(xml);
+    const header = new Uint8Array(30 + fnBytes.length + xmlBytes.length);
+    header[0] = 0x50; header[1] = 0x4b; header[2] = 0x03; header[3] = 0x04;
+    header[8] = 0; header[9] = 0;
+    header[18] = xmlBytes.length & 0xff; header[19] = (xmlBytes.length >> 8) & 0xff;
+    header[26] = fnBytes.length & 0xff; header[27] = 0;
+    header.set(fnBytes, 30);
+    header.set(xmlBytes, 30 + fnBytes.length);
+
+    const shortDocx = new File([header.buffer], 'short.docx', { type: '' });
+    const req = await buildExtractionRequest(shortDocx);
+
+    expect(req.documentText).toBeUndefined();
+    expect(req.inlineData).toBeDefined();
+    expect(req.mimeType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  });
+
   test('buildExtractionRequest returns documentText and inlineData for PDF with extracted text >= 15 chars', async () => {
     const { buildExtractionRequest } = require('@/lib/documentExtraction');
     const pdfWithText = new File([

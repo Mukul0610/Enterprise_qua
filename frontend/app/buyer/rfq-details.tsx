@@ -12,7 +12,9 @@ import {
 } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { rfqAttachmentUrl, updateRFQ, replyToRFQInquiry, submitRFQInquiry } from '@/lib/rfqClient';
+import QuoteAttachmentLink from '@/app/components/QuoteAttachmentLink';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
+import { downloadFullQuotesExcel, downloadSingleVendorQuoteExcel } from '@/lib/bidComparisonExport';
 import type { ExtractedEntity, QuoteComparison, RFQAttachment, RFQInquiry, RFQItem, RFQSource } from '@/lib/types';
 import {
   ArrowLeft,
@@ -53,6 +55,9 @@ import {
   Clock,
   CheckCheck,
   MessageCircle,
+  ChevronDown,
+  ChevronUp,
+  Package,
 } from 'lucide-react';
 
 const DETAILS = UI_STRINGS.rfqDetails;
@@ -441,6 +446,19 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
   const [replyModalInquiry, setReplyModalInquiry] = useState<RFQInquiry | null>(null);
   const [replyMessage, setReplyMessage] = useState('');
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
+  const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
+
+  const toggleQuoteExpand = (vendorId: string) => {
+    setExpandedQuoteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendorId)) {
+        next.delete(vendorId);
+      } else {
+        next.add(vendorId);
+      }
+      return next;
+    });
+  };
 
   const checkIsProcucevVendor = useCallback(
     (
@@ -1698,12 +1716,22 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         count={quotes.length}
         toolbar={
           quotes.length > 0 && activeRfq && (!isV0 || currentRole !== 'buyer') ? (
-            <button
-              onClick={() => router.push(`/buyer/quote-matrix?rfq=${encodeURIComponent(activeRfq.rfqNumber)}`)}
-              className="btn btn-primary btn-xs font-bold inline-flex items-center gap-1.5"
-            >
-              <Sparkles size={12} /> Compare Quotations in Matrix ↗
-            </button>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => downloadFullQuotesExcel(activeRfq, quotes)}
+                className="btn btn-secondary btn-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                title="Download complete vendor quotations breakdown in Excel"
+              >
+                <Download size={12} /> Download Quotes (Excel)
+              </button>
+              <button
+                onClick={() => router.push(`/buyer/quote-matrix?rfq=${encodeURIComponent(activeRfq.rfqNumber)}`)}
+                className="btn btn-primary btn-xs font-bold inline-flex items-center gap-1.5"
+              >
+                <Sparkles size={12} /> Compare Quotations in Matrix ↗
+              </button>
+            </div>
           ) : undefined
         }
       >
@@ -1756,6 +1784,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                     <th className="px-4 py-2.5">{DETAILS.colLeadTime}</th>
                     <th className="px-4 py-2.5">{DETAILS.colCompliance}</th>
                     <th className="px-4 py-2.5 text-center">{DETAILS.colMatchScore}</th>
+                    <th className="px-4 py-2.5">Bid Documents & Terms</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1764,23 +1793,120 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                     const leadPts = quote.scoreBreakdown?.leadTime?.weighted ?? Math.round(Math.max(0, Math.min(100, 100 - (quote.leadTimeDays || 14) * 2)) * 0.3);
                     const warPts = quote.scoreBreakdown?.warranty?.weighted ?? Math.round(Math.min(100, Math.max(0, 50 + (quote.warrantyYears || 1) * 10)) * 0.25);
                     const displayScore = quote.aiMatchScore ?? (pricePts + leadPts + warPts);
+                    const hasLineItems = Array.isArray(quote.lineItemQuotes) && quote.lineItemQuotes.length > 0;
+                    const isExpanded = expandedQuoteIds.has(quote.vendorId);
 
                     return (
-                      <tr
-                        key={quote.vendorId}
-                        className={`border-t border-slate-100 dark:border-gray-800/70 ${
-                          index % 2 === 1 ? 'bg-slate-50/50 dark:bg-gray-950/30' : ''
-                        }`}
-                      >
-                        <td className="px-4 py-2.5 font-semibold text-slate-900 dark:text-white">{quote.vendorName}</td>
-                        <td className="px-4 py-2.5 text-right mono">{formatCurrency(quote.unitPrice)}</td>
-                        <td className="px-4 py-2.5 text-right mono font-bold">{formatCurrency(quote.totalPrice)}</td>
-                        <td className="px-4 py-2.5">{formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}</td>
-                        <td className="px-4 py-2.5 text-slate-500 dark:text-gray-400">{quote.complianceStatus}</td>
-                        <td className="px-4 py-2.5 text-center mono font-bold text-emerald-700 dark:text-emerald-400">
-                          {displayScore}%
-                        </td>
-                      </tr>
+                      <React.Fragment key={quote.vendorId}>
+                        <tr
+                          className={`border-t border-slate-100 dark:border-gray-800/70 ${
+                            index % 2 === 1 ? 'bg-slate-50/50 dark:bg-gray-950/30' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-2.5">
+                            <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                              <span>{quote.vendorName}</span>
+                              {hasLineItems && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleQuoteExpand(quote.vendorId)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 transition-colors"
+                                  title="Toggle itemized line items"
+                                >
+                                  <span>{quote.lineItemQuotes!.length} items</span>
+                                  {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                </button>
+                              )}
+                            </div>
+                            {quote.vendorCategory && (
+                              <div className="text-[10px] text-slate-400 dark:text-gray-500">{quote.vendorCategory}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-right mono">{formatCurrency(quote.unitPrice)}</td>
+                          <td className="px-4 py-2.5 text-right mono font-bold">{formatCurrency(quote.totalPrice)}</td>
+                          <td className="px-4 py-2.5">{formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}</td>
+                          <td className="px-4 py-2.5 text-slate-500 dark:text-gray-400">{quote.complianceStatus}</td>
+                          <td className="px-4 py-2.5 text-center mono font-bold text-emerald-700 dark:text-emerald-400">
+                            {displayScore}%
+                          </td>
+                          <td className="px-4 py-2.5 min-w-56">
+                            <div className="space-y-1.5">
+                              <div className="text-[10px] text-slate-500 dark:text-gray-400">
+                                {quote.paymentTerms || 'Payment terms not specified'}
+                                {quote.submittedAt ? ` · Submitted ${formatIndianDateTime(quote.submittedAt)}` : ''}
+                              </div>
+                              {quote.remarks && <p className="text-[10px] text-slate-600 dark:text-gray-300 break-words">{quote.remarks}</p>}
+                              {(quote.attachments || []).map((attachment) => (
+                                <QuoteAttachmentLink
+                                  key={attachment.id}
+                                  rfqId={activeRfq?.id || activeRfq?.rfqNumber || ''}
+                                  attachment={attachment}
+                                />
+                              ))}
+                              <div className="pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+                                  title="Download this vendor quote as Excel"
+                                >
+                                  <Download size={11} />
+                                  <span>Download Quote (Excel)</span>
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                        {hasLineItems && isExpanded && (
+                          <tr className="bg-slate-50/80 dark:bg-gray-950/60 border-t border-slate-100 dark:border-gray-800">
+                            <td colSpan={7} className="px-6 py-3">
+                              <div className="rounded-lg border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-3 shadow-inner">
+                                <div className="text-[11px] font-bold text-slate-700 dark:text-gray-300 mb-2 flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5">
+                                    <Package className="w-3.5 h-3.5 text-blue-500" />
+                                    <span>Line Item Breakdown ({quote.lineItemQuotes!.length} items)</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                                  >
+                                    <Download size={11} /> Export Items Excel
+                                  </button>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-[11px] text-left">
+                                    <thead className="text-[10px] uppercase text-slate-400 dark:text-gray-500 border-b border-slate-100 dark:border-gray-800 font-semibold">
+                                      <tr>
+                                        <th className="py-1.5 px-2.5">Item Name</th>
+                                        <th className="py-1.5 px-2.5 text-right">Quantity</th>
+                                        <th className="py-1.5 px-2.5 text-right">Unit Price</th>
+                                        <th className="py-1.5 px-2.5 text-right">Total Price</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 dark:divide-gray-800/60">
+                                      {quote.lineItemQuotes!.map((li, liIdx) => (
+                                        <tr key={li.lineItemId || liIdx} className="hover:bg-slate-50/50 dark:hover:bg-gray-800/30">
+                                          <td className="py-1.5 px-2.5 font-medium text-slate-800 dark:text-gray-200">{li.itemName}</td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-600 dark:text-gray-400 mono">
+                                            {li.quantity.toLocaleString('en-IN')} {li.unit || ''}
+                                          </td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-800 dark:text-gray-200 mono font-medium">
+                                            {formatCurrency(li.unitPrice)}
+                                          </td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-900 dark:text-white mono font-bold">
+                                            {formatCurrency(li.totalPrice)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -1794,6 +1920,8 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                 const leadPts = quote.scoreBreakdown?.leadTime?.weighted ?? Math.round(Math.max(0, Math.min(100, 100 - (quote.leadTimeDays || 14) * 2)) * 0.3);
                 const warPts = quote.scoreBreakdown?.warranty?.weighted ?? Math.round(Math.min(100, Math.max(0, 50 + (quote.warrantyYears || 1) * 10)) * 0.25);
                 const displayScore = quote.aiMatchScore ?? (pricePts + leadPts + warPts);
+                const hasLineItems = Array.isArray(quote.lineItemQuotes) && quote.lineItemQuotes.length > 0;
+                const isExpanded = expandedQuoteIds.has(quote.vendorId);
 
                 return (
                   <div key={quote.vendorId} className="p-4 space-y-2.5">
@@ -1814,6 +1942,61 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                       {formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}
                     </CardField>
                     <CardField label={DETAILS.colCompliance}>{quote.complianceStatus}</CardField>
+                    <div className="col-span-2 rounded-lg bg-slate-50 dark:bg-gray-950/50 p-2.5 space-y-1.5">
+                      <p className="text-[10px] text-slate-600 dark:text-gray-300">
+                        {quote.paymentTerms || 'Payment terms not specified'}
+                        {quote.submittedAt ? ` · Submitted ${formatIndianDateTime(quote.submittedAt)}` : ''}
+                      </p>
+                      {quote.remarks && <p className="text-[10px] text-slate-500 dark:text-gray-400">{quote.remarks}</p>}
+                      {(quote.attachments || []).map((attachment) => (
+                        <QuoteAttachmentLink
+                          key={attachment.id}
+                          rfqId={activeRfq?.id || activeRfq?.rfqNumber || ''}
+                          attachment={attachment}
+                        />
+                      ))}
+                      <div className="pt-1 border-t border-slate-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          <Download size={11} /> Download Vendor Quote (Excel)
+                        </button>
+                      </div>
+                    </div>
+                    {hasLineItems && (
+                      <div className="col-span-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => toggleQuoteExpand(quote.vendorId)}
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-gray-800 text-[11px] font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Package className="w-3.5 h-3.5 text-blue-500" />
+                            <span>Line Item Breakdown ({quote.lineItemQuotes!.length} items)</span>
+                          </span>
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                        {isExpanded && (
+                          <div className="mt-2 space-y-1.5 border-t border-slate-200 dark:border-gray-800 pt-2">
+                            {quote.lineItemQuotes!.map((li, liIdx) => (
+                              <div key={li.lineItemId || liIdx} className="p-2 rounded bg-slate-50 dark:bg-gray-950/40 text-[10px] flex items-center justify-between gap-2">
+                                <div className="truncate">
+                                  <div className="font-semibold text-slate-800 dark:text-gray-200 truncate">{li.itemName}</div>
+                                  <div className="text-slate-500 dark:text-gray-400 mono">
+                                    {li.quantity.toLocaleString('en-IN')} {li.unit || ''} × {formatCurrency(li.unitPrice)}
+                                  </div>
+                                </div>
+                                <div className="font-bold text-slate-900 dark:text-white mono shrink-0">
+                                  {formatCurrency(li.totalPrice)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 );

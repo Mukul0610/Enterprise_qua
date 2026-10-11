@@ -128,8 +128,18 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
     jest.useRealTimers();
   });
 
-  test('Step 4, 5, 6, 7: Quote submission emails directly to buyer, sets Quotes Received, hides quotes from portal, bypasses 48h restriction', async () => {
-    const emailQuoteSpy = jest.spyOn(mailerService, 'sendQuoteReceivedEmail').mockResolvedValue({ sent: true });
+  test('Step 4, 5, 6, 7: Final invited vendor quote auto-closes the RFQ, emails the buyer an acknowledgement, hides quotes from portal, bypasses 48h restriction', async () => {
+    jest.useFakeTimers();
+    // When every invited vendor has quoted, the RFQ auto-closes and the buyer
+    // receives the auto-closure acknowledgement email (not the per-quote
+    // "Quotes Received" email). The 5-minute comparison email/SMS fire later.
+    const autoClosureSpy = jest
+      .spyOn(mailerService, 'sendRfqAutoClosureAcknowledgementEmail')
+      .mockResolvedValue({ sent: true });
+    const comparisonEmailSpy = jest
+      .spyOn(mailerService, 'sendRfqFinalComparisonEmail')
+      .mockResolvedValue({ sent: true });
+    jest.spyOn(smsService, 'sendBuyerComparisonSms').mockResolvedValue({ success: true });
 
     const rfq = storeService.createRFQ({
       title: 'Centrifugal Pumps Sourcing',
@@ -140,7 +150,10 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
       createdAt: new Date().toISOString(), // Brand new RFQ (within 48h)
     }, buyerAccount);
 
-    // Step 4: Vendor submits quote
+    // The single matched vendor is the only invited vendor on this RFQ.
+    expect(rfq.assignedVendors.some((v) => v.id === matchedVendor.id)).toBe(true);
+
+    // Step 4: Vendor submits quote — this is 100% of invited vendors.
     const quotePayload = {
       vendorId: matchedVendor.id,
       vendorName: matchedVendor.name,
@@ -152,17 +165,31 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
 
     const updatedRfq = storeService.addQuoteToRFQ(rfq.id, quotePayload);
 
-    // Step 4 Verification: Quote is sent immediately directly to buyer's email (no 48h delay)
-    expect(emailQuoteSpy).toHaveBeenCalledWith(
+    // Step 4 Verification: buyer receives the immediate auto-closure acknowledgement email.
+    expect(autoClosureSpy).toHaveBeenCalledWith(
       BUYER_EMAIL,
       expect.objectContaining({
         rfq: expect.objectContaining({ rfqNumber: rfq.rfqNumber }),
-        quote: expect.objectContaining({ totalPrice: 120000 }),
+        quotesCount: 1,
       })
     );
 
-    // Step 5: Portal status updates to "Quotes Received"
-    expect(updatedRfq.status).toBe('Quotes Received');
+    // Step 5: 100% invited participation auto-closes the RFQ.
+    expect(updatedRfq.status).toBe('Closed');
+    expect(updatedRfq.autoClosedReason).toBe('All invited vendors submitted quotes');
+
+    // The scheduled 5-minute comparison dispatch fires after the delay (the
+    // closure also sends an immediate comparison email via notifyOfRFQClosure,
+    // so advancing the timer adds one more dispatch).
+    const callsBeforeAdvance = comparisonEmailSpy.mock.calls.length;
+    jest.advanceTimersByTime(5 * 60 * 1000 + 100);
+    expect(comparisonEmailSpy.mock.calls.length).toBeGreaterThan(callsBeforeAdvance);
+    expect(comparisonEmailSpy).toHaveBeenCalledWith(
+      BUYER_EMAIL,
+      expect.objectContaining({ rfq: expect.objectContaining({ rfqNumber: rfq.rfqNumber }) })
+    );
+
+    jest.useRealTimers();
 
     // Step 6 & 7: Buyer portal view verification via API
     const buyerViewRes = await request(app)
@@ -170,7 +197,7 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
       .set(buyerAuthHeader);
 
     expect(buyerViewRes.status).toBe(200);
-    expect(buyerViewRes.body.data.status).toBe('Quotes Received');
+    expect(buyerViewRes.body.data.status).toBe('Closed');
     // Step 6: Quotes not displayed in portal for comparison & vendor details not visible
     expect(buyerViewRes.body.data.quotes).toEqual([]);
     expect(buyerViewRes.body.data.assignedVendors).toEqual([]);

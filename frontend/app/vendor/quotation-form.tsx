@@ -6,7 +6,8 @@ import { useApp } from '@/lib/store';
 import { authClient } from '@/lib/authClient';
 import { rfqAttachmentUrl, submitRFQInquiry } from '@/lib/rfqClient';
 import { downloadVendorQuotationExcel } from '@/lib/bidComparisonExport';
-import { VendorOpportunity } from '@/lib/types';
+import type { RFQQuoteAttachment, VendorOpportunity } from '@/lib/types';
+import * as XLSX from 'xlsx';
 import {
   ArrowLeft,
   Mail,
@@ -24,10 +25,12 @@ import {
   IndianRupee,
   Send,
   Download,
+  Upload,
   AlertCircle,
   MessageSquare,
   HelpCircle,
   Search,
+  Paperclip,
 } from 'lucide-react';
 
 interface QuotationFormProps {
@@ -262,6 +265,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [bidWarrantyYears, setBidWarrantyYears] = useState('');
   const [bidPaymentTerms, setBidPaymentTerms] = useState('45 Days Net');
   const [bidRemarks, setBidRemarks] = useState('');
+  const [bidDocuments, setBidDocuments] = useState<File[]>([]);
+  const [uploadedBidDocuments, setUploadedBidDocuments] = useState<RFQQuoteAttachment[]>([]);
   const [isSubmittingQuote, setIsSubmittingQuote] = useState(false);
   const [submitModalError, setSubmitModalError] = useState<string | null>(null);
   const [submitModalSuccess, setSubmitModalSuccess] = useState<{
@@ -277,6 +282,48 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [inquiryMessage, setInquiryMessage] = useState('');
   const [isInquiring, setIsInquiring] = useState(false);
   const [inquirySuccess, setInquirySuccess] = useState(false);
+  const excelInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadPricedExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !biddingOn) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet);
+
+        const newPrices: Record<string, string> = { ...bidLineItemPrices };
+        let matchedCount = 0;
+
+        jsonRows.forEach((row) => {
+          const rawItem = String(row['Item'] || row['Item Name'] || row['Description'] || row['Item Description'] || '').trim().toLowerCase();
+          const rawRate = row['Rate (INR)'] ?? row['Rate'] ?? row['Unit Price (INR)'] ?? row['Unit Price'] ?? row['Price'];
+          const rateVal = Number(rawRate);
+
+          if (rawItem && Number.isFinite(rateVal) && rateVal > 0) {
+            const matched = (biddingOn.lineItems || []).find(
+              (li) => (li.description || '').trim().toLowerCase() === rawItem || (li.id && String(row['Item ID'] || '').trim() === li.id)
+            );
+            if (matched) {
+              newPrices[matched.id] = String(rateVal);
+              matchedCount++;
+            }
+          }
+        });
+
+        setBidLineItemPrices(newPrices);
+        showToast('Excel Imported', `Successfully imported pricing for ${matchedCount} item(s).`, 'success');
+      } catch (err: any) {
+        showToast('Import Failed', err?.message || 'Could not parse the uploaded Excel file.', 'warning');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
 
   const openBidForm = (opp: VendorOpportunity) => {
     setBiddingOn(opp);
@@ -286,6 +333,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
     setBidWarrantyYears('');
     setBidPaymentTerms('45 Days Net');
     setBidRemarks('');
+    setBidDocuments([]);
+    setUploadedBidDocuments([]);
     setSubmitModalError(null);
     setSubmitModalSuccess(null);
   };
@@ -404,6 +453,11 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       totalPrice = lineItemQuotes.reduce((sum, li) => sum + li.totalPrice, 0);
       const totalQty = rfqLineItems.reduce((sum, li) => sum + (li.quantity || 0), 0);
       unitPrice = totalQty > 0 ? totalPrice / totalQty : totalPrice;
+      if (!Number.isFinite(unitPrice) || !Number.isFinite(totalPrice)) {
+        setSubmitModalError('The entered line-item rates produce an invalid quotation total.');
+        showToast('Validation Error', 'Check the line-item quantities and rates.', 'warning');
+        return;
+      }
     } else {
       unitPrice = Number(bidUnitPrice);
       if (!unitPrice || unitPrice <= 0) {
@@ -413,10 +467,46 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       }
       const quantity = rfqLineItems[0]?.quantity || 1;
       totalPrice = unitPrice * quantity;
+      if (!Number.isFinite(totalPrice)) {
+        setSubmitModalError('The entered rate produces an invalid quotation total.');
+        showToast('Validation Error', 'Check the rate and quantity.', 'warning');
+        return;
+      }
     }
 
     setIsSubmittingQuote(true);
     try {
+      const attachments = [...uploadedBidDocuments];
+      const missingMimeType = bidDocuments.find((file) => !file.type);
+      if (missingMimeType) throw new Error(`${missingMimeType.name} has an unsupported file type.`);
+      for (const file of bidDocuments.slice(attachments.length)) {
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || '');
+            const encoded = result.split(',')[1];
+            if (!encoded) reject(new Error(`Could not read ${file.name}.`));
+            else resolve(encoded);
+          };
+          reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+          reader.readAsDataURL(file);
+        });
+        const uploadResponse = await fetch(
+          `/api/rfqs/${encodeURIComponent(biddingOn.rfqNumber)}/quote-attachments`,
+          {
+            method: 'POST',
+            headers: authHeaders(),
+            body: JSON.stringify({ fileName: file.name, mimeType: file.type, content }),
+          }
+        );
+        const uploadData = await uploadResponse.json();
+        if (!uploadResponse.ok || !uploadData.success || !uploadData.data) {
+          throw new Error(uploadData.error || `Could not upload ${file.name}.`);
+        }
+        attachments.push(uploadData.data as RFQQuoteAttachment);
+        setUploadedBidDocuments([...attachments]);
+      }
+
       const res = await fetch(`/api/rfqs/${encodeURIComponent(biddingOn.rfqNumber)}/quotes`, {
         method: 'POST',
         headers: authHeaders(),
@@ -428,6 +518,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
           warrantyYears: Number(bidWarrantyYears) || 0,
           paymentTerms: bidPaymentTerms,
           remarks: bidRemarks,
+          ...(attachments.length ? { attachments } : {}),
         }),
       });
       const data = await res.json();
@@ -462,6 +553,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
         source: isDirect ? 'buyer_uploaded' : 'quote_submitted',
       };
       setBiddingOn(null);
+      setBidDocuments([]);
+      setUploadedBidDocuments([]);
       setSelectedBuyerModal({ ...buyerDetails, rfqNumber: targetRfqNum });
       await refreshFromDB();
       if (onSubmitSuccess) onSubmitSuccess();
@@ -1161,7 +1254,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       {/* ═══════════════════════════════════════════════════════════════ */}
       {biddingOn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-xs text-slate-800 dark:text-gray-200 animate-scale-up">
+          <div className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-2xl p-4 sm:p-6 max-w-6xl max-h-[92vh] overflow-y-auto w-full shadow-2xl space-y-4 text-xs text-slate-800 dark:text-gray-200 animate-scale-up">
             <div className="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-gray-800">
               <div className="flex items-center gap-2">
                 <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 text-emerald-600 dark:text-emerald-400">
@@ -1215,29 +1308,55 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                 <div className="space-y-3">
                   {(biddingOn.lineItems?.length || 0) > 1 ? (
                     <div>
-                      <div className="flex items-center justify-between mb-1">
+                      {(biddingOn.lineItems?.length || 0) > 10 && (
+                        <div className="mb-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 text-blue-800 dark:text-blue-300 text-[11px] flex items-center justify-between gap-2 flex-wrap">
+                          <span className="font-semibold flex items-center gap-1.5">
+                            <Info size={14} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                            Complex RFQ ({biddingOn.lineItems.length} items): For faster submission, download the Excel sheet, enter your rates, and upload it back.
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
                         <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                          Line Item Pricing *
+                          Line Item Pricing ({biddingOn.lineItems.length} items) *
                         </label>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            downloadVendorQuotationExcel(biddingOn.rfqNumber, biddingOn.lineItems || [], bidLineItemPrices)
-                          }
-                          className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1"
-                        >
-                          <Download size={11} /> Export as Excel
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="file"
+                            ref={excelInputRef}
+                            onChange={handleUploadPricedExcel}
+                            accept=".xlsx,.xls,.csv"
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => excelInputRef.current?.click()}
+                            className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-800 flex items-center gap-1 transition-colors"
+                            title="Upload filled Excel sheet with item rates"
+                          >
+                            <Upload size={11} /> Upload Priced Excel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadVendorQuotationExcel(biddingOn.rfqNumber, biddingOn.lineItems || [], bidLineItemPrices)
+                            }
+                            className="text-[10px] font-bold text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 px-2 py-1 rounded border border-indigo-200 dark:border-indigo-800 flex items-center gap-1 transition-colors"
+                            title="Download pre-filled RFQ Excel sheet"
+                          >
+                            <Download size={11} /> Export as Excel (Download RFQ)
+                          </button>
+                        </div>
                       </div>
                       <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-gray-800">
-                        <table className="w-full text-left text-[11px] border-collapse">
+                        <table className="w-full min-w-[960px] text-left text-[11px] border-collapse">
                           <thead>
                             <tr className="bg-slate-50 dark:bg-gray-950/60 text-slate-500 dark:text-gray-400 border-b border-slate-200 dark:border-gray-800">
                               <th className="px-2.5 py-2 text-[10px] uppercase font-bold">Item</th>
                               <th className="px-2.5 py-2 text-[10px] uppercase font-bold text-right">Qty</th>
                               <th className="px-2.5 py-2 text-[10px] uppercase font-bold">UOM</th>
-                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold">Rate (₹)</th>
-                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold text-right">Amount (₹)</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold min-w-[10rem]">Rate (₹)</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold text-right min-w-[10rem]">Amount (₹)</th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-slate-100 dark:divide-gray-800">
@@ -1262,7 +1381,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                                       }
                                       disabled={isSubmittingQuote || biddingOn.status === 'Closed' || biddingOn.status === 'Expired'}
                                       placeholder="0"
-                                      className="w-24 px-2 py-1 rounded-lg border border-slate-200 dark:border-gray-800 text-[11px] font-mono font-bold bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white"
+                                      className="w-36 px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-800 text-[12px] font-mono font-bold bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white"
                                     />
                                   </td>
                                   <td className="px-2.5 py-1.5 text-right mono font-bold text-slate-900 dark:text-white">
@@ -1351,6 +1470,57 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                       placeholder="Special notes, inclusions, exclusions, or freight details..."
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-gray-800 text-xs font-medium bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white resize-none"
                     />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                      Bid Documents (up to 5 files, 10 MB each)
+                    </label>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.xls,.xlsx,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg"
+                      disabled={isSubmittingQuote || biddingOn.status === 'Closed' || biddingOn.status === 'Expired'}
+                      onChange={(event) => {
+                        const files = Array.from(event.target.files || []);
+                        if (files.length > 5) {
+                          showToast('Too Many Documents', 'Attach no more than five documents.', 'warning');
+                          event.target.value = '';
+                          return;
+                        }
+                        const oversized = files.find((file) => file.size > 10 * 1024 * 1024);
+                        if (oversized) {
+                          showToast('Document Too Large', `${oversized.name} exceeds the 10 MB limit.`, 'warning');
+                          event.target.value = '';
+                          return;
+                        }
+                        setBidDocuments(files);
+                        setUploadedBidDocuments([]);
+                      }}
+                      className="block w-full rounded-xl border border-slate-200 dark:border-gray-800 bg-slate-50 dark:bg-gray-950 px-3 py-2 text-xs"
+                    />
+                    {bidDocuments.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {bidDocuments.map((file, index) => (
+                          <li key={`${file.name}-${file.lastModified}`} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-slate-600 dark:text-gray-300">
+                              <Paperclip size={12} className="shrink-0" /> {file.name}
+                              <span className="text-slate-400">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isSubmittingQuote}
+                              onClick={() => {
+                                setBidDocuments((previous) => previous.filter((_, fileIndex) => fileIndex !== index));
+                                setUploadedBidDocuments([]);
+                              }}
+                              className="text-rose-600 hover:underline"
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
 

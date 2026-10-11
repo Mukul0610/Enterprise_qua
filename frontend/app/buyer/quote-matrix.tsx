@@ -7,7 +7,8 @@ import { formatCurrency, formatIndianDate } from '@/lib/constants';
 import { UI_STRINGS } from '@/lib/uiStrings';
 import type { RFQItem, QuoteComparison } from '@/lib/types';
 import { PurchaseOrderModal, RFQFollowUpDeepDiveModal } from '@/app/components/Modals';
-import { downloadBidComparisonExcel } from '@/lib/bidComparisonExport';
+import { downloadBidComparisonExcel, downloadFullQuotesExcel, downloadSingleVendorQuoteExcel } from '@/lib/bidComparisonExport';
+import QuoteAttachmentLink from '@/app/components/QuoteAttachmentLink';
 import {
   Sparkles,
   CheckCircle2,
@@ -430,6 +431,27 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                   ))}
                 </tr>
 
+                {/* Bid Documents */}
+                <tr className="hover:bg-slate-50/80 dark:hover:bg-gray-800/20">
+                  <td className="p-4 font-bold text-slate-800 dark:text-gray-200">Bid Documents</td>
+                  {quotes.map((quote) => (
+                    <td
+                      key={quote.vendorId}
+                      className={`p-4 ${quote.isPreferred ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-x-2 border-indigo-600 dark:border-indigo-500' : ''}`}
+                    >
+                      <div className="space-y-1">
+                        {(quote.attachments || []).length === 0 ? (
+                          <span className="text-[11px] text-slate-400">No documents attached</span>
+                        ) : (
+                          (quote.attachments || []).map((attachment) => (
+                            <QuoteAttachmentLink key={attachment.id} rfqId={currentRFQ.id} attachment={attachment} />
+                          ))
+                        )}
+                      </div>
+                    </td>
+                  ))}
+                </tr>
+
                 {/* Selection Action Band */}
                 <tr className="bg-slate-100/70 dark:bg-gray-900/60">
                   <td className="p-4 font-bold text-slate-500 dark:text-gray-400 text-[11px] uppercase">
@@ -468,36 +490,70 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
         </div>
       )}
 
-      {/* Line-Item-Wise Bid Comparison */}
+      {/* Line-Item-Wise Bid Comparison (DPS Template) */}
       {quotes.length > 0 && !currentRFQ?.quotesHidden && (currentRFQ.extractedEntities || []).length > 0 && (
         <div className="glass-panel rounded-xl overflow-hidden border border-slate-200 dark:border-gray-800 shadow-xl bg-white dark:bg-gray-900/80">
-          <div className="flex items-center justify-between gap-3 px-3.5 py-3 border-b border-slate-200 dark:border-gray-800">
-            <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
-              <Layers size={15} className="text-indigo-600 dark:text-indigo-400" />
-              Line-Item-Wise Bid Comparison
-            </h3>
-            <button
-              onClick={() => downloadBidComparisonExcel(currentRFQ, quotes)}
-              className="btn btn-secondary btn-sm text-[11px] px-2.5 flex items-center gap-1.5"
-            >
-              <Download size={12} /> Download Excel
-            </button>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3.5 border-b border-slate-200 dark:border-gray-800 bg-slate-50/50 dark:bg-gray-900/50">
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-1.5">
+                <Layers size={15} className="text-indigo-600 dark:text-indigo-400" />
+                Line-Item-Wise Bid Comparison
+              </h3>
+              <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">
+                Detailed Price Schedule (DPS) breakdown — Unit rate, line total, taxes & delivery terms side-by-side.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => downloadFullQuotesExcel(currentRFQ, quotes)}
+                className="btn btn-primary btn-sm text-[11px] px-2.5 flex items-center gap-1.5 shadow-sm"
+                title="Download full multi-tab Excel with quotes overview, line item matrix, and granular items"
+              >
+                <Download size={12} /> Download Full Quotes (Excel)
+              </button>
+              <button
+                onClick={() => downloadBidComparisonExcel(currentRFQ, quotes)}
+                className="btn btn-secondary btn-sm text-[11px] px-2.5 flex items-center gap-1.5 shadow-sm"
+                title="Download item-by-vendor comparison matrix"
+              >
+                <Download size={12} /> Download Excel
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-50 dark:bg-gray-900/90 text-slate-700 dark:text-gray-300 border-b border-slate-200 dark:border-gray-800">
-                  <th className="px-3.5 py-2.5 text-[10px] uppercase font-bold text-slate-500 dark:text-gray-400">Item</th>
-                  <th className="px-3.5 py-2.5 text-[10px] uppercase font-bold text-slate-500 dark:text-gray-400">Qty</th>
+                <tr className="bg-slate-100/80 dark:bg-gray-900/90 text-slate-700 dark:text-gray-300 border-b border-slate-200 dark:border-gray-800">
+                  <th className="px-3.5 py-3 text-[10px] uppercase font-bold text-slate-500 dark:text-gray-400 min-w-[200px]">
+                    Item Description & Specs
+                  </th>
+                  <th className="px-3 py-3 text-[10px] uppercase font-bold text-slate-500 dark:text-gray-400 min-w-[80px] text-center">
+                    RFQ Qty
+                  </th>
                   {quotes.map((quote) => (
-                    <th key={quote.vendorId} className="px-3.5 py-2.5 text-[10px] uppercase font-bold text-slate-500 dark:text-gray-400 whitespace-nowrap">
-                      {quote.vendorName}
+                    <th
+                      key={quote.vendorId}
+                      className={`px-3.5 py-3 text-[10px] uppercase font-bold text-slate-700 dark:text-gray-300 min-w-[220px] ${
+                        quote.isPreferred ? 'bg-indigo-50/70 dark:bg-indigo-950/40 border-x border-indigo-300 dark:border-indigo-800' : ''
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span className="font-extrabold text-slate-900 dark:text-white truncate">{quote.vendorName}</span>
+                        {quote.isBestPrice && (
+                          <span className="px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold border border-emerald-300 dark:border-emerald-800">
+                            Overall L1
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[9px] font-normal text-slate-400 dark:text-gray-500 normal-case mt-0.5">
+                        DPS Breakdown (Rate | Total | Tax | Terms)
+                      </div>
                     </th>
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100 dark:divide-gray-800">
-                {(currentRFQ.extractedEntities || []).map((item) => {
+              <tbody className="divide-y divide-slate-200 dark:divide-gray-800/80">
+                {(currentRFQ.extractedEntities || []).map((item, itemIdx) => {
                   const prices = quotes.map((quote) => {
                     const items = quote.lineItemQuotes || [];
                     const matched =
@@ -506,34 +562,91 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                     return { quote, matched };
                   });
                   const realPrices = prices
-                    .filter((p) => p.matched)
+                    .filter((p) => p.matched && typeof p.matched.unitPrice === 'number')
                     .map((p) => p.matched!.unitPrice)
                     .filter((p) => p > 0);
                   const lowestPrice = realPrices.length > 0 ? Math.min(...realPrices) : null;
 
                   return (
-                    <tr key={item.id} className="hover:bg-slate-50/50 dark:hover:bg-gray-800/40">
-                      <td className="px-3.5 py-2.5 font-medium text-slate-900 dark:text-white">{item.itemName}</td>
-                      <td className="px-3.5 py-2.5 text-slate-500 dark:text-gray-400 mono">{item.quantity}</td>
-                      {prices.map(({ quote, matched }) => (
-                        <td key={quote.vendorId} className="px-3.5 py-2.5 mono">
-                          {matched ? (
-                            <span
-                              className={
-                                lowestPrice !== null && matched.unitPrice === lowestPrice
-                                  ? 'font-bold text-emerald-600 dark:text-emerald-400'
-                                  : 'text-slate-700 dark:text-gray-300'
-                              }
-                            >
-                              {formatCurrency(matched.unitPrice)}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 dark:text-gray-500" title="This vendor did not submit a per-item price breakdown">
-                              {formatCurrency(quote.unitPrice)} <span className="text-[9px]">(not itemized)</span>
-                            </span>
-                          )}
-                        </td>
-                      ))}
+                    <tr key={item.id || itemIdx} className="hover:bg-slate-50/60 dark:hover:bg-gray-800/30">
+                      <td className="px-3.5 py-3">
+                        <div className="font-semibold text-slate-900 dark:text-white text-xs">{item.itemName}</div>
+                        {item.technicalSpecs && item.technicalSpecs !== item.itemName && (
+                          <div className="text-[10px] text-slate-500 dark:text-gray-400 mt-0.5 line-clamp-1">{item.technicalSpecs}</div>
+                        )}
+                      </td>
+                      <td className="px-3 py-3 text-center mono font-medium text-slate-700 dark:text-gray-300">
+                        {item.quantity} {item.unit || 'Nos'}
+                      </td>
+                      {prices.map(({ quote, matched }) => {
+                        const isL1 = matched && lowestPrice !== null && matched.unitPrice === lowestPrice;
+                        const lineTotal = matched ? matched.totalPrice || matched.unitPrice * (item.quantity || 1) : null;
+                        const taxRate = (quote as any).taxRate || (quote.taxes ? 18 : 18);
+                        const estTax = lineTotal ? Math.round((lineTotal * taxRate) / 100) : null;
+                        const leadTime = matched?.leadTimeDays ?? quote.leadTimeDays;
+
+                        return (
+                          <td
+                            key={quote.vendorId}
+                            className={`px-3.5 py-3 ${
+                              quote.isPreferred ? 'bg-indigo-50/30 dark:bg-indigo-950/20 border-x border-indigo-200 dark:border-indigo-800/50' : ''
+                            }`}
+                          >
+                            {matched ? (
+                              <div className="space-y-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span
+                                    className={`mono font-bold text-xs ${
+                                      isL1 ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-900 dark:text-white'
+                                    }`}
+                                  >
+                                    {formatCurrency(matched.unitPrice)}
+                                  </span>
+                                  {isL1 && (
+                                    <span className="px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold border border-emerald-300 dark:border-emerald-800 flex items-center gap-0.5">
+                                      <TrendingDown size={9} /> L1 Lowest
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-[10px] text-slate-500 dark:text-gray-400 flex items-center justify-between">
+                                  <span>Total:</span>
+                                  <span className="mono font-semibold text-slate-700 dark:text-gray-300">
+                                    {formatCurrency(lineTotal || 0)}
+                                  </span>
+                                </div>
+                                <div className="text-[9px] text-slate-400 dark:text-gray-500 flex items-center justify-between border-t border-slate-100 dark:border-gray-800/60 pt-0.5">
+                                  <span>GST ({taxRate}%):</span>
+                                  <span className="mono">+{formatCurrency(estTax || 0)}</span>
+                                </div>
+                                <div className="text-[9px] text-slate-500 dark:text-gray-400 flex items-center justify-between">
+                                  <span>Delivery:</span>
+                                  <span className="font-medium text-slate-700 dark:text-gray-300">{leadTime} Days</span>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="space-y-1">
+                                <div className="flex items-baseline gap-1">
+                                  <span className="text-slate-400 dark:text-gray-500 mono text-xs">
+                                    {formatCurrency(quote.unitPrice)}
+                                  </span>
+                                  <span className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">(not itemized)</span>
+                                </div>
+                                <div className="text-[10px] text-slate-400 dark:text-gray-500 flex items-center justify-between">
+                                  <span>Blended Total:</span>
+                                  <span className="mono">{formatCurrency(quote.totalPrice)}</span>
+                                </div>
+                                <div className="text-[9px] text-slate-400 dark:text-gray-500 flex items-center justify-between">
+                                  <span>Delivery:</span>
+                                  <span>{quote.leadTimeDays} Days</span>
+                                </div>
+                                <div className="text-[9px] text-slate-400 italic">
+                                  — (No separate item breakdown)
+                                </div>
+                              </div>
+                            )}
+                          </td>
+                        );
+                      })}
                     </tr>
                   );
                 })}

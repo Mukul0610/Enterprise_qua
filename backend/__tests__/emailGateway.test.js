@@ -782,6 +782,20 @@ describe('emailGatewayService.pollViaGmailApi', () => {
     });
   });
 
+  test('tolerates a failing mark-read when skipping an already-processed message', async () => {
+    jest.spyOn(mailerService, 'getGmailOAuthClient').mockReturnValue({});
+    jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(true);
+    const api = gmailApi();
+    api.users.messages.modify.mockRejectedValue(new Error('label update failed'));
+    jest.spyOn(googleapis.google, 'gmail').mockReturnValue(api);
+
+    const result = await emailGatewayService.pollViaGmailApi(emailGatewayService.resolveConfig(FULL_ENV));
+
+    // The rejected mark-read is swallowed; the message is still reported as already processed.
+    expect(result.ingested).toBe(0);
+    expect(result.outcomes[0].status).toBe(EMAIL_GATEWAY_MESSAGES.ALREADY_PROCESSED);
+  });
+
   test('records a message whose raw body could not be fetched', async () => {
     jest.spyOn(mailerService, 'getGmailOAuthClient').mockReturnValue({});
     const api = gmailApi({ raw: null });
@@ -861,6 +875,23 @@ describe('emailGatewayService.pollViaGmailApi', () => {
 
     expect(delegateSpy).toHaveBeenCalled();
     expect(result.ingested).toBe(3);
+  });
+
+  test('pollVendorViaGmailApi reads the vendor inbox via the vendor OAuth client and ingests through the same path', async () => {
+    jest.spyOn(mailerService, 'getVendorGmailOAuthClient').mockReturnValue({});
+    const api = gmailApi();
+    jest.spyOn(googleapis.google, 'gmail').mockReturnValue(api);
+
+    const result = await emailGatewayService.pollVendorViaGmailApi(emailGatewayService.resolveVendorConfig(FULL_ENV));
+
+    expect(result.skipped).not.toBe(true);
+    expect(api.users.messages.list).toHaveBeenCalled();
+  });
+
+  test('pollVendorViaGmailApi is skipped when the vendor Gmail identity is not configured', async () => {
+    jest.spyOn(mailerService, 'getVendorGmailOAuthClient').mockReturnValue(null);
+    const result = await emailGatewayService.pollVendorViaGmailApi();
+    expect(result.skipped).toBe(true);
   });
 
   test('isConfigured/describeConfigurationFault treat the buyer Gmail API and IMAP-based vendor gateway independently', () => {
@@ -3088,6 +3119,317 @@ Can you quote something?
 
   afterAll(() => {
     emailGatewayService.stopPolling();
+  });
+});
+
+// ==============================================================================
+// Requirement 3: Complex RFQ (>10 line items) → portal-based bidding redirect
+// ==============================================================================
+describe('emailGatewayService.processVendorQuoteMessage complex-RFQ portal redirect', () => {
+  const vendorRecord = {
+    id: 'v-complex-portal',
+    name: 'Complex Portal Vendor',
+    email: 'complex.vendor@suppliers.com',
+    freeQuotationCredits: 5,
+    subscriptionPlan: 'premium',
+    quotedRfqIds: [],
+  };
+
+  function complexRfq() {
+    return {
+      id: 'rfq-complex-portal',
+      rfqNumber: 'RFQ-COMPLEX-900',
+      title: 'Multi-Item Plant Overhaul',
+      // 11 line items (> 10 threshold) forces portal-based bidding.
+      extractedEntities: Array.from({ length: 11 }, (_, i) => ({
+        itemName: `Component ${i + 1}`,
+        quantity: 2,
+        unit: 'Nos',
+      })),
+    };
+  }
+
+  const quoteMessage = {
+    fromAddress: vendorRecord.email,
+    subject: 'Re: Quotation for RFQ-COMPLEX-900',
+    bodyText: 'Unit Price: INR 25,000\nLead Time: 7 days\nPayment Terms: Net 30',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({
+      unitPrice: 25000,
+      totalPrice: 50000,
+      leadTimeDays: 7,
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('returns PORTAL_SUBMISSION_REQUIRED, ingests no quote, and emails the vendor the portal redirect', async () => {
+    const rfq = complexRfq();
+    const redirectSpy = jest
+      .spyOn(mailerService, 'sendComplexRfqPortalRedirectEmail')
+      .mockResolvedValue({ sent: true });
+
+    const result = await emailGatewayService.processVendorQuoteMessage(quoteMessage, rfq, vendorRecord);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED);
+    expect(result.rfq).toBe(rfq);
+    expect(result.detail).toContain(rfq.rfqNumber);
+    // No quote was ingested onto the RFQ.
+    expect(rfq.quotes).toBeUndefined();
+    expect(redirectSpy).toHaveBeenCalledWith(
+      vendorRecord.email,
+      expect.objectContaining({
+        rfq,
+        vendorName: vendorRecord.name,
+        itemCount: 11,
+      })
+    );
+  });
+
+  test('still returns PORTAL_SUBMISSION_REQUIRED when the portal redirect email throws (catch branch)', async () => {
+    const rfq = complexRfq();
+    jest
+      .spyOn(mailerService, 'sendComplexRfqPortalRedirectEmail')
+      .mockRejectedValue(new Error('smtp down'));
+    const logErrorSpy = jest.spyOn(logger, 'error').mockImplementation(() => {});
+
+    const result = await emailGatewayService.processVendorQuoteMessage(quoteMessage, rfq, vendorRecord);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED);
+    expect(logErrorSpy).toHaveBeenCalledWith(
+      'Failed to send complex RFQ portal redirect email',
+      expect.any(Error),
+      'EMAIL_GATEWAY'
+    );
+  });
+});
+
+// ==============================================================================
+// processVendorQuoteMessage: eligibility, issue/query, validation and ingest
+// branch coverage (called directly with crafted message/targetRfq/vendorRecord).
+// ==============================================================================
+describe('emailGatewayService.processVendorQuoteMessage branch coverage', () => {
+  function simpleRfq(overrides = {}) {
+    return {
+      id: 'rfq-direct-1',
+      rfqNumber: 'RFQ-DIRECT-1',
+      title: 'Single Item Pump',
+      buyerAccountId: 'buyer-direct',
+      buyerAccountName: 'Direct Buyer Co',
+      extractedEntities: [{ itemName: 'Pump', quantity: 2, unit: 'Nos' }],
+      quotes: [],
+      ...overrides,
+    };
+  }
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    storeService.buyerAccounts = [
+      { id: 'buyer-direct', organizationName: 'Direct Buyer Co', corporateEmail: 'buyer.direct@corp.com' },
+    ];
+    storeService.rfqs = [];
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  test('ingests a valid email quote, acknowledges the vendor and emails the buyer (cc path)', async () => {
+    const rfq = simpleRfq();
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-ingest', name: 'Ingest Vendor', email: 'ingest@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(storeService, 'resolveBuyerEmailForRFQ').mockReturnValue('buyer.direct@corp.com');
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({
+      unitPrice: 2500,
+      totalPrice: 5000,
+      leadTimeDays: 7,
+      lineItemQuotes: [{ unitPrice: 2500 }],
+    });
+    const ackSpy = jest.spyOn(mailerService, 'sendQuoteAcknowledgementEmail').mockResolvedValue({ sent: true });
+    const buyerSpy = jest.spyOn(mailerService, 'sendQuoteReceivedEmail').mockResolvedValue({ sent: true });
+
+    const message = {
+      fromAddress: vendor.email,
+      subject: 'Re: Quotation for RFQ-DIRECT-1',
+      bodyText: 'Unit Price: INR 2,500',
+      cc: ['watcher@corp.com'],
+      messageId: '<m-ingest@suppliers.com>',
+    };
+
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_INGESTED);
+    expect(result.quote.unitPrice).toBe(2500);
+    expect(ackSpy).toHaveBeenCalled();
+    expect(buyerSpy).toHaveBeenCalled();
+  });
+
+  test('ingests a quote with no cc and no resolvable buyer email (skips the buyer notification)', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-1b', rfqNumber: 'RFQ-DIRECT-1B' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-nocc', name: 'No CC Vendor', email: 'nocc@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(storeService, 'resolveBuyerEmailForRFQ').mockReturnValue(null);
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({ unitPrice: 1200, leadTimeDays: 7 });
+    const ackSpy = jest.spyOn(mailerService, 'sendQuoteAcknowledgementEmail').mockResolvedValue({ sent: true });
+    const buyerSpy = jest.spyOn(mailerService, 'sendQuoteReceivedEmail').mockResolvedValue({ sent: true });
+
+    // Vendor uses textBody (not bodyText) and provides no cc.
+    const message = { fromAddress: vendor.email, subject: 'Re: RFQ-DIRECT-1B', textBody: 'Unit Price: INR 1200' };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_INGESTED);
+    expect(ackSpy).toHaveBeenCalled();
+    expect(buyerSpy).not.toHaveBeenCalled();
+  });
+
+  test('derives unit price from total price when the extracted unit price is missing', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-2', rfqNumber: 'RFQ-DIRECT-2' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-total', name: 'Total Vendor', email: 'total@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({
+      unitPrice: 0,
+      totalPrice: 6000, // rfq quantity is 2 => derived unitPrice 3000
+      leadTimeDays: 5,
+    });
+    jest.spyOn(mailerService, 'sendQuoteAcknowledgementEmail').mockResolvedValue({ sent: true });
+    jest.spyOn(mailerService, 'sendQuoteReceivedEmail').mockResolvedValue({ sent: true });
+
+    const message = { fromAddress: vendor.email, subject: 'Re: RFQ-DIRECT-2', bodyText: 'Total: INR 6000' };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_INGESTED);
+    expect(result.quote.unitPrice).toBe(3000);
+  });
+
+  test('rejects an exhausted vendor with CREDITS_EXHAUSTED and emails the upgrade notice (cc + upgradeUrl)', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-3', rfqNumber: 'RFQ-DIRECT-3' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-exhausted', name: 'Exhausted Vendor', email: 'exhausted@suppliers.com', freeQuotationCredits: 0, subscriptionPlan: 'premium', isSubscribed: false, quotedRfqIds: ['a', 'b', 'c', 'd', 'e'] };
+    storeService.vendors = [vendor];
+
+    const exhaustedSpy = jest.spyOn(mailerService, 'sendVendorCreditsExhaustedEmail').mockResolvedValue({ sent: true });
+
+    const message = { fromAddress: vendor.email, subject: 'Re: RFQ-DIRECT-3', bodyText: 'Unit Price: INR 500', cc: 'cc.watch@corp.com' };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.CREDITS_EXHAUSTED);
+    expect(exhaustedSpy).toHaveBeenCalled();
+  });
+
+  test('treats an issue/query reply as QUOTE_VALIDATION_FAILED and logs an inquiry', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-4', rfqNumber: 'RFQ-DIRECT-4' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-issue', name: 'Issue Vendor', email: 'issue@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({ unitPrice: 0 });
+    const issueSpy = jest.spyOn(mailerService, 'sendVendorIssueAcknowledgementEmail').mockResolvedValue({ sent: true });
+
+    const message = {
+      fromAddress: vendor.email,
+      subject: 'Re: RFQ-DIRECT-4',
+      bodyText: 'I have a clarification query: the drawing is missing for item 2, please clarify.',
+    };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED);
+    expect(result.isIssueOrQuery).toBe(true);
+    expect(issueSpy).toHaveBeenCalled();
+  });
+
+  test('fails validation when no positive unit price can be extracted (QUOTE_VALIDATION_FAILED)', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-5', rfqNumber: 'RFQ-DIRECT-5' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-noprice', name: 'No Price Vendor', email: 'noprice@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockResolvedValue({ unitPrice: 0, totalPrice: 0 });
+    jest.spyOn(geminiService, 'extractQuotationFallback').mockReturnValue({ unitPrice: 0 });
+    const failSpy = jest.spyOn(mailerService, 'sendQuoteFailureEmail').mockResolvedValue({ sent: true });
+
+    const message = { fromAddress: vendor.email, subject: 'Re: RFQ-DIRECT-5', bodyText: 'Please find our proposal attached.' };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED);
+    expect(failSpy).toHaveBeenCalled();
+  });
+});
+
+describe('emailGatewayService.extractRfqReferenceFromEmail', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test('returns nulls for a missing message and for a message with no RFQ reference', async () => {
+    expect(await emailGatewayService.extractRfqReferenceFromEmail(null)).toEqual({ targetRfq: null, referencedNumber: null });
+    const none = await emailGatewayService.extractRfqReferenceFromEmail({ subject: 'Hello there', bodyText: 'no reference here' });
+    expect(none).toEqual({ targetRfq: null, referencedNumber: null });
+  });
+
+  test('resolves the target RFQ from the subject when the referenced number exists', async () => {
+    jest.spyOn(storeService, 'getRFQByIdAsync').mockImplementation(async (cand) =>
+      cand === 'RFQ-2026-0007' ? { id: 'rfq-x', rfqNumber: 'RFQ-2026-0007' } : null,
+    );
+    const res = await emailGatewayService.extractRfqReferenceFromEmail({ subject: 'Re: Quotation for #RFQ-2026-0007' });
+    expect(res.targetRfq).toEqual({ id: 'rfq-x', rfqNumber: 'RFQ-2026-0007' });
+    expect(res.referencedNumber).toBe('RFQ-2026-0007');
+  });
+
+  test('returns the referenced number but no RFQ when nothing matches in storage', async () => {
+    jest.spyOn(storeService, 'getRFQByIdAsync').mockResolvedValue(null);
+    const res = await emailGatewayService.extractRfqReferenceFromEmail({
+      references: 'thread <RFQ-2026-0008-reply@host>',
+      bodyText: 'see RFQ-2026-0008',
+    });
+    expect(res.targetRfq).toBeNull();
+    expect(res.referencedNumber).toContain('RFQ-2026-0008');
+  });
+});
+
+describe('emailGatewayService.resolveVendorFromEmail', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test('returns null for internal gateway accounts and for a blank address', async () => {
+    expect(await emailGatewayService.resolveVendorFromEmail('')).toBeNull();
+    expect(await emailGatewayService.resolveVendorFromEmail('srinu20252026@gmail.com')).toBeNull();
+    expect(await emailGatewayService.resolveVendorFromEmail('rfqprocucev@gmail.com')).toBeNull();
+  });
+
+  test('matches an assigned vendor by email, then by non-generic domain, then as the sole invitee', async () => {
+    jest.spyOn(storeService, 'getVendorById').mockReturnValue(null);
+    jest.spyOn(require('../src/db/pool'), 'hasStorage').mockReturnValue(false);
+    jest.spyOn(storeService, 'getVendors').mockResolvedValue([]);
+
+    const byEmailRfq = { assignedVendors: [{ email: 'direct@acme-corp.com', name: 'Acme' }] };
+    expect(await emailGatewayService.resolveVendorFromEmail('direct@acme-corp.com', byEmailRfq)).toEqual(
+      expect.objectContaining({ email: 'direct@acme-corp.com' }),
+    );
+
+    const byDomainRfq = { assignedVendors: [{ email: 'sales@acme-corp.com', name: 'Acme' }] };
+    expect(await emailGatewayService.resolveVendorFromEmail('other@acme-corp.com', byDomainRfq)).toEqual(
+      expect.objectContaining({ email: 'sales@acme-corp.com' }),
+    );
+
+    const soleRfq = { assignedVendors: [{ email: 'only@webmail-generic.net', name: 'Only Vendor' }] };
+    expect(await emailGatewayService.resolveVendorFromEmail('someone@gmail.com', soleRfq)).toEqual(
+      expect.objectContaining({ name: 'Only Vendor' }),
+    );
+  });
+
+  test('returns null when no vendor and no targetRfq attribution is possible', async () => {
+    jest.spyOn(storeService, 'getVendorById').mockReturnValue(null);
+    jest.spyOn(require('../src/db/pool'), 'hasStorage').mockReturnValue(false);
+    jest.spyOn(storeService, 'getVendors').mockResolvedValue([]);
+    expect(await emailGatewayService.resolveVendorFromEmail('unknown@nowhere.com')).toBeNull();
   });
 });
 

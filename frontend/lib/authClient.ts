@@ -230,6 +230,9 @@ class AuthClient {
     if (!res.ok && !data.error) {
       return { ...data, success: false, error: UI_STRINGS.auth.serverErrorFallback };
     }
+    if (data.success && data.token && data.user) {
+      this.setSession(data.user, data.token);
+    }
     return data;
   }
 

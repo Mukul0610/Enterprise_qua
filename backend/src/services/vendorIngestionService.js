@@ -1288,7 +1288,11 @@ async function getCategorySegmentation(sessionUser, sessionId) {
  * suppliers, because every read is organisation-scoped).
  */
 async function resolveDispatchRecipients(context, sessionId, { template, majorCategory, vendorRecordIds }) {
-  const mappings = await queries.findCategoryMappings(sessionId, context.organizationId);
+  const [mappings, vendorRecords] = await Promise.all([
+    queries.findCategoryMappings(sessionId, context.organizationId),
+    queries.findVendorMasterRecords(sessionId, context.organizationId).catch(() => []),
+  ]);
+  const vendorRecordMap = new Map((vendorRecords || []).map((r) => [r.id, r]));
   const requested = Array.isArray(vendorRecordIds) && vendorRecordIds.length > 0 ? new Set(vendorRecordIds) : null;
 
   const eligible = mappings.filter((mapping) => {
@@ -1309,17 +1313,23 @@ async function resolveDispatchRecipients(context, sessionId, { template, majorCa
     return true;
   });
 
-  return eligible.map((mapping) => ({
-    vendorRecordId: mapping.vendorRecordId,
-    mappingId: mapping.id,
-    companyName: mapping.companyName,
-    email: mapping.email,
-    vendorCode: mapping.vendorCode,
-    majorCategory: mapping.buyerMajorCategory || mapping.aiSuggestion.majorCategory,
-    minorCategories:
-      mapping.buyerMinorCategories.length > 0 ? mapping.buyerMinorCategories : mapping.aiSuggestion.minorCategories,
-    status: mapping.status,
-  }));
+  return eligible.map((mapping) => {
+    const vRec = vendorRecordMap.get(mapping.vendorRecordId);
+    return {
+      vendorRecordId: mapping.vendorRecordId,
+      mappingId: mapping.id,
+      companyName: mapping.companyName,
+      contactPerson: vRec?.contactPerson || '',
+      phone: vRec?.phone || '',
+      contactPhone: vRec?.phone || '',
+      email: mapping.email,
+      vendorCode: mapping.vendorCode,
+      majorCategory: mapping.buyerMajorCategory || mapping.aiSuggestion.majorCategory,
+      minorCategories:
+        mapping.buyerMinorCategories.length > 0 ? mapping.buyerMinorCategories : mapping.aiSuggestion.minorCategories,
+      status: mapping.status,
+    };
+  });
 }
 
 /**
@@ -1388,9 +1398,11 @@ async function previewDispatch(sessionUser, sessionId, payload) {
 function buildDispatchMessage(context, template, recipient) {
   const shared = {
     to: recipient.email,
-    recipientName: recipient.companyName,
+    recipientName: recipient.contactPerson || recipient.companyName,
     buyerOrganizationName: context.organizationName,
     vendorCode: recipient.vendorCode,
+    contactPhone: recipient.contactPhone || recipient.phone || '',
+    tempPassword: recipient.tempPassword || '',
   };
 
   if (template === VENDOR_DISPATCH_TEMPLATE.SELF_MAP_REQUIRED) {

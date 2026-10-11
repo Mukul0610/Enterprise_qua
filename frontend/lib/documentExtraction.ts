@@ -265,7 +265,11 @@ export async function buildExtractionRequest(file: File): Promise<RFQExtractionR
   if (isWordDocument(file.name)) {
     try {
       const docxText = await extractDocxText(await readAsArrayBuffer(file));
-      if (docxText && docxText.length > 0) {
+      // Require a meaningful amount of recovered text before trusting a text-only
+      // request. A near-empty result usually means the body is images or an
+      // unusual layout, so falling back to inline data lets the model read it
+      // directly rather than being handed almost nothing.
+      if (docxText && docxText.trim().length >= 15) {
         return { fileName: file.name, documentText: docxText };
       }
     } catch {

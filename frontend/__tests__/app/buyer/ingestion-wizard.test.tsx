@@ -431,13 +431,45 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
       expect(screen.getByText(/Corrupt file structure/i)).toBeInTheDocument();
     });
 
-    // Simulate extraction throwing exception
+    // Simulate extraction throwing exception. A thrown error is an unexpected
+    // client-side fault, so the banner shows the generic unreadable-response copy
+    // rather than leaking the raw exception message to the buyer.
     mockExtract.mockRejectedValueOnce(new Error('Network failure parsing document'));
     clickExtract();
 
     await waitFor(() => {
-      expect(screen.getByText(/Network failure parsing document/i)).toBeInTheDocument();
+      expect(screen.getByText(EXTRACTION.unreadableResponse)).toBeInTheDocument();
     });
+  });
+
+  it('shows a reason-specific message and a manual-entry action when extraction fails', async () => {
+    renderWizard();
+
+    uploadFile(new File(['dummy'], 'scan.pdf', { type: 'application/pdf' }));
+
+    // No server-supplied error, only a machine reason: the banner must resolve the
+    // reason to its specific guidance rather than the generic fallback.
+    mockExtract.mockResolvedValueOnce({ success: false, reason: 'DOCUMENT_TOO_LARGE' });
+    clickExtract();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(EXTRACTION.reasonMessages.DOCUMENT_TOO_LARGE)
+      ).toBeInTheDocument();
+    });
+
+    // The explicit recovery action takes the buyer into manual entry: it dismisses
+    // the banner and ensures there is a line item to key into.
+    const manualBtn = screen.getByRole('button', { name: new RegExp(EXTRACTION.manualEntryAction, 'i') });
+    fireEvent.click(manualBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(EXTRACTION.reasonMessages.DOCUMENT_TOO_LARGE)
+      ).not.toBeInTheDocument();
+    });
+    // A line item to key into is now present.
+    expect(screen.getAllByPlaceholderText(MODAL.itemPlaceholder).length).toBeGreaterThan(0);
   });
 
   it('handles auto-categorization errors and empty line items', async () => {

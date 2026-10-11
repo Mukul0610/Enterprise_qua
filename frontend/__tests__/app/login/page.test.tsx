@@ -153,6 +153,31 @@ describe('LoginPage', () => {
       expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.buyer);
     });
 
+    it('routes first-login vendors to password setup before opening the dashboard', async () => {
+      const firstLoginVendor = {
+        ...BUYER_SESSION,
+        role: 'vendor' as const,
+        passwordChangeRequired: true,
+      };
+      (authClient.loginWithPassword as jest.Mock).mockResolvedValue({
+        success: true,
+        user: firstLoginVendor,
+        token: 'jwt',
+      });
+
+      render(<LoginPage />);
+      typeInto(/Registered Email ID/i, 'vendor@supplier.com');
+      typeInto(/Registered Mobile Number/i, LOGIN_MOBILE);
+      typeInto(/^Password$/i, 'TempPass@123');
+      fireEvent.click(submitButton(/Sign In/i));
+
+      await waitFor(() => {
+        expect(mockReplace).toHaveBeenCalledWith('/vendor-first-login');
+      });
+      expect(setCurrentUserSession).toHaveBeenCalledWith(firstLoginVendor);
+      expect(mockReplace).not.toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
+    });
+
     it('routes an admin account to the admin workspace automatically based on credentials', async () => {
       (authClient.loginWithPassword as jest.Mock).mockResolvedValue({
         success: true,
@@ -491,6 +516,7 @@ describe('LoginPage', () => {
         name: 'Rajesh Kumar',
         role: 'vendor' as const,
         vendorId: 'vnd-1',
+        passwordChangeRequired: true,
       };
       (authClient.requestOtp as jest.Mock).mockResolvedValue({
         success: true,
@@ -532,7 +558,8 @@ describe('LoginPage', () => {
           })
         );
       });
-      expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
+      expect(mockReplace).toHaveBeenCalledWith('/vendor-first-login');
+      expect(mockReplace).not.toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
     });
 
     it('propagates the registered GSTIN and plant location to the new buyer record', async () => {
@@ -914,6 +941,4 @@ describe('LoginPage', () => {
     });
   });
 });
-
-
 

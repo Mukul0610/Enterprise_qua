@@ -17,6 +17,25 @@ function renderWithProvider(ui: React.ReactElement) {
   return render(<AppProvider>{ui}</AppProvider>);
 }
 
+let vendorProfileResponse: Record<string, unknown> | null = null;
+
+function VendorSessionBootstrap() {
+  const { setCurrentRole, setCurrentUserSession, setIsLoggedIn } = useApp();
+  React.useEffect(() => {
+    setCurrentUserSession({
+      id: 'vendor-test-id',
+      email: 'vendor@example.com',
+      name: 'Test Vendor',
+      role: 'vendor',
+      orgId: 'vendor-test-org',
+      orgName: 'Test Vendor Ltd.',
+    });
+    setCurrentRole('vendor');
+    setIsLoggedIn(true);
+  }, [setCurrentRole, setCurrentUserSession, setIsLoggedIn]);
+  return null;
+}
+
 /** The provider exposes the toast in context but does not render it. */
 function ToastProbe() {
   const { toastMessage } = useApp();
@@ -104,6 +123,9 @@ function mockFetchImpl(url: string, options: any = {}) {
     return Promise.resolve({ ok: true, json: async () => ({ success: true, data: { id: 'v-mock-1', name: 'Mock Vendor' } }) });
   }
   if (/\/api\/vendors\/[^/]+$/.test(url)) {
+    if (vendorProfileResponse) {
+      return Promise.resolve({ ok: true, json: async () => ({ success: true, data: vendorProfileResponse }) });
+    }
     return Promise.resolve({ ok: false, status: 404, json: async () => ({ success: false, error: 'Not found' }) });
   }
   if (/\/api\/rfqs\/[^/]+\/quotes$/.test(url)) {
@@ -121,6 +143,7 @@ function mockFetchImpl(url: string, options: any = {}) {
 describe('Vendor Screens Comprehensive Suite', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    vendorProfileResponse = null;
     global.fetch = jest.fn(mockFetchImpl) as any;
   });
 
@@ -159,11 +182,12 @@ describe('Vendor Screens Comprehensive Suite', () => {
       fireEvent.change(categorySelect, { target: { value: 'Valves' } });
       fireEvent.change(categorySelect, { target: { value: 'All' } });
 
-      // Test Bulk Excel Import
-      const bulkBtn = screen.getByRole('button', { name: /Simulate Bulk Excel Import/i });
-      await act(async () => {
-        fireEvent.click(bulkBtn);
-      });
+      // Test Download Excel Template & Upload Input
+      const downloadBtn = screen.getByRole('button', { name: /Download Excel Template/i });
+      fireEvent.click(downloadBtn);
+
+      const uploadInput = screen.getByLabelText(/Upload catalogue Excel workbook/i);
+      expect(uploadInput).toBeInTheDocument();
 
       // Test Summary filter toggle
       const summaryBtn = screen.getByRole('button', { name: /Summary:/i });
@@ -225,6 +249,36 @@ describe('Vendor Screens Comprehensive Suite', () => {
 
       expect(screen.queryByRole('button', { name: /Start Self-Evaluation|View AI Rating/i })).not.toBeInTheDocument();
       expect(onEval).not.toHaveBeenCalled();
+    });
+
+    test('shows the buyer-added badge with the buyer company in the dashboard header', async () => {
+      vendorProfileResponse = {
+        source: 'buyer_manual',
+        buyerId: 'buyer-123',
+        addedByBuyerCompany: 'Acme Manufacturing',
+      };
+
+      render(
+        <AppProvider>
+          <VendorSessionBootstrap />
+          <OpportunityFeed onNavigateToBidForm={jest.fn()} />
+        </AppProvider>
+      );
+
+      expect(await screen.findByText('Procucev buyer added you · Acme Manufacturing')).toBeInTheDocument();
+    });
+
+    test('shows the self-onboarded badge for vendor self-registration', async () => {
+      vendorProfileResponse = { source: 'self_registration' };
+
+      render(
+        <AppProvider>
+          <VendorSessionBootstrap />
+          <OpportunityFeed onNavigateToBidForm={jest.fn()} />
+        </AppProvider>
+      );
+
+      expect(await screen.findByText('Self-onboarded vendor')).toBeInTheDocument();
     });
   });
 

@@ -31,6 +31,8 @@ router.post('/request-vendor-category-update', authenticate, rfqController.reque
 // download must never be anonymous.
 router.post('/attachments', authenticate, rfqController.uploadRFQAttachment);
 router.get('/attachments/:attachmentId', authenticate, rfqController.downloadRFQAttachment);
+router.post('/:id/quote-attachments', authenticate, rfqController.uploadQuoteAttachment);
+router.get('/:id/quote-attachments/:attachmentId', authenticate, rfqController.downloadQuoteAttachment);
 router.get('/:id', authenticate, rfqController.getRFQById);
 router.put('/:id', authenticate, rfqController.updateRFQ);
 router.delete('/:id', authenticate, rfqController.deleteRFQ);

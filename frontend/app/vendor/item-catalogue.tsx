@@ -4,6 +4,11 @@ import React, { useState, useEffect } from 'react';
 import { useApp } from '@/lib/store';
 import { authClient } from '@/lib/authClient';
 import {
+  downloadCatalogueTemplate,
+  parseCatalogueWorkbook,
+  type CatalogueUploadRow,
+} from '@/lib/catalogueUploadClient';
+import {
   Layers,
   Plus,
   Trash2,
@@ -29,7 +34,7 @@ interface ProductItem {
 }
 
 export default function ItemCatalogue() {
-  const { showToast, addAuditLog, vendorCatalogue, setVendorCatalogue, vendorOpportunities, vendorSubscription, currentUserSession } = useApp();
+  const { showToast, addAuditLog, vendorCatalogue, setVendorCatalogue, vendorOpportunities, vendorSubscription, currentUserSession, categoryTaxonomy } = useApp();
   const vendorLabel = currentUserSession?.orgName || currentUserSession?.name || 'Vendor';
 
   // Use shared store state as the products list
@@ -101,6 +106,8 @@ export default function ItemCatalogue() {
   const [leadTimeDays, setLeadTimeDays] = useState('');
   const [moq, setMoq] = useState(''); // MOQ Form Field
   const [isSavingProduct, setIsSavingProduct] = useState(false);
+  const [cataloguePreview, setCataloguePreview] = useState<CatalogueUploadRow[]>([]);
+  const [isImportingCatalogue, setIsImportingCatalogue] = useState(false);
 
   // Search filter & Summary filter states
   const [searchTerm, setSearchTerm] = useState('');
@@ -203,43 +210,95 @@ export default function ItemCatalogue() {
     }
   };
 
-  const handleSimulateBulkImport = async () => {
-    if (products.length >= MAX_LIMIT) {
-      showToast('Limit Reached', `Unable to import. Catalogue size is already at the ${MAX_LIMIT} item cap.`, 'warning');
+  const handleCatalogueFile = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      showToast('Unsupported File', 'Choose an Excel .xlsx workbook.', 'warning');
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('File Too Large', 'Catalogue workbooks must be 10 MB or smaller.', 'warning');
       return;
     }
 
-    // Generate mock bulk products up to 40 items to showcase limit bar, then
-    // actually persist each one (was: local state only — vanished on refresh).
-    const importItemsCount = Math.min(35, MAX_LIMIT - products.length);
-    const importPayloads = Array.from({ length: importItemsCount }, (_, i) => {
-      const idx = products.length + i + 1;
-      return {
-        name: `Industrial Flanged Adapter Fitting (Model: FLG-${100 + idx})`,
-        category: 'Pipes & Fittings',
-        sku: `SKU-PIPE-F${100 + idx}-${Date.now().toString().slice(-4)}`,
-        specs: `Standard carbon steel flanged connector pipe adapter fitting, size ${2 + (idx % 4)} inches.`,
-        unitPrice: 150 + (idx * 5),
-        leadTimeDays: 3 + (idx % 5),
-        moq: 5 + (idx % 3),
-      };
-    });
-
-    try {
-      const headers = authHeaders();
-      const results = await Promise.all(
-        importPayloads.map((payload) =>
-          fetch('/api/catalogue', { method: 'POST', headers, body: JSON.stringify(payload) }).then((r) => r.json())
-        )
-      );
-      const created = results.filter((r) => r.success).map((r) => r.data);
-      if (created.length > 0) {
-        setProducts((prev) => [...prev, ...created]);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const parsed = parseCatalogueWorkbook(reader.result as ArrayBuffer);
+      if (!parsed.success) {
+        showToast('Import Preview Failed', parsed.error, 'warning');
+        setCataloguePreview([]);
+        return;
       }
-      showToast('Bulk Import Successful', `Ingested ${created.length} products with MOQ details from template.`, 'success');
-      addAuditLog(`${vendorLabel} performed bulk catalogue import of ${created.length} products`, undefined, currentUserSession?.email);
+      const existingSkus = new Set(products.map((product) => product.sku.trim().toUpperCase()));
+      const incomingSkus = new Set<string>();
+      setCataloguePreview(parsed.rows.map((row) => {
+        const errors = [...row.errors];
+        const normalizedSku = row.sku.trim().toUpperCase();
+        if (normalizedSku && existingSkus.has(normalizedSku)) errors.push('SKU already exists in your catalogue.');
+        if (normalizedSku && incomingSkus.has(normalizedSku) && !errors.includes('SKU is duplicated in this workbook.')) {
+          errors.push('SKU is duplicated in this workbook.');
+        }
+        if (normalizedSku) incomingSkus.add(normalizedSku);
+        return { ...row, errors };
+      }));
+    };
+    reader.onerror = () => showToast('Import Preview Failed', 'The workbook could not be read.', 'warning');
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleCatalogueImport = async () => {
+    const validRows = cataloguePreview.filter((row) => row.errors.length === 0);
+    const available = Math.max(0, MAX_LIMIT - products.length);
+    if (validRows.length > available) {
+      showToast('Catalogue Capacity Exceeded', `Only ${available} more products fit in the ${MAX_LIMIT}-item catalogue. Remove rows from the workbook and preview it again.`, 'warning');
+      return;
+    }
+    if (validRows.length === 0) {
+      showToast('Nothing to Import', 'Fix the validation errors before importing.', 'warning');
+      return;
+    }
+
+    setIsImportingCatalogue(true);
+    const created: ProductItem[] = [];
+    const failures: string[] = [];
+    try {
+      for (const row of validRows) {
+        const response = await fetch('/api/catalogue', {
+          method: 'POST',
+          headers: authHeaders(),
+          body: JSON.stringify({
+            name: row.name,
+            sku: row.sku,
+            category: row.category,
+            specs: row.specs,
+            unitPrice: row.unitPrice,
+            leadTimeDays: row.leadTimeDays,
+            moq: row.moq,
+          }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+          failures.push(`Row ${row.rowNumber}: ${result.error || 'Import failed.'}`);
+        } else {
+          created.push(result.data);
+        }
+      }
+      if (created.length) {
+        setProducts((previous) => [...created, ...previous]);
+        addAuditLog(`${vendorLabel} imported ${created.length} catalogue products from Excel`, undefined, currentUserSession?.email);
+      }
+      setCataloguePreview([]);
+      showToast(
+        failures.length ? 'Import Partially Completed' : 'Import Complete',
+        `${created.length} imported; ${failures.length + cataloguePreview.filter((row) => row.errors.length > 0).length} skipped.${failures.length ? ` ${failures.join(' ')}` : ''}`,
+        failures.length ? 'warning' : 'success'
+      );
     } catch (err: any) {
-      showToast('Import Failed', err?.message || 'Could not complete the bulk import.', 'warning');
+      showToast('Import Failed', err?.message || 'Could not complete the catalogue import.', 'warning');
+    } finally {
+      setIsImportingCatalogue(false);
     }
   };
 
@@ -360,14 +419,42 @@ export default function ItemCatalogue() {
           </div>
         </div>
 
-        <button
-          onClick={handleSimulateBulkImport}
-          className="btn btn-secondary font-bold text-xs py-2 px-4 flex items-center gap-1.5 shrink-0 w-full md:w-auto border border-slate-200 text-slate-700 dark:text-gray-300 hover:bg-slate-50"
-        >
-          <UploadCloud size={14} className="text-indigo-650" />
-          <span>Simulate Bulk Excel Import</span>
-        </button>
+        <div className="flex flex-wrap gap-2 shrink-0 w-full md:w-auto">
+          <button type="button" onClick={downloadCatalogueTemplate} className="btn btn-secondary font-bold text-xs py-2 px-4 border border-slate-200 text-slate-700 dark:text-gray-300">
+            Download Excel Template
+          </button>
+          <label className="btn btn-secondary font-bold text-xs py-2 px-4 flex items-center gap-1.5 border border-slate-200 text-slate-700 dark:text-gray-300 cursor-pointer">
+            <UploadCloud size={14} className="text-indigo-650" />
+            Upload Excel
+            <input aria-label="Upload catalogue Excel workbook" type="file" accept=".xlsx" className="sr-only" onChange={handleCatalogueFile} />
+          </label>
+        </div>
       </div>
+
+      {cataloguePreview.length > 0 && (
+        <section aria-label="Catalogue import preview" className="glass-panel rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-gray-900/80">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold">Import Preview</h2>
+              <p className="text-xs text-slate-500">{cataloguePreview.filter((row) => !row.errors.length).length} valid; {cataloguePreview.filter((row) => row.errors.length > 0).length} with errors. Catalogue capacity remaining: {Math.max(0, MAX_LIMIT - products.length)}.</p>
+            </div>
+            <button type="button" disabled={isImportingCatalogue} onClick={handleCatalogueImport} className="btn btn-primary px-4 py-2 text-xs font-bold disabled:opacity-50">
+              {isImportingCatalogue ? 'Importing...' : 'Import Valid Rows'}
+            </button>
+          </div>
+          <div className="mt-3 max-h-56 overflow-auto text-xs">
+            <table className="w-full text-left">
+              <thead><tr><th className="p-2">Row</th><th className="p-2">SKU</th><th className="p-2">Product</th><th className="p-2">Result</th></tr></thead>
+              <tbody>{cataloguePreview.map((row) => (
+                <tr key={row.rowNumber} className="border-t border-slate-100 dark:border-slate-800">
+                  <td className="p-2">{row.rowNumber}</td><td className="p-2">{row.sku || '-'}</td><td className="p-2">{row.name || '-'}</td>
+                  <td className="p-2">{row.errors.length ? row.errors.join(' ') : 'Ready to import'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </section>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 items-start">
         {/* CREATE / EDIT PRODUCT FORM */}
@@ -412,11 +499,17 @@ export default function ItemCatalogue() {
                   onChange={(e) => setCategory(e.target.value)}
                   className="select w-full bg-slate-50 dark:bg-gray-955 border border-slate-250 rounded-lg font-bold text-slate-800 dark:text-white"
                 >
-                  <option value="Pumps & Fluid Dynamics">⚙️ Pumps & Fluid</option>
-                  <option value="Valves & Flow Control">⚙️ Valves & Flow</option>
-                  <option value="Pipes & Fittings">🏗️ Pipes & Fittings</option>
-                  <option value="Sensors & Instrumentation">⚡ Sensors & Instrumentation</option>
-                  <option value="Electrical & Automation">🏢 Electrical Panels</option>
+                  {!categoryTaxonomy.some((group) => group.majorCategory === category) && <option value={category}>{category}</option>}
+                  {categoryTaxonomy.map((group) => (
+                    <optgroup key={group.majorCategory} label={group.majorCategory}>
+                      <option value={group.majorCategory}>{group.majorCategory}</option>
+                      {(group.minorCategories || []).map((minor) => (
+                        <option key={`${group.majorCategory}-${minor}`} value={`${group.majorCategory} — ${minor}`}>
+                          {minor}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
                 </select>
               </div>
             </div>

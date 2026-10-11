@@ -141,13 +141,14 @@ function mapRowToUser(row) {
     isActive: flag(row.is_active),
     isApproved: flag(row.is_approved),
     isSelfClient: flag(row.self_client),
+    resetPasswordRequired: flag(row.reset_password),
     verificationStatus: row.verification_status || null,
   };
 }
 
 const USER_SELECT = `
   select u.uuid, u.username, u.email, u.password, u.full_name, u.first_name,
-         u.phone, u.is_active, u.is_approved, u.self_client, u.verification_status,
+         u.phone, u.is_active, u.is_approved, u.self_client, u.reset_password, u.verification_status,
          u.org_uuid, r.role_name, o.organization_name
     from "user" u
     left join role r on r.uuid = u.role_uuid
@@ -748,7 +749,15 @@ async function insertVendorAccount({
   const existing = await findUserByEmail(normalizedEmail);
   if (existing) {
     if (password) {
-      await updateUserPasswordByUuid(existing.id, password, createdBy);
+      await pool.query(
+        'update "user" set password = $1, reset_password = true, last_modified_by = $2, last_modified_ts = now() where uuid = $3',
+        [password, createdBy, String(existing.id)],
+        {
+          d1: true,
+          d1Text:
+            'update "user" set password = $1, reset_password = true, last_modified_by = $2, last_modified_ts = strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') where uuid = $3',
+        }
+      );
       if (phone) {
         await pool.query(
           'update "user" set phone = $1, last_modified_by = $2, last_modified_ts = now() where uuid = $3',
@@ -808,11 +817,11 @@ async function insertVendorAccount({
       `insert into "user"
          (uuid, username, email, password, full_name, first_name, phone,
           organization_name, org_uuid, role_uuid,
-          is_active, is_approved, self_client,
+          is_active, is_approved, self_client, reset_password,
           verification_status, created_ts, last_modified_ts)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                1, 1, 0,
-               $11, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+               1, $11, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
       [
         userUuid,
         normalizedEmail,
@@ -891,7 +900,7 @@ async function insertVendorAccount({
           source_type, verification_status, created_by, created_ts,
           last_modified_by, last_modified_ts)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               true, false, true, false, true, false, false,
+               true, false, true, true, true, false, false,
                $12, $13, $14, now(), $15, now())`,
       [
         userUuid,
@@ -960,12 +969,12 @@ async function updateUserPassword(email, newPassword) {
  */
 async function updateUserPasswordByUuid(userUuid, newPassword, actorEmail) {
   const result = await pool.query(
-    'update "user" set password = $1, last_modified_by = $2, last_modified_ts = now() where uuid = $3',
+    'update "user" set password = $1, reset_password = false, last_modified_by = $2, last_modified_ts = now() where uuid = $3',
     [newPassword, actorEmail || 'enterprise-workspace', String(userUuid)],
     {
       d1: true,
       d1Text:
-        'update "user" set password = $1, last_modified_by = $2, last_modified_ts = strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') where uuid = $3',
+        'update "user" set password = $1, reset_password = false, last_modified_by = $2, last_modified_ts = strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') where uuid = $3',
     }
   );
   return (result.rowCount || 0) > 0;

@@ -364,8 +364,11 @@ describe('Buyer-Specific Vendor Access & Unlimited Quotation Rules', () => {
       expect(res.body.error).toContain('not found');
     });
 
-    test('when invited by another buyer, vendor consumes free credit upon quote submission', async () => {
-      // Invite vendor X to rfqB1 and unlock
+    test('being invited onto another buyer RFQ grants invitation-based unlimited quoting (no free credit consumed)', async () => {
+      // An explicit invitation (membership in assignedVendors) now marks the
+      // vendor as mapped to that RFQ, so quoting it is treated the same as a
+      // buyer-mapped vendor: unlimited and free of credit consumption. The
+      // vendor's 5 free credits are therefore preserved.
       rfqB1.assignedVendors = [{ id: vendorX.id, name: vendorX.name, email: vendorX.email }];
       vendorX.freeQuotationCredits = 5;
       vendorX.unlockedRfqIds = [rfqB1.id];
@@ -381,11 +384,13 @@ describe('Buyer-Specific Vendor Access & Unlimited Quotation Rules', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       const vAfter = storeService.getVendorById(vendorX.id, 'all');
-      expect(vAfter.freeQuotationCredits).toBe(4);
+      expect(vAfter.freeQuotationCredits).toBe(5);
     });
 
-    test('when invited by another buyer, vendor with 0 credits and no subscription is blocked with 403', async () => {
-      // Invite vendor X to rfqB1 and unlock
+    test('invited vendor with 0 credits and no subscription can still quote the inviting RFQ (invitation-based unlock)', async () => {
+      // Because invitation grants unlimited quoting on that RFQ, a 0-credit
+      // unsubscribed vendor is NOT blocked when quoting an RFQ they were
+      // explicitly invited onto.
       rfqB1.assignedVendors = [{ id: vendorX.id, name: vendorX.name, email: vendorX.email }];
       vendorX.freeQuotationCredits = 0;
       vendorX.subscriptionPlan = 'premium';
@@ -400,12 +405,12 @@ describe('Buyer-Specific Vendor Access & Unlimited Quotation Rules', () => {
           leadTimeDays: 25,
         });
 
-      expect(res.status).toBe(403);
-      expect(res.body.success).toBe(false);
-      expect(res.body.upgradeRequired).toBe(true);
-      expect(res.body.freeCreditsRemaining).toBe(0);
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      const vAfter = storeService.getVendorById(vendorX.id, 'all');
+      expect(vAfter.freeQuotationCredits).toBe(0);
 
-      // Verify that the same vendor can still quote their mapped buyer's RFQ
+      // The same vendor also quotes their own mapped buyer's RFQ freely.
       const resMapped = await request(app)
         .post(`/api/rfqs/${rfqA1.id}/quotes`)
         .set(vendorAuthHeader(vendorX))
@@ -457,9 +462,12 @@ Payment Terms: 30 Days Net
       expect(mailerService.sendQuoteAcknowledgementEmail).toHaveBeenCalled();
     });
 
-    test('vendor quoting other buyer RFQ via email with 0 credits triggers credits exhausted notification', async () => {
-      // Invite vendor X to rfqB1
-      rfqB1.assignedVendors = [{ id: vendorX.id, name: vendorX.name, email: vendorX.email }];
+    test('vendor quoting a NON-invited other buyer RFQ via email with 0 credits triggers credits exhausted notification', async () => {
+      // The vendor is NOT invited onto rfqB1 (assignedVendors stays empty), so
+      // it is neither buyer-mapped nor invitation-unlocked. With 0 free credits
+      // and no subscription the email quotation is rejected as exhausted. (An
+      // invited vendor would instead quote unlimited — see the portal tests.)
+      rfqB1.assignedVendors = [];
       vendorX.freeQuotationCredits = 0;
       vendorX.subscriptionPlan = 'premium';
       vendorX.isSubscribed = false;

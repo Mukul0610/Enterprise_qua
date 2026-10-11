@@ -63,10 +63,14 @@ export default function OpportunityFeed({
   const [myMinorCategories, setMyMinorCategories] = React.useState<string[]>([]);
   const [myAddedByBuyerCompany, setMyAddedByBuyerCompany] = React.useState<string>('');
   const [myBuyerId, setMyBuyerId] = React.useState<string>('');
+  const [myOnboardingSource, setMyOnboardingSource] = React.useState<'buyer' | 'self' | null>(null);
   React.useEffect(() => {
     let cancelled = false;
     const email = currentUserSession?.email;
     if (!email) return;
+    setMyOnboardingSource(null);
+    setMyAddedByBuyerCompany('');
+    setMyBuyerId('');
     fetch(`/api/vendors/${encodeURIComponent(email)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -75,6 +79,10 @@ export default function OpportunityFeed({
         setMyMinorCategories(Array.isArray(data.data.minorCategories) ? data.data.minorCategories : []);
         setMyAddedByBuyerCompany(data.data.addedByBuyerCompany || '');
         setMyBuyerId(data.data.buyerId || data.data.buyerAccountId || '');
+        const isBuyerAdded = data.data.addedByBuyerCompany || data.data.buyerId || data.data.buyerAccountId;
+        setMyOnboardingSource(
+          isBuyerAdded ? 'buyer' : data.data.source === 'self_registration' ? 'self' : null
+        );
       })
       .catch(() => {});
     return () => {
@@ -376,6 +384,20 @@ export default function OpportunityFeed({
 
   return (
     <div className="space-y-6 animate-fade-in pb-10">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white">Vendor Dashboard</h1>
+          <p className="text-sm text-slate-500 dark:text-gray-400">Your sourcing opportunities and invitations</p>
+        </div>
+        {myOnboardingSource && (
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200">
+            <Building size={14} aria-hidden="true" />
+            {myOnboardingSource === 'buyer'
+              ? `Procucev buyer added you${myAddedByBuyerCompany ? ` · ${myAddedByBuyerCompany}` : ''}`
+              : 'Self-onboarded vendor'}
+          </span>
+        )}
+      </div>
 
       {/* Automated System Urgent Reminder Banner. Rendered only when there is an
           opportunity to act on, and it names that opportunity: the banner used to

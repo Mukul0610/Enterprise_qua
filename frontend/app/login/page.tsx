@@ -45,6 +45,7 @@ export default function LoginPage() {
   const {
     isLoggedIn,
     currentRole,
+    currentUserSession,
     setCurrentRole,
     setIsLoggedIn,
     setCurrentUserSession,
@@ -142,9 +143,13 @@ export default function LoginPage() {
   // Someone already signed in should not sit on the sign-in screen.
   useEffect(() => {
     if (isLoggedIn) {
-      router.replace(ROLE_LANDING_ROUTE[currentRole] || ROLE_LANDING_ROUTE.buyer);
+      const destination =
+        currentUserSession?.role === 'vendor' && currentUserSession.passwordChangeRequired
+          ? '/vendor-first-login'
+          : ROLE_LANDING_ROUTE[currentRole] || ROLE_LANDING_ROUTE.buyer;
+      router.replace(destination);
     }
-  }, [isLoggedIn, currentRole, router]);
+  }, [isLoggedIn, currentRole, currentUserSession, router]);
 
   /**
    * Commit a verified session and route to the landing screen for its role.
@@ -163,7 +168,11 @@ export default function LoginPage() {
       }),
       'success'
     );
-    router.replace(ROLE_LANDING_ROUTE[user.role] || ROLE_LANDING_ROUTE.buyer);
+    router.replace(
+      user.role === 'vendor' && user.passwordChangeRequired
+        ? '/vendor-first-login'
+        : ROLE_LANDING_ROUTE[user.role] || ROLE_LANDING_ROUTE.buyer
+    );
   };
 
   const fail = (title: string, error?: string) => showToast(title, error || AUTH.serverErrorFallback, 'warning');

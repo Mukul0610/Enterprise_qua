@@ -207,6 +207,7 @@ function generateSessionToken(user) {
       role: user.role,
       orgId: user.orgId,
       orgName: user.orgName,
+      passwordChangeRequired: user.resetPasswordRequired === true,
       iat: issuedAt,
       exp: expiresAt,
     })
@@ -330,6 +331,8 @@ function toPublicUser(user) {
     role: user.role,
     orgId: user.orgId,
     orgName: user.orgName,
+    mobile: user.mobile || '',
+    passwordChangeRequired: user.resetPasswordRequired === true,
   };
 }
 
@@ -462,7 +465,14 @@ async function changePassword({ userUuid, email, currentPassword, newPassword, i
     ipAddress,
   });
 
-  return { success: true, message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS };
+  const updatedUser = { ...user, resetPasswordRequired: false };
+  const token = generateSessionToken(updatedUser);
+  return {
+    success: true,
+    message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
+    token,
+    user: toPublicUser(updatedUser),
+  };
 }
 
 /**
@@ -739,7 +749,12 @@ async function registerUser(payload, ipAddress) {
     throw new Error(AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS);
   }
 
-  const newUser = result.user;
+  // Vendor registration creates the account with reset_password enabled, so
+  // the first session must carry the same gate as a subsequent login.
+  const newUser = {
+    ...result.user,
+    ...(isVendor ? { resetPasswordRequired: true } : {}),
+  };
   const token = generateSessionToken(newUser);
   logger.audit(`New enterprise account registered: ${newUser.email} (${newUser.role})`, newUser.email, { ipAddress });
   storeService.addAuditLog({

@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { downloadBidComparisonExcel, downloadVendorQuotationExcel } from '@/lib/bidComparisonExport';
+import { downloadBidComparisonExcel, downloadVendorQuotationExcel, downloadFullQuotesExcel, downloadSingleVendorQuoteExcel, downloadMultiSheetWorkbook } from '@/lib/bidComparisonExport';
 import type { RFQItem, QuoteComparison, LineItemBid } from '@/lib/types';
 
 jest.mock('xlsx', () => ({
@@ -36,6 +36,44 @@ function makeQuote(overrides: Partial<QuoteComparison> = {}): QuoteComparison {
     ...overrides,
   } as QuoteComparison;
 }
+
+describe('downloadMultiSheetWorkbook', () => {
+  let createObjectURLSpy: jest.SpyInstance;
+  let revokeObjectURLSpy: jest.SpyInstance;
+  let clickSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    createObjectURLSpy = jest.spyOn(URL, 'createObjectURL').mockReturnValue('blob:multi-sheet');
+    revokeObjectURLSpy = jest.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  test('uses optional headers and truncates sheet names to Excel limits before downloading', () => {
+    const longName = 'A worksheet name that exceeds thirty-one characters';
+    downloadMultiSheetWorkbook([
+      { name: longName, rows: [{ Item: 'Pump' }], header: ['Item', 'Quantity'] },
+      { name: 'Overview', rows: [{ Vendor: 'Acme' }] },
+    ], 'Quotes.xlsx');
+
+    expect(XLSX.utils.json_to_sheet).toHaveBeenNthCalledWith(1, [{ Item: 'Pump' }], { header: ['Item', 'Quantity'] });
+    expect(XLSX.utils.json_to_sheet).toHaveBeenNthCalledWith(2, [{ Vendor: 'Acme' }]);
+    expect(XLSX.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        SheetNames: [longName.slice(0, 31), 'Overview'],
+      }),
+      { bookType: 'xlsx', type: 'array' },
+    );
+    expect(clickSpy).toHaveBeenCalled();
+    expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:multi-sheet');
+  });
+});
 
 describe('downloadBidComparisonExcel', () => {
   let createObjectURLSpy: jest.SpyInstance;
@@ -175,5 +213,95 @@ describe('downloadVendorQuotationExcel', () => {
     expect(createObjectURLSpy).toHaveBeenCalled();
     expect(clickSpy).toHaveBeenCalled();
     expect(revokeObjectURLSpy).toHaveBeenCalledWith('blob:mock-url');
+  });
+});
+
+describe('downloadFullQuotesExcel', () => {
+  let createObjectURLSpy: jest.SpyInstance;
+  let revokeObjectURLSpy: jest.SpyInstance;
+  let clickSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    createObjectURLSpy = jest.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    revokeObjectURLSpy = jest.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  test('exports multi-tab workbook with itemized and non-itemized quotes', () => {
+    const itemizedQuote = makeQuote({
+      vendorId: 'v-1',
+      vendorName: 'Acme Co',
+      isBestPrice: true,
+      lineItemQuotes: [
+        { lineItemId: 'li-1', itemName: 'Pump', quantity: 2, unitPrice: 500, totalPrice: 1000 },
+      ],
+    });
+
+    const nonItemizedQuote = makeQuote({
+      vendorId: 'v-2',
+      vendorName: 'Beta Ltd',
+      isBestPrice: false,
+      unitPrice: 300,
+      totalPrice: 2100,
+    });
+
+    downloadFullQuotesExcel(makeRfq(), [itemizedQuote, nonItemizedQuote]);
+
+    expect(XLSX.utils.json_to_sheet).toHaveBeenCalled();
+    expect(XLSX.write).toHaveBeenCalledWith(
+      expect.objectContaining({
+        SheetNames: expect.arrayContaining(['Quotes Summary', 'Line Item Matrix', 'All Itemized Bids']),
+      }),
+      { bookType: 'xlsx', type: 'array' }
+    );
+    expect(createObjectURLSpy).toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalled();
+  });
+});
+
+describe('downloadSingleVendorQuoteExcel', () => {
+  let createObjectURLSpy: jest.SpyInstance;
+  let revokeObjectURLSpy: jest.SpyInstance;
+  let clickSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    createObjectURLSpy = jest.spyOn(URL, 'createObjectURL').mockReturnValue('blob:mock-url');
+    revokeObjectURLSpy = jest.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    clickSpy = jest.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+    clickSpy.mockRestore();
+  });
+
+  test('exports single vendor quote with itemized line items and totals', () => {
+    const quote = makeQuote({
+      vendorName: 'Delta Systems',
+      lineItemQuotes: [
+        { lineItemId: 'li-1', itemName: 'Pump', quantity: 2, unitPrice: 500, totalPrice: 1000 },
+      ],
+    });
+
+    downloadSingleVendorQuoteExcel(makeRfq(), quote);
+
+    expect(XLSX.utils.json_to_sheet).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ 'Item Name': 'Pump', 'Unit Price (INR)': 500 }),
+        expect.objectContaining({ 'Item Name': 'TOTAL BID AMOUNT', 'Total Price (INR)': 1000 }),
+      ]),
+      expect.anything()
+    );
+    expect(createObjectURLSpy).toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalled();
   });
 });

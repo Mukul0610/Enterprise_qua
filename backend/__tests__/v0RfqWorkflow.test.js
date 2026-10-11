@@ -6,6 +6,20 @@ describe('V0 RFQ Complete Workflow — Procucev Network Vendors', () => {
   let inviteEmailSpy;
   let mismatchEmailSpy;
 
+  // mode_0 createRFQ auto-invites every category-matched Procucev vendor into
+  // assignedVendors/followUpData.vendors. An invited vendor is now treated as
+  // already unlocked (invitation-based unlock), so for the tests that exercise
+  // the download-first / free-credit-consuming path we detach the vendor from
+  // the auto-generated invite list so it goes through the locked/credit path.
+  const clearAutoInvites = (rfq) => {
+    rfq.assignedVendors = [];
+    if (rfq.followUpData) {
+      rfq.followUpData.vendors = [];
+      rfq.followUpData.totalInvited = 0;
+    }
+    return rfq;
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     inviteEmailSpy = jest.spyOn(mailerService, 'sendRfqInviteEmail').mockResolvedValue({ sent: true });
@@ -128,12 +142,12 @@ describe('V0 RFQ Complete Workflow — Procucev Network Vendors', () => {
       expect(initialCredits.freeCreditsUsed).toBe(0);
 
       // Create 5 test RFQs
-      const rfq1 = storeService.createRFQ({ id: 'rfq-credit-1', title: 'RFQ 1', category: 'General Supplies', sourcingMode: 'mode_0' });
-      const rfq2 = storeService.createRFQ({ id: 'rfq-credit-2', title: 'RFQ 2', category: 'General Supplies', sourcingMode: 'mode_0' });
-      const rfq3 = storeService.createRFQ({ id: 'rfq-credit-3', title: 'RFQ 3', category: 'General Supplies', sourcingMode: 'mode_0' });
-      const rfq4 = storeService.createRFQ({ id: 'rfq-credit-4', title: 'RFQ 4', category: 'General Supplies', sourcingMode: 'mode_0' });
-      const rfq5 = storeService.createRFQ({ id: 'rfq-credit-5', title: 'RFQ 5', category: 'General Supplies', sourcingMode: 'mode_0' });
-      const rfq6 = storeService.createRFQ({ id: 'rfq-credit-6', title: 'RFQ 6', category: 'General Supplies', sourcingMode: 'mode_0' });
+      const rfq1 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-1', title: 'RFQ 1', category: 'General Supplies', sourcingMode: 'mode_0' }));
+      const rfq2 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-2', title: 'RFQ 2', category: 'General Supplies', sourcingMode: 'mode_0' }));
+      const rfq3 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-3', title: 'RFQ 3', category: 'General Supplies', sourcingMode: 'mode_0' }));
+      const rfq4 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-4', title: 'RFQ 4', category: 'General Supplies', sourcingMode: 'mode_0' }));
+      const rfq5 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-5', title: 'RFQ 5', category: 'General Supplies', sourcingMode: 'mode_0' }));
+      const rfq6 = clearAutoInvites(storeService.createRFQ({ id: 'rfq-credit-6', title: 'RFQ 6', category: 'General Supplies', sourcingMode: 'mode_0' }));
 
       // Unlock RFQ 1: balance goes 5 -> 4
       const res1 = await storeService.unlockRFQForVendor(vendor.id, rfq1.id);
@@ -176,11 +190,11 @@ describe('V0 RFQ Complete Workflow — Procucev Network Vendors', () => {
         majorCategory: 'Pumps & Valves',
       });
 
-      const rfq = storeService.createRFQ({
+      const rfq = clearAutoInvites(storeService.createRFQ({
         title: 'Centrifugal Pumps Enquiry',
         category: 'Pumps & Valves',
         sourcingMode: 'mode_0',
-      });
+      }));
 
       // Before unlocking, check returns false
       expect(storeService.isRfqUnlockedForVendor(vendor.id, rfq.id)).toBe(false);
@@ -259,11 +273,11 @@ describe('V0 RFQ Complete Workflow — Procucev Network Vendors', () => {
         majorCategory: 'Hydraulic Systems',
       });
 
-      const rfq = storeService.createRFQ({
+      const rfq = clearAutoInvites(storeService.createRFQ({
         title: 'Hydraulic Cylinders Procurement',
         category: 'Hydraulic Systems',
         sourcingMode: 'mode_0',
-      });
+      }));
 
       // 1. Quoting before downloading returns 403 Forbidden
       const lockedQuoteRes = await request(app)

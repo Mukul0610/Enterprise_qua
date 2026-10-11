@@ -75,6 +75,7 @@ process.env.R2_BUCKET = 'test-bucket';
 const { app } = require('../src/server');
 const { RFQ_ATTACHMENT_CONFIG } = require('../src/config/constants');
 const attachments = require('../src/services/rfqAttachmentService');
+const quoteAttachments = require('../src/services/quoteAttachmentService');
 const authService = require('../src/services/authService');
 const A_FUTURE_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
@@ -356,6 +357,26 @@ describe('RFQ attachment storage service', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+describe('vendor quote attachment storage', () => {
+  test('keeps bid documents in a separate prefix and binds them to their RFQ and vendor', async () => {
+    const saved = await quoteAttachments.saveQuoteAttachment(
+      {
+        fileName: 'bid.pdf',
+        mimeType: 'application/pdf',
+        content: pdfBody(),
+      },
+      { rfqId: 'rfq-123', vendorId: 'vendor-456' }
+    );
+
+    expect(saved.status).toBe(ATTACHMENT_STATUS.SAVED);
+    expect(fakeR2Store.has(`${RFQ_ATTACHMENT_CONFIG.STORAGE_DIR}-quotes/${saved.attachment.id}`)).toBe(true);
+    const loaded = await quoteAttachments.loadQuoteAttachment(saved.attachment.id);
+    expect(loaded.access).toEqual({ rfqId: 'rfq-123', vendorId: 'vendor-456' });
+    expect(loaded.content.toString()).toBe('%PDF-1.4 line item annexure');
+    expect(saved.attachment).not.toHaveProperty('vendorId');
+  });
+});
+
 describe('RFQ attachment HTTP routes', () => {
   describe('POST /api/rfqs/attachments', () => {
     test('stores a document and returns its metadata', async () => {

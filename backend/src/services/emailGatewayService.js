@@ -863,6 +863,34 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
     };
   }
 
+  // Requirement 3: Conditional Email & Portal Bidding
+  // For RFQs with >10 items, direct vendors to the portal for Excel-based quotation upload.
+  const itemCount = Array.isArray(targetRfq.extractedEntities) ? targetRfq.extractedEntities.length : 0;
+  if (itemCount > 10) {
+    logger.warn(
+      `RFQ ${targetRfq.rfqNumber} has ${itemCount} items (>10 items threshold). Directing vendor ${vendorRecord.name} to Vendor Portal for Excel upload.`,
+      { rfqNumber: targetRfq.rfqNumber, itemCount, vendorEmail: message.fromAddress },
+      'EMAIL_GATEWAY'
+    );
+
+    try {
+      await mailerService.sendComplexRfqPortalRedirectEmail(message.fromAddress, {
+        rfq: targetRfq,
+        vendorName: vendorRecord.name,
+        itemCount,
+      });
+    } catch (mailErr) {
+      logger.error('Failed to send complex RFQ portal redirect email', mailErr, 'EMAIL_GATEWAY');
+    }
+
+    return {
+      status: INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED,
+      detail: `RFQ ${targetRfq.rfqNumber} has ${itemCount} line items (>10 limit for email bidding). Vendor directed to Procucev Portal for Excel template upload.`,
+      message,
+      rfq: targetRfq,
+    };
+  }
+
   const quote = {
     vendorId: vendorRecord.id,
     vendorName: vendorRecord.name,

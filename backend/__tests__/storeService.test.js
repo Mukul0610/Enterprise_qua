@@ -728,6 +728,7 @@ describe('Store Service & Business Operations', () => {
           {
             companyName: 'Mapped Hist Co',
             email: 'mapped-hist@example.com',
+            phone: '+91 98765 43210',
             categoriesMappedByBuyer: true,
             majorCategory: 'Industrial Valves',
             minorCategories: ['Ball Valves'],
@@ -738,7 +739,11 @@ describe('Store Service & Business Operations', () => {
         await new Promise((resolve) => setImmediate(resolve));
 
         expect(categoryMappedSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ majorCategory: 'Industrial Valves', minorCategories: ['Ball Valves'] })
+          expect.objectContaining({
+            majorCategory: 'Industrial Valves',
+            minorCategories: ['Ball Valves'],
+            contactPhone: '+91 98765 43210',
+          })
         );
         expect(selfMapSpy).not.toHaveBeenCalled();
       } finally {
@@ -764,6 +769,7 @@ describe('Store Service & Business Operations', () => {
           {
             companyName: 'Unmapped Hist Co',
             email: 'unmapped-hist@example.com',
+            phone: '+91 98765 43210',
             categoriesMappedByBuyer: false,
           },
         ]);
@@ -771,7 +777,7 @@ describe('Store Service & Business Operations', () => {
         await new Promise((resolve) => setImmediate(resolve));
         await new Promise((resolve) => setImmediate(resolve));
 
-        expect(selfMapSpy).toHaveBeenCalled();
+        expect(selfMapSpy).toHaveBeenCalledWith(expect.objectContaining({ contactPhone: '+91 98765 43210' }));
         expect(categoryMappedSpy).not.toHaveBeenCalled();
       } finally {
         findSpy.mockRestore();
@@ -2327,5 +2333,4 @@ describe('demo RFQ seeding', () => {
     });
   });
 });
-
 

@@ -15,11 +15,32 @@ import type {
   RFQListResult,
   RFQMutationResult,
   RFQUpdatePayload,
+  RFQQuoteAttachment,
   RFQVendorCandidate,
   RFQVendorCandidatesResult,
   RFQVendorPageResult,
   VendorPageMeta,
 } from './types';
+
+export async function downloadQuoteAttachment(
+  rfqIdOrNumber: string,
+  attachment: RFQQuoteAttachment
+): Promise<{ success: boolean; url?: string; error?: string }> {
+  const token = authClient.getToken();
+  try {
+    const response = await fetch(
+      `/api/rfqs/${encodeURIComponent(rfqIdOrNumber)}/quote-attachments/${encodeURIComponent(attachment.id)}`,
+      { headers: token ? { Authorization: `Bearer ${token}` } : {} }
+    );
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({}));
+      return { success: false, error: body.error || 'The bid document could not be downloaded.' };
+    }
+    return { success: true, url: URL.createObjectURL(await response.blob()) };
+  } catch {
+    return { success: false, error: UI_STRINGS.auth.networkUnreachable };
+  }
+}
 
 /**
  * Transport for AI RFQ document extraction.
@@ -817,4 +838,3 @@ export async function downloadAndUnlockRFQ(rfqIdOrNumber: string): Promise<{
     return { success: false, error: err?.message || 'Network error downloading RFQ.' };
   }
 }
-

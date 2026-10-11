@@ -1018,6 +1018,33 @@ class StoreService {
       }
     }
 
+    // Direct invitation match: buyer specifically assigned or invited this vendor to this RFQ
+    const vId = vendor.id ? String(vendor.id).trim().toLowerCase() : null;
+    const vEmail = vendor.email ? String(vendor.email).trim().toLowerCase() : null;
+    const vName = vendor.name ? String(vendor.name).trim().toLowerCase() : null;
+
+    if (Array.isArray(rfq.assignedVendors)) {
+      const isAssigned = rfq.assignedVendors.some((av) => {
+        if (!av) return false;
+        const avId = av.id ? String(av.id).trim().toLowerCase() : null;
+        const avEmail = av.email ? String(av.email).trim().toLowerCase() : null;
+        const avName = av.name ? String(av.name).trim().toLowerCase() : null;
+        return (vId && avId && vId === avId) || (vEmail && avEmail && vEmail === avEmail) || (vName && avName && vName === avName);
+      });
+      if (isAssigned) return true;
+    }
+
+    if (rfq.followUpData && Array.isArray(rfq.followUpData.vendors)) {
+      const isInvited = rfq.followUpData.vendors.some((fv) => {
+        if (!fv) return false;
+        const fvId = (fv.id || fv.vendorId) ? String(fv.id || fv.vendorId).trim().toLowerCase() : null;
+        const fvEmail = fv.email ? String(fv.email).trim().toLowerCase() : null;
+        const fvName = (fv.name || fv.vendorName) ? String(fv.name || fv.vendorName).trim().toLowerCase() : null;
+        return (vId && fvId && vId === fvId) || (vEmail && fvEmail && vEmail === fvEmail) || (vName && fvName && vName === fvName);
+      });
+      if (isInvited) return true;
+    }
+
     return false;
   }
 
@@ -2151,18 +2178,150 @@ class StoreService {
 
     const nextStatus = isV0 ? 'Quotes Received' : (rfq.status === 'PO Generated' ? 'PO Generated' : 'In Evaluation');
 
+    // Requirement 1: Automatic RFQ Closure as soon as 100% of invited vendors submit valid quotes
+    const assignedVendors = Array.isArray(rfq.assignedVendors) && rfq.assignedVendors.length > 0
+      ? rfq.assignedVendors
+      : (followUpData && Array.isArray(followUpData.vendors) ? followUpData.vendors : []);
+
+    const allInvitedSubmitted =
+      assignedVendors.length > 0 &&
+      assignedVendors.every((av) => {
+        if (!av) return false;
+        const avId = av.id || av.vendorId;
+        const avEmail = av.email;
+        const avName = av.name || av.vendorName;
+        return quotes.some((q) =>
+          (avId && String(q.vendorId) === String(avId)) ||
+          (avEmail && String(q.vendorEmail || '').toLowerCase() === String(avEmail).toLowerCase()) ||
+          (avName && String(q.vendorName || '').trim().toLowerCase() === String(avName).trim().toLowerCase())
+        );
+      });
+
+    let autoClosed = false;
+    let finalStatus = nextStatus;
+
+    if (allInvitedSubmitted && rfq.status !== 'Closed' && rfq.status !== 'PO Generated') {
+      finalStatus = 'Closed';
+      autoClosed = true;
+      logger.info(
+        `[AUTO_RFQ_CLOSURE] 100% of invited vendors (${assignedVendors.length}) submitted quotes for RFQ ${rfq.rfqNumber}. Closing RFQ immediately.`,
+        { rfqNumber: rfq.rfqNumber, quotesCount: quotes.length, invitedCount: assignedVendors.length },
+        'STORE_SERVICE'
+      );
+    }
+
     const updated = this.updateRFQ(rfq.id, {
       quotes,
       quotesCount: quotes.length,
-      status: nextStatus,
+      status: finalStatus,
+      ...(autoClosed ? { quotesHidden: false, closedAt: new Date().toISOString(), autoClosedReason: 'All invited vendors submitted quotes' } : {}),
       followUpData,
     });
 
-    // Tell the RFQ's owning buyer a quote has landed — in-app and by email.
-    this.notifyBuyerOfQuote(rfq, quote);
-    this.emailQuoteToBuyer(rfq, quote);
+    if (autoClosed) {
+      this.cancelDelayedQuoteTimers(rfq.id);
+      this.notifyBuyerOfAutoClosureAndScheduleComparison(updated, quotes);
+    } else {
+      // Tell the RFQ's owning buyer a quote has landed — in-app and by email.
+      this.notifyBuyerOfQuote(rfq, quote);
+      this.emailQuoteToBuyer(rfq, quote);
+    }
 
     return updated;
+  }
+
+  cancelDelayedQuoteTimers(rfqId) {
+    if (!rfqId || !this._delayedQuoteTimers) return;
+    const timers = this._delayedQuoteTimers.get(rfqId);
+    if (Array.isArray(timers)) {
+      timers.forEach((t) => clearTimeout(t));
+      this._delayedQuoteTimers.delete(rfqId);
+    }
+  }
+
+  notifyBuyerOfAutoClosureAndScheduleComparison(rfq, quotes) {
+    if (!rfq) return;
+    const buyerEmail = this.resolveBuyerEmailForRFQ(rfq);
+    const buyer = (rfq.buyerAccountId && this.buyerAccounts.find((a) => a.id === rfq.buyerAccountId)) || {
+      id: rfq.buyerAccountId || null,
+      corporateEmail: buyerEmail,
+      organizationName: rfq.buyerAccountName || rfq.buyerName || 'Buyer',
+      phone: rfq.buyerPhone || null,
+    };
+
+    // 1. In-app notification for buyer
+    if (rfq.buyerAccountId) {
+      const notification = this._buildNotification({
+        recipientType: 'buyer',
+        recipientId: rfq.buyerAccountId,
+        kind: 'rfq_auto_closed',
+        rfq,
+        title: `RFQ ${rfq.rfqNumber} Auto-Closed (100% Quotes Received)`,
+        message: `All ${quotes.length} invited vendor(s) have submitted quotes for RFQ ${rfq.rfqNumber} — ${rfq.title}. RFQ is closed. Comparative evaluation will be ready in 5 minutes.`,
+        meta: {
+          quotesCount: quotes.length,
+          autoClosed: true,
+        },
+      });
+      this.notifications.unshift(notification);
+      this._persistNotification(notification);
+    }
+
+    // 2. Immediate RFQ Auto-Closure Acknowledgement Email to buyer
+    if (buyer.corporateEmail) {
+      this._background(
+        mailerService.sendRfqAutoClosureAcknowledgementEmail(buyer.corporateEmail, {
+          rfq,
+          quotesCount: quotes.length,
+          recipientName: buyer.organizationName,
+        }),
+        'Failed to email auto-closure acknowledgement to buyer'
+      );
+    }
+
+    // 3. Schedule 5-Minute Comparison-Ready Notification (Email + SMS)
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const timer = setTimeout(() => {
+      try {
+        const freshRfq = this.getRFQById(rfq.id) || rfq;
+        logger.info(
+          `[AUTO_CLOSURE] 5-minute comparison delay complete for RFQ ${freshRfq.rfqNumber}. Dispatching final comparison email and SMS.`,
+          { rfqNumber: freshRfq.rfqNumber, quotesCount: quotes.length, buyerEmail: buyer.corporateEmail },
+          'STORE_SERVICE'
+        );
+
+        // Send comparison email
+        if (buyer.corporateEmail) {
+          this._background(
+            mailerService.sendRfqFinalComparisonEmail(buyer.corporateEmail, {
+              rfq: freshRfq,
+              quotes,
+              recipientName: buyer.organizationName,
+            }),
+            'Failed to dispatch 5-minute comparison email to buyer'
+          );
+        }
+
+        // Send comparison SMS to buyer's phone
+        const buyerPhone = buyer.phone || buyer.corporatePhone || freshRfq.buyerPhone;
+        if (buyerPhone) {
+          this._background(
+            smsService.sendBuyerComparisonSms(buyerPhone, {
+              rfqNumber: freshRfq.rfqNumber,
+              quotesCount: quotes.length,
+              buyerName: buyer.organizationName,
+            }),
+            'Failed to dispatch 5-minute comparison SMS to buyer'
+          );
+        }
+      } catch (err) {
+        logger.error(`Error in 5-minute comparison notification dispatch for ${rfq.rfqNumber}`, err, 'STORE_SERVICE');
+      }
+    }, FIVE_MINUTES_MS);
+
+    if (timer && timer.unref) {
+      timer.unref();
+    }
   }
 
   addInquiryToRFQ(rfqId, inquiry) {
@@ -3527,7 +3686,7 @@ class StoreService {
     };
 
     /** Template A when the vendor has a buyer-mapped category, else Template B. */
-    const buildMappingEmail = (rec, { to, recipientName, vendorCode, tempPassword }) => {
+    const buildMappingEmail = (rec, { to, recipientName, vendorCode, tempPassword, contactPhone }) => {
       const hasMapping = isMappedRecord(rec);
       if (hasMapping) {
         const override = dispatchTemplates.category_mapped || {};
@@ -3543,6 +3702,7 @@ class StoreService {
             customSubject: override.subject,
             customMessage: override.message,
             tempPassword,
+            contactPhone,
           }),
         };
       }
@@ -3557,6 +3717,7 @@ class StoreService {
           customSubject: override.subject,
           customMessage: override.message,
           tempPassword,
+          contactPhone,
         }),
       };
     };
@@ -3759,6 +3920,7 @@ class StoreService {
         recipientName: vendor.contactPerson || vendor.name,
         vendorCode: vendor.id,
         tempPassword,
+        contactPhone: String(rec.phone || vendor.phone || '').trim(),
       });
 
       try {
