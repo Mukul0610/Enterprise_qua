@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
+import { resolveConfirmationVendorCount } from './ingestion-wizard';
 import { extractRfqCategorySignals, getCategoryMatchedProcucevVendors, matchVendorAgainstSignals } from '@/lib/vendorMatching';
 import {
   Plus,
@@ -623,8 +624,8 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Vendors Assigned</span>
-                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {confirmationRfq.assignedVendors?.length || (confirmationRfq.sourcingMode === 'mode_3' ? 'AI Matched' : '1+ Supplier')}
+                <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                  {resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
             </div>

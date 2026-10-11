@@ -2033,6 +2033,7 @@ class StoreService {
           email: v.email || null,
           contactPerson: v.contactPerson || null,
           phone: v.phone || null,
+          source: v.source || 'procucev_network',
         }));
       if (additions.length > 0) {
         newRFQ.assignedVendors = [...newRFQ.assignedVendors, ...additions];
@@ -2040,6 +2041,66 @@ class StoreService {
         newRFQ.followUpData.vendors = newRFQ.assignedVendors;
       }
     }
+
+    // Enterprise QUA – Version 3 (mode_3 / v3 / version_3, "AI Autonomous Sourcing Plan"):
+    // Autonomous Procucev Network Sourcing with double-blind evaluation protocol.
+    // Dynamically retrieve category-matched Procucev verified vendors for Version 3 RFQs.
+    let mode3ProcucevCount = 0;
+    if (
+      newRFQ.sourcingMode === 'mode_3' ||
+      newRFQ.sourcingMode === 'v3' ||
+      newRFQ.sourcingMode === 'version_3'
+    ) {
+      const MAX_V3_CATEGORY_INVITES = 200;
+      let v3Matches = this.candidateVendorsForRFQ(newRFQ)
+        .filter((v) => this.isProcucevVendor(v))
+        .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
+
+      if (newRFQ.deliveryPincode) {
+        const MAX_MODE3_PINCODE_INVITES = 100;
+        const targetPincode = String(newRFQ.deliveryPincode).trim();
+        const pinMatches = v3Matches.filter(
+          (v) => v.pincode && String(v.pincode).trim() === targetPincode
+        );
+        const pinNonMatches = v3Matches.filter(
+          (v) => !(v.pincode && String(v.pincode).trim() === targetPincode)
+        );
+        v3Matches = [...pinMatches, ...pinNonMatches].slice(0, MAX_MODE3_PINCODE_INVITES);
+      } else {
+        v3Matches = v3Matches.slice(0, MAX_V3_CATEGORY_INVITES);
+      }
+      mode3ProcucevCount = v3Matches.length;
+    }
+
+    // Dynamically calculate and attach Procucev vendor count for Version 0, Version 2, and Version 3:
+    let procucevVendorCount = 0;
+    const isV0 = newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0' || newRFQ.sourcingMode === 'version_0';
+    const isV2 = newRFQ.sourcingMode === 'mode_2' || newRFQ.sourcingMode === 'v2' || newRFQ.sourcingMode === 'version_2';
+    const isV3 = newRFQ.sourcingMode === 'mode_3' || newRFQ.sourcingMode === 'v3' || newRFQ.sourcingMode === 'version_3';
+
+    if (isV0) {
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+    } else if (isV2) {
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+    } else if (isV3) {
+      procucevVendorCount = mode3ProcucevCount > 0
+        ? mode3ProcucevCount
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+    }
+
+    newRFQ.procucevVendorCount = procucevVendorCount;
 
     this.rfqs.unshift(newRFQ);
     this._persistRFQ(newRFQ);
@@ -2710,6 +2771,36 @@ class StoreService {
     if (!vendor) return false;
     if (this.isBuyerUploaded(vendor)) return false;
     return true;
+  }
+
+  /**
+   * Dynamically retrieves the count of Procucev verified / network vendors associated
+   * with the given RFQ and its sourcing mode.
+   * @param {Object} rfq
+   * @returns {number}
+   */
+  getProcucevVendorCount(rfq) {
+    if (!rfq) return 0;
+    if (typeof rfq.procucevVendorCount === 'number') {
+      return rfq.procucevVendorCount;
+    }
+    const mode = rfq.sourcingMode || '';
+    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+    const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+    const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+
+    if (isV0 || isV2) {
+      const assigned = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
+      const procucevAssigned = assigned.filter((v) => {
+        const resolved = (v && v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      if (procucevAssigned.length > 0) return procucevAssigned.length;
+    }
+    if (isV0 || isV2 || isV3) {
+      return this.candidateVendorsForRFQ(rfq).filter((v) => this.isProcucevVendor(v)).length;
+    }
+    return 0;
   }
 
   /**

@@ -530,6 +530,8 @@ export interface RFQItem {
    * category-manager/all-rfqs.tsx's "Invite Vendors" action.
    */
   assignedVendors?: RFQAssignedVendor[];
+  /** Count of Procucev network vendors associated with this RFQ version */
+  procucevVendorCount?: number;
   inquiries?: RFQInquiry[];
   quotesHidden?: boolean;
   quotesHiddenUntil?: string;

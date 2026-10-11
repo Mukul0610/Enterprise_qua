@@ -108,6 +108,35 @@ function withStoredValue(options: string[], value: string): string[] {
   return [trimmed, ...options];
 }
 
+/**
+ * Resolves the dynamically retrieved Procucev vendor count from the backend response.
+ * For Version 0, Version 2, and Version 3, it displays the actual number of Procucev
+ * network vendors associated with that RFQ version based on the backend response.
+ */
+export function resolveConfirmationVendorCount(rfq: any): number {
+  if (!rfq) return 0;
+  const mode = rfq.sourcingMode;
+  const isNetworkMode =
+    mode === 'mode_0' || mode === 'v0' || mode === 'version_0' ||
+    mode === 'mode_2' || mode === 'v2' || mode === 'version_2' ||
+    mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+
+  if (isNetworkMode && typeof rfq.procucevVendorCount === 'number') {
+    return rfq.procucevVendorCount;
+  }
+  if (typeof rfq.procucevVendorCount === 'number') {
+    return rfq.procucevVendorCount;
+  }
+  if (Array.isArray(rfq.assignedVendors)) {
+    if (mode === 'mode_0' || mode === 'v0' || mode === 'version_0') {
+      const pCount = rfq.assignedVendors.filter(isProcucevVendor).length;
+      return pCount > 0 ? pCount : rfq.assignedVendors.length;
+    }
+    return rfq.assignedVendors.length;
+  }
+  return 0;
+}
+
 interface IngestionWizardProps {
   onComplete: () => void;
   onCancel: () => void;
@@ -2736,8 +2765,8 @@ export default function IngestionWizard({
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Mode & Vendors</span>
-                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {confirmationRfq.assignedVendors?.length || (confirmationRfq.sourcingMode === 'mode_3' ? 'AI Blind' : '1+ Supplier')}
+                <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                  {resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
             </div>

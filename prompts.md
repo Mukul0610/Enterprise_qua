@@ -2757,3 +2757,8 @@ Force exiting Jest: Have you considered using `--detectOpenHandles` to detect as
 Error: Process completed with exit code 1.
 
 fiix and merge in that pr
+
+### 2026-10-10T23:03:47+05:30
+Fix the RFQ success popup to display the correct, dynamically retrieved Procucev vendor count for Version 0, Version 2, and Version 3. Ensure each version shows the actual number of vendors associated with that RFQ version based on the backend response, rather than hardcoded, incorrect, or missing values. Verify that the vendor count updates correctly for different RFQs and versions while maintaining the existing popup design and functionality.
+
+raise pr for this issuse also after codde can implement

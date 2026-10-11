@@ -1135,6 +1135,93 @@ describe('Store Service & Business Operations', () => {
       expect((mode2RFQ.assignedVendors || []).map((v) => v.id)).toContain(networkVendor.id);
     });
 
+    test('createRFQ dynamically calculates and sets procucevVendorCount for Version 0, Version 2, and Version 3 based on category matches', () => {
+      const vA = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Alpha',
+        email: 'dyn-alpha@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.8,
+      });
+      const vB = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Beta',
+        email: 'dyn-beta@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.5,
+      });
+      const vC = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Gamma',
+        email: 'dyn-gamma@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.2,
+      });
+
+      // Version 0: Procucev network vendors auto-populated
+      const rfqV0 = storeService.createRFQ({
+        id: 'rfq-dyn-v0-test',
+        title: 'Dynamic V0 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_0',
+      });
+      expect(rfqV0.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV0)).toBe(3);
+
+      // Version 2: Hybrid sourcing auto-populates network vendors
+      const rfqV2 = storeService.createRFQ({
+        id: 'rfq-dyn-v2-test',
+        title: 'Dynamic V2 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_2',
+      });
+      expect(rfqV2.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV2)).toBe(3);
+
+      // Version 3: AI Autonomous Sourcing dynamically evaluates Procucev candidate network vendors
+      const rfqV3 = storeService.createRFQ({
+        id: 'rfq-dyn-v3-test',
+        title: 'Dynamic V3 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_3',
+      });
+      expect(rfqV3.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV3)).toBe(3);
+
+      // Version 1: Private roster only -> procucevVendorCount is 0
+      const rfqV1 = storeService.createRFQ({
+        id: 'rfq-dyn-v1-test',
+        title: 'Dynamic V1 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_1',
+      });
+      expect(rfqV1.procucevVendorCount).toBe(0);
+
+      // Different RFQ category with only 1 matching vendor updates dynamically
+      storeService.addVendor({
+        name: 'Single Cat Vendor',
+        email: 'single-cat@ex.com',
+        majorCategory: 'Dyn-Single-Cat',
+      });
+      const rfqSingle = storeService.createRFQ({
+        id: 'rfq-dyn-single-test',
+        title: 'Single Category RFQ',
+        category: 'Dyn-Single-Cat',
+        sourcingMode: 'mode_3',
+      });
+      expect(rfqSingle.procucevVendorCount).toBe(1);
+
+      // Unmatched category has 0 procucevVendorCount
+      const rfqEmpty = storeService.createRFQ({
+        id: 'rfq-dyn-empty-test',
+        title: 'Unmatched Category RFQ',
+        category: 'Non-Existent-Category-XYZ',
+        sourcingMode: 'mode_0',
+      });
+      expect(rfqEmpty.procucevVendorCount).toBe(0);
+
+      // getProcucevVendorCount handles null/empty/legacy objects
+      expect(storeService.getProcucevVendorCount(null)).toBe(0);
+      expect(storeService.getProcucevVendorCount({ sourcingMode: 'mode_0', assignedVendors: [{ id: vA.id }] })).toBe(1);
+    });
+
     test('createRFQ auto-invites category and sub-category matched vendors for an email-sourced RFQ in any sourcing mode', () => {
       const subCatVendor = storeService.addVendor({
         name: 'Email Sub-Category Vendor',

@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import IngestionWizard from '@/app/buyer/ingestion-wizard';
+import IngestionWizard, { resolveConfirmationVendorCount } from '@/app/buyer/ingestion-wizard';
 import { AppProvider } from '@/lib/store';
 import { extractLineItemsFromDocument, classifyLineItems, uploadRFQAttachment, createRFQ } from '@/lib/rfqClient';
 import { UI_STRINGS } from '@/lib/uiStrings';
@@ -1122,6 +1122,130 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 
       expect(screen.queryByTestId('ingestion-wizard-quota-exhausted-banner')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Create & Dispatch RFQ/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('RFQ Success Popup Dynamic Procucev Vendor Count Retrieval', () => {
+    it('resolveConfirmationVendorCount resolves dynamically retrieved Procucev vendor count for Version 0, 2, and 3', () => {
+      // Version 0: Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_0', procucevVendorCount: 7 })).toBe(7);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v0', procucevVendorCount: 4 })).toBe(4);
+
+      // Version 2: Hybrid sourcing plan Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_2', procucevVendorCount: 15 })).toBe(15);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'version_2', procucevVendorCount: 9 })).toBe(9);
+
+      // Version 3: AI Autonomous Sourcing Plan Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_3', procucevVendorCount: 22 })).toBe(22);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v3', procucevVendorCount: 18 })).toBe(18);
+
+      // Version 1: Private roster only uses assignedVendors
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_1',
+          assignedVendors: [{ id: 'pv-1', name: 'Private Vendor 1' }, { id: 'pv-2', name: 'Private Vendor 2' }],
+        })
+      ).toBe(2);
+
+      // Fallback for Version 0 when procucevVendorCount not explicit: filters Procucev vendors
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          assignedVendors: [
+            { id: 'pv-1', source: 'procucev_network' },
+            { id: 'pv-2', source: 'procucev_network' },
+            { id: 'v-buyer-1', source: 'buyer_uploaded' },
+          ],
+        })
+      ).toBe(2);
+
+      // Null, empty, or missing rfq returns 0
+      expect(resolveConfirmationVendorCount(null)).toBe(0);
+      expect(resolveConfirmationVendorCount({})).toBe(0);
+    });
+
+    it('displays the dynamically retrieved Procucev vendor count in the confirmation modal for Version 0, 2, and 3', async () => {
+      // Simulate backend response with dynamically retrieved procucevVendorCount: 6 for Version 3
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_3',
+          procucevVendorCount: 6,
+        },
+      });
+
+      renderWizard();
+
+      // Fill in required fields
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Precision Industrial Valve' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '8' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Nos' },
+      });
+
+      // Submit RFQ
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+
+      // Check confirmation vendor count dynamically renders 6 (NOT hardcoded 'AI Blind')
+      const countEl = screen.getByTestId('confirmation-vendor-count');
+      expect(countEl).toHaveTextContent('6');
+      expect(screen.queryByText('AI Blind')).not.toBeInTheDocument();
+    });
+
+    it('displays dynamically retrieved Procucev vendor count for Version 0 in confirmation modal', async () => {
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_0',
+          procucevVendorCount: 3,
+        },
+      });
+
+      renderWizard();
+
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Standard Fasteners' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '50' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Boxes' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+
+      const countEl = screen.getByTestId('confirmation-vendor-count');
+      expect(countEl).toHaveTextContent('3');
+      expect(screen.queryByText('1+ Supplier')).not.toBeInTheDocument();
     });
   });
 
