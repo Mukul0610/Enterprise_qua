@@ -757,7 +757,9 @@ describe('Controllers Error & Edge-Case Coverage', () => {
     const next = jest.fn();
     const categoryManagerUser = { role: 'category_manager', email: 'cm@procucev.com' };
     const adminUser = { role: 'admin', email: 'admin@procucev.com' };
-    const buyerUser = { role: 'buyer', email: 'buyer@procucev.com' };
+    // A buyer with no buyer account (earlier RFQ tests auto-provision one for
+    // buyer@procucev.com via ensureBuyerAccountForUser).
+    const buyerUser = { role: 'buyer', email: 'unlinked-buyer@procucev.com' };
     const vendorUser = { role: 'vendor', email: 'rajesh@apexindustrial.in' };
 
     const validRow = (overrides = {}) => ({

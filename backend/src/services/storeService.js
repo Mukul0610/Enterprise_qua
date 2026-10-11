@@ -356,6 +356,38 @@ class StoreService {
     return fresh;
   }
 
+  /**
+   * The signed-in buyer's account, created on first use when none exists.
+   *
+   * A buyer inserted straight into the identity `user` table (bulk import,
+   * manual DB insert) can sign in but never went through the app's
+   * POST /api/buyer-accounts step, so getBuyerAccountByEmail found nothing:
+   * their RFQs were saved with no buyerAccountId and the scoped list always
+   * came back empty. The id is the user's own uuid (`sub`) — stable, so a
+   * racing second request upserts the same row instead of a duplicate, and
+   * the same value the vendor/bootstrap paths already fall back to for an
+   * account-less buyer, so vendors they uploaded before still match.
+   */
+  async ensureBuyerAccountForUser(user) {
+    if (!user || user.role !== 'buyer' || !user.email) return null;
+    const existing = await this.getBuyerAccountByEmail(user.email);
+    if (existing) return existing;
+
+    const id = user.sub || user.id;
+    if (!id) return null;
+    const cached = this.buyerAccounts.find((a) => a.id === id);
+    if (cached) return cached;
+
+    logger.info('Auto-creating missing buyer account', { id, email: user.email }, 'STORE_SERVICE');
+    return this.addBuyerAccount({
+      id,
+      organizationName: user.orgName || user.email,
+      corporateEmail: user.email.toLowerCase(),
+      contactPerson: user.name || '',
+      organizationId: user.orgId || null,
+    });
+  }
+
   addBuyerAccount(accData) {
     const newAcc = {
       ...accData,
