@@ -2788,3 +2788,25 @@ continue
 
 raise the pr
 
+### 2026-10-11T20:30:15+05:30
+
+again not showing the number of procucev vendors can assign this rfq in v2
+
+### 2026-10-11T20:55:00+05:30
+
+Failed to load RFQs: The RFQ could not be read. Try again, and if it persists the API may be unavailable.
+591 | // Reported rather than silently swallowed, but the list is left alone: a
+592 | // transient failure should not blank a dashboard the buyer is reading.
+> 593 | console.error('Failed to load RFQs:', result.error);
+| ^
+594 | return;
+595 | }
+596 |
+at error (lib/store.tsx:593:15)
+at refreshFromDB (lib/store.tsx:643:9)
+[CI failure log on Frontend Build, Lint, Typecheck & Coverage -> Run Frontend Unit Tests & 90% Coverage Gate]
+
+### 2026-10-11T21:28:36+05:30
+
+continue
+

@@ -145,15 +145,15 @@ export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | und
 
   // Fallback: derive from assignedVendors when the backend field is absent:
   if (Array.isArray(rfq.assignedVendors)) {
-    if (isV2 || isV3 || isV1) {
-      // V1, V2, V3: all assigned vendors are eligible recipients.
-      return rfq.assignedVendors.length;
-    }
-    if (isV0) {
-      // V0: only Procucev network vendors are eligible recipients.
+    if (isV0 || isV2 || isV3) {
+      // V0, V2, V3: only Procucev network vendors are counted.
       return rfq.assignedVendors.filter((vendor) =>
         isProcucevVendor(typeof vendor === 'string' ? { id: vendor } : vendor)
       ).length;
+    }
+    if (isV1) {
+      // V1: all assigned vendors from the private roster.
+      return rfq.assignedVendors.length;
     }
   }
 

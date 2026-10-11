@@ -1165,7 +1165,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
           ],
         })
       ).toBe(2);
-      // Version 2 and 3 return all eligible assigned vendors, not just network vendors.
+      // Version 2 and 3 return only Procucev network vendors from fallback pool.
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_2',
@@ -1174,11 +1174,14 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
             { id: 'v-buyer-2', source: 'buyer_uploaded' },
           ],
         })
-      ).toBe(2);
+      ).toBe(1);
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_3',
-          assignedVendors: [{ id: 'v-buyer-3', source: 'buyer_uploaded' }],
+          assignedVendors: [
+            { id: 'pv-4', source: 'procucev_network' },
+            { id: 'v-buyer-3', source: 'buyer_uploaded' },
+          ],
         })
       ).toBe(1);
       expect(

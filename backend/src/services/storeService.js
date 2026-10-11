@@ -2130,15 +2130,25 @@ class StoreService {
         ? (newRFQ.assignedVendors || []).length
         : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
     } else if (isV2) {
-      // V2 Hybrid: report the TOTAL number of invited vendors (buyer roster + Procucev network).
-      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
-        ? (newRFQ.assignedVendors || []).length
-        : this.candidateVendorsForRFQ(newRFQ).length;
+      // V2 Hybrid: report the count of Procucev verified vendors that can assign / are assigned to this RFQ
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      const candidateProcucevCount = this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : candidateProcucevCount;
     } else if (isV3) {
-      // V3: Total invited count = buyer private roster if supplied, otherwise category-matched pool.
-      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
-        ? (newRFQ.assignedVendors || []).length
-        : mode3ProcucevCount;
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : mode3ProcucevCount > 0
+        ? mode3ProcucevCount
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
     }
 
     newRFQ.procucevVendorCount = procucevVendorCount;
