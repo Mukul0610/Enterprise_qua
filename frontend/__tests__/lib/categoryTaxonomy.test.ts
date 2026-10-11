@@ -117,7 +117,7 @@ describe('categoryTaxonomy module', () => {
     expect(res1.minorCategory).toBe('Pumps & Accessories');
 
     // Service cues fallback
-    const res2 = require('@/lib/categoryTaxonomy').autoCategorizeItem('HVAC Plant Maintenance and Overhaul Service', '');
+    const res2 = require('@/lib/categoryTaxonomy').autoCategorizeItem('Custom Plant Operations Service', '');
     expect(res2.majorCategory).toBe('Others – New Service');
     expect(res2.minorCategory).toBe('Consulting');
 

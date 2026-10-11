@@ -4,7 +4,7 @@ const storeService = require('./services/storeService');
 const emailGatewayService = require('./services/emailGatewayService');
 const zohoReconciliationService = require('./services/zohoReconciliationService');
 const { logger } = require('./services/loggerService');
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 4000; // Reloaded with SMTP_FROM=manav.procucev@gmail.com
 
 /**
  * Report database reachability at boot.

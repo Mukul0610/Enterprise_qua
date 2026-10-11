@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import IngestionWizard from '@/app/buyer/ingestion-wizard';
+import IngestionWizard, { resolveConfirmationVendorCount } from '@/app/buyer/ingestion-wizard';
 import { AppProvider } from '@/lib/store';
 import { extractLineItemsFromDocument, classifyLineItems, uploadRFQAttachment, createRFQ } from '@/lib/rfqClient';
 import { UI_STRINGS } from '@/lib/uiStrings';
@@ -88,6 +88,9 @@ function mockCreatedRFQ(): RFQItem {
     attachments: [],
     createdAt: '2026-09-10T10:00:00Z',
     updatedAt: '2026-09-10T10:00:00Z',
+    assignedVendors: [
+      { id: 'v-1', name: 'Apex Industrial Supplies', email: 'apex@example.com', phone: '9876543210', city: 'Mumbai' },
+    ],
     extractedEntities: [],
     quotes: [],
     chasingActive: false,
@@ -184,6 +187,30 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
     expect(screen.getByDisplayValue('Centrifugal Water Pump 500 GPM')).toBeInTheDocument();
   });
 
+  it('extracts and displays all 100 valid items from bulk multi-worksheet file without arbitrary 10-item limit', async () => {
+    const bulk100 = Array.from({ length: 100 }, (_, i) =>
+      entity({
+        id: `ent-bulk-${i + 1}`,
+        itemName: `Procurement Valve ${i + 1}`,
+        quantity: i + 1,
+        unit: 'Nos',
+        technicalSpecs: `Spec Grade ${i + 1}`,
+      })
+    );
+
+    mockExtract.mockResolvedValueOnce(successResult(bulk100));
+
+    renderWizard();
+
+    uploadFile(new File(['binary content'], 'Bulk_200_Worksheet_Items.xlsx', { type: '' }));
+    clickExtract();
+
+    await waitFor(() => expect(mockExtract).toHaveBeenCalled());
+    expect(screen.getByText(/Extraction Complete/i)).toBeInTheDocument();
+    expect(screen.getByText(/Successfully extracted/i)).toHaveTextContent('100 line items');
+    expect(screen.getByDisplayValue('Procurement Valve 1')).toBeInTheDocument();
+  });
+
   it('allows adding, editing, and deleting line items in the table', () => {
     renderWizard();
 
@@ -227,40 +254,47 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
     expect(select.value).toBe('mode_3');
   });
 
-  it('toggles custom sourcing dropdown, selects options, and closes on outside click', () => {
+  it('renders horizontal sourcing mode selection buttons, switches modes, and does not show Hybrid Active', () => {
     renderWizard();
 
-    // Toggle dropdown open
-    const trigger = screen.getByTestId('sourcing-mode-trigger');
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('custom-mode-option-mode_1')).toBeInTheDocument();
+    // Verify all four horizontal buttons are rendered with UI_STRINGS labels
+    const btn0 = screen.getByTestId('sourcing-mode-btn-mode_0');
+    const btn1 = screen.getByTestId('sourcing-mode-btn-mode_1');
+    const btn2 = screen.getByTestId('sourcing-mode-btn-mode_2');
+    const btn3 = screen.getByTestId('sourcing-mode-btn-mode_3');
 
-    // Select Mode 1
-    fireEvent.click(screen.getByTestId('custom-mode-option-mode_1'));
-    expect(screen.queryByTestId('custom-mode-option-mode_1')).not.toBeInTheDocument();
+    expect(btn0).toHaveTextContent(UI_STRINGS.sourcingModeVersions.mode_0);
+    expect(btn1).toHaveTextContent(UI_STRINGS.sourcingModeVersions.mode_1);
+    expect(btn2).toHaveTextContent(UI_STRINGS.sourcingModeVersions.mode_2);
+    expect(btn3).toHaveTextContent(UI_STRINGS.sourcingModeVersions.mode_3);
 
-    // Toggle open again and click inside (should not close)
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('custom-mode-option-mode_2')).toBeInTheDocument();
-    fireEvent.mouseDown(screen.getByTestId('custom-mode-option-mode_2'));
-    
-    // Select Mode 2
-    fireEvent.click(screen.getByTestId('custom-mode-option-mode_2'));
-    expect(screen.queryByTestId('custom-mode-option-mode_2')).not.toBeInTheDocument();
+    // Initial default is Mode 2 (selected)
+    expect(btn2).toHaveAttribute('aria-checked', 'true');
+    expect(btn0).toHaveAttribute('aria-checked', 'false');
+    expect(btn1).toHaveAttribute('aria-checked', 'false');
+    expect(btn3).toHaveAttribute('aria-checked', 'false');
 
-    // Toggle open again
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('custom-mode-option-mode_3')).toBeInTheDocument();
+    // Switch to Mode 0
+    fireEvent.click(btn0);
+    expect(btn0).toHaveAttribute('aria-checked', 'true');
+    expect(btn2).toHaveAttribute('aria-checked', 'false');
 
-    // Click Mode 3
-    fireEvent.click(screen.getByTestId('custom-mode-option-mode_3'));
-    expect(screen.queryByTestId('custom-mode-option-mode_3')).not.toBeInTheDocument();
+    // Switch to Mode 1
+    fireEvent.click(btn1);
+    expect(btn1).toHaveAttribute('aria-checked', 'true');
+    expect(btn0).toHaveAttribute('aria-checked', 'false');
 
-    // Toggle open and click outside
-    fireEvent.click(trigger);
-    expect(screen.getByTestId('custom-mode-option-mode_2')).toBeInTheDocument();
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByTestId('custom-mode-option-mode_2')).not.toBeInTheDocument();
+    // Switch to Mode 3
+    fireEvent.click(btn3);
+    expect(btn3).toHaveAttribute('aria-checked', 'true');
+    expect(btn1).toHaveAttribute('aria-checked', 'false');
+
+    // Switch back to Mode 2
+    fireEvent.click(btn2);
+    expect(btn2).toHaveAttribute('aria-checked', 'true');
+
+    // Verify "Hybrid Active" is never rendered in the document
+    expect(screen.queryByText(/Hybrid Active/i)).not.toBeInTheDocument();
   });
 
   it('validates required fields on submission and dispatches RFQ on valid input', async () => {
@@ -307,6 +341,30 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
     expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: /Done/i }));
     expect(onComplete).toHaveBeenCalled();
+  });
+
+  it('moves Add Line Item button to bottom right when 5+ line items exist', () => {
+    renderWizard();
+
+    // Initial state: 1 line item, Add Line Item button is in header
+    expect(screen.getByRole('button', { name: /Add Line Item/i })).toBeInTheDocument();
+
+    // Add up to 5 items
+    for (let i = 0; i < 4; i++) {
+      fireEvent.click(screen.getByRole('button', { name: /Add Line Item/i }));
+    }
+
+    // Now 5 items exist
+    const items = screen.getAllByPlaceholderText(MODAL.itemPlaceholder);
+    expect(items.length).toBe(5);
+
+    // Button should still exist (now placed at the bottom right)
+    const addBtn = screen.getByRole('button', { name: /Add Line Item/i });
+    expect(addBtn).toBeInTheDocument();
+
+    // Adding 6th item works from the bottom button
+    fireEvent.click(addBtn);
+    expect(screen.getAllByPlaceholderText(MODAL.itemPlaceholder).length).toBe(6);
   });
 
   it('cancels when clicking Cancel button', () => {
@@ -373,13 +431,45 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
       expect(screen.getByText(/Corrupt file structure/i)).toBeInTheDocument();
     });
 
-    // Simulate extraction throwing exception
+    // Simulate extraction throwing exception. A thrown error is an unexpected
+    // client-side fault, so the banner shows the generic unreadable-response copy
+    // rather than leaking the raw exception message to the buyer.
     mockExtract.mockRejectedValueOnce(new Error('Network failure parsing document'));
     clickExtract();
 
     await waitFor(() => {
-      expect(screen.getByText(/Network failure parsing document/i)).toBeInTheDocument();
+      expect(screen.getByText(EXTRACTION.unreadableResponse)).toBeInTheDocument();
     });
+  });
+
+  it('shows a reason-specific message and a manual-entry action when extraction fails', async () => {
+    renderWizard();
+
+    uploadFile(new File(['dummy'], 'scan.pdf', { type: 'application/pdf' }));
+
+    // No server-supplied error, only a machine reason: the banner must resolve the
+    // reason to its specific guidance rather than the generic fallback.
+    mockExtract.mockResolvedValueOnce({ success: false, reason: 'DOCUMENT_TOO_LARGE' });
+    clickExtract();
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(EXTRACTION.reasonMessages.DOCUMENT_TOO_LARGE)
+      ).toBeInTheDocument();
+    });
+
+    // The explicit recovery action takes the buyer into manual entry: it dismisses
+    // the banner and ensures there is a line item to key into.
+    const manualBtn = screen.getByRole('button', { name: new RegExp(EXTRACTION.manualEntryAction, 'i') });
+    fireEvent.click(manualBtn);
+
+    await waitFor(() => {
+      expect(
+        screen.queryByText(EXTRACTION.reasonMessages.DOCUMENT_TOO_LARGE)
+      ).not.toBeInTheDocument();
+    });
+    // A line item to key into is now present.
+    expect(screen.getAllByPlaceholderText(MODAL.itemPlaceholder).length).toBeGreaterThan(0);
   });
 
   it('handles auto-categorization errors and empty line items', async () => {
@@ -573,7 +663,7 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
 
     clickExtract();
     await waitFor(() => expect(mockExtract).toHaveBeenCalled());
-    expect(screen.getByText(/Gemini 2.5 AI/i)).toBeInTheDocument();
+    expect(screen.getByText(/Extraction Complete/i)).toBeInTheDocument();
   });
 
   it('falls back to a default message when extraction fails without an error string', async () => {
@@ -1032,6 +1122,200 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 
       expect(screen.queryByTestId('ingestion-wizard-quota-exhausted-banner')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Create & Dispatch RFQ/i })).toBeInTheDocument();
+    });
+  });
+
+  describe('RFQ Success Popup Dynamic Procucev Vendor Count Retrieval', () => {
+    it('resolveConfirmationVendorCount resolves dynamically retrieved Procucev vendor count for Version 0, 2, and 3', () => {
+      // Version 0: Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_0', procucevVendorCount: 7 })).toBe(7);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v0', procucevVendorCount: 4 })).toBe(4);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          procucevVendorCount: 0,
+          assignedVendors: [{ id: 'pv-existing', source: 'procucev_network' }],
+        })
+      ).toBe(0);
+
+      // Version 2: Hybrid sourcing plan Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_2', procucevVendorCount: 15 })).toBe(15);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'version_2', procucevVendorCount: 9 })).toBe(9);
+
+      // Version 3: AI Autonomous Sourcing Plan Procucev network vendors
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_3', procucevVendorCount: 22 })).toBe(22);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v3', procucevVendorCount: 18 })).toBe(18);
+
+      // Version 1: Private roster only uses assignedVendors
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_1',
+          assignedVendors: [{ id: 'pv-1', name: 'Private Vendor 1' }, { id: 'pv-2', name: 'Private Vendor 2' }],
+        })
+      ).toBe(2);
+
+      // Fallback for network sourcing modes filters out buyer-owned vendors.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          assignedVendors: [
+            { id: 'pv-1', source: 'procucev_network' },
+            { id: 'pv-2', source: 'procucev_network' },
+            { id: 'v-buyer-1', source: 'buyer_uploaded' },
+          ],
+        })
+      ).toBe(2);
+      // Version 2 and 3 return only Procucev network vendors from fallback pool.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_2',
+          assignedVendors: [
+            { id: 'pv-3', source: 'procucev_network' },
+            { id: 'v-buyer-2', source: 'buyer_uploaded' },
+          ],
+        })
+      ).toBe(1);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_3',
+          assignedVendors: [
+            { id: 'pv-4', source: 'procucev_network' },
+            { id: 'v-buyer-3', source: 'buyer_uploaded' },
+          ],
+        })
+      ).toBe(1);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_1',
+          procucevVendorCount: 99,
+          assignedVendors: [{ id: 'pv-private-1' }],
+        })
+      ).toBe(1);
+
+      // Null, empty, or missing rfq returns 0
+      expect(resolveConfirmationVendorCount(null)).toBe(0);
+      expect(resolveConfirmationVendorCount({})).toBe(0);
+    });
+
+    it('displays the dynamically retrieved Procucev vendor count in the confirmation modal for Version 0, 2, and 3', async () => {
+      // Simulate backend response with dynamically retrieved procucevVendorCount: 6 for Version 3
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_3',
+          procucevVendorCount: 6,
+        },
+      });
+
+      renderWizard();
+
+      // Fill in required fields
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Precision Industrial Valve' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '8' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Nos' },
+      });
+
+      // Submit RFQ
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+
+      // Check confirmation vendor count dynamically renders 6 (NOT hardcoded 'AI Blind')
+      const countEl = screen.getByTestId('confirmation-vendor-count');
+      expect(countEl).toHaveTextContent('6');
+      expect(screen.queryByText('AI Blind')).not.toBeInTheDocument();
+    });
+
+    it('displays dynamically retrieved Procucev vendor count for Version 0 in confirmation modal', async () => {
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_0',
+          procucevVendorCount: 3,
+        },
+      });
+
+      renderWizard();
+
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Standard Fasteners' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '50' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Boxes' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+
+      const countEl = screen.getByTestId('confirmation-vendor-count');
+      expect(countEl).toHaveTextContent('3');
+      expect(screen.queryByText('1+ Supplier')).not.toBeInTheDocument();
+    });
+
+    it('displays the backend vendor count for Version 2 on the submitted RFQ', async () => {
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_2',
+          procucevVendorCount: 11,
+        },
+      });
+
+      renderWizard();
+
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Precision Industrial Valve' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '8' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Nos' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+      expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('11');
     });
   });
 

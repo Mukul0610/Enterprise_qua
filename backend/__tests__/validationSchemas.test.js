@@ -203,5 +203,49 @@ describe('Backend Validation Schemas Unit Tests', () => {
     const intRes = validatePayload(VALIDATION_SCHEMAS.verifyCryptoIntegrity, validIntegrity);
     expect(intRes.isValid).toBe(true);
   });
+
+  describe('normalizePoDate', () => {
+    const { normalizePoDate } = require('../src/config/constants');
+
+    it('returns empty string for empty inputs', () => {
+      expect(normalizePoDate(null)).toBe('');
+      expect(normalizePoDate(undefined)).toBe('');
+      expect(normalizePoDate('')).toBe('');
+      expect(normalizePoDate('   ')).toBe('');
+    });
+
+    it('handles Date instances', () => {
+      expect(normalizePoDate(new Date('2025-12-04T00:00:00Z'))).toBe('2025-12-04');
+      expect(normalizePoDate(new Date('invalid'))).toBe('');
+    });
+
+    it('converts Excel serial numbers and decimal strings to ISO dates', () => {
+      expect(normalizePoDate(45995)).toBe('2025-12-04');
+      expect(normalizePoDate(45995.00011574074)).toBe('2025-12-04');
+      expect(normalizePoDate('45995.00011574074')).toBe('2025-12-04');
+      expect(normalizePoDate('45995')).toBe('2025-12-04');
+      expect(normalizePoDate(25569)).toBe('1970-01-01');
+      expect(normalizePoDate(0)).toBe('');
+    });
+
+    it('handles ISO and slash date formats', () => {
+      expect(normalizePoDate('2025-12-04')).toBe('2025-12-04');
+      expect(normalizePoDate('2025/12/04')).toBe('2025-12-04');
+      expect(normalizePoDate('2025.12.04')).toBe('2025-12-04');
+    });
+
+    it('handles DD-MM-YYYY and DD/MM/YYYY formats', () => {
+      expect(normalizePoDate('12-04-2025')).toBe('2025-04-12');
+      expect(normalizePoDate('25-12-2025')).toBe('2025-12-25');
+      expect(normalizePoDate('05/12/2025')).toBe('2025-12-05');
+      expect(normalizePoDate('12/25/2025')).toBe('2025-12-25');
+    });
+
+    it('handles generic date strings and non-parseable fallbacks', () => {
+      expect(normalizePoDate('Dec 4, 2025')).toBe('2025-12-04');
+      expect(normalizePoDate('invalid-date')).toBe('invalid-date');
+    });
+  });
 });
+
 

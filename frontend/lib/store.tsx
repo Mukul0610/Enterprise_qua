@@ -19,6 +19,7 @@ import {
   VendorOnboardingEmailPayload,
   VendorProfileReminderPayload,
   HistoricalPurchaseVendorRecord,
+  IngestionSummary,
   ExtractedEntity,
   BuyerAccount,
   VendorRatingRevisionRecord,
@@ -47,6 +48,8 @@ import {
   fetchRFQList,
   updateRFQ as updateRFQRequest,
   deleteRFQ as deleteRFQRequest,
+  fetchVendorRfqCredits,
+  downloadAndUnlockRFQ,
 } from './rfqClient';
 import {
   SOURCING_MODES,
@@ -89,6 +92,7 @@ function buildOpportunityFromRFQ(rfq: RFQItem): VendorOpportunity {
     rfqNumber: rfq.rfqNumber,
     title: rfq.title,
     buyer: rfq.buyerAccountName || 'Buyer identity not disclosed',
+    buyerAccountId: rfq.buyerAccountId,
     deadline: rfq.targetDeliveryDate || '',
     daysRemaining: daysUntilDate(rfq.targetDeliveryDate),
     type: rfq.sourcingMode === 'mode_3' ? 'network_marketplace' : 'direct_invitation',
@@ -101,6 +105,7 @@ function buildOpportunityFromRFQ(rfq: RFQItem): VendorOpportunity {
       id: ent.id || `item-${idx}`,
       description: ent.itemName,
       quantity: ent.quantity,
+      unit: ent.unit || undefined,
       // Price, lead time and payment terms are the vendor's own bid fields and
       // stay empty until they actually quote — seeding them with 14 days and
       // "Net 30" showed a commitment nobody had made.
@@ -133,6 +138,7 @@ interface AppContextType {
   isLoadingDB: boolean;
   dbConnected: boolean;
   refreshFromDB: () => Promise<void>;
+  refreshRFQs: () => Promise<void>;
   refreshAIFeed: () => Promise<void>;
   refreshActiveBuyerAccount: () => Promise<void>;
 
@@ -165,6 +171,8 @@ interface AppContextType {
   historicalPurchaseDataPeriod: '1_year' | '2_years' | '3_years';
   setHistoricalPurchaseDataPeriod: (period: '1_year' | '2_years' | '3_years') => void;
   processHistoricalPurchaseData: (period: '1_year' | '2_years' | '3_years', vendors: HistoricalPurchaseVendorRecord[]) => Promise<number>;
+  lastIngestionSummary: IngestionSummary | null;
+  setLastIngestionSummary: (summary: IngestionSummary | null) => void;
 
   // Buyer Uploaded Vendors, Database Check & Automated Onboarding Emails
   buyerVendors: VendorEntry[];
@@ -298,6 +306,14 @@ interface AppContextType {
   setVendorRfqDownloadsUsed: React.Dispatch<React.SetStateAction<number>>;
   vendorCatalogue: any[];
   setVendorCatalogue: React.Dispatch<React.SetStateAction<any[]>>;
+
+  // Vendor Free RFQ Download Credits (5 Free Starter Allowance)
+  vendorFreeCreditsRemaining: number;
+  vendorFreeCreditsAllocated: number;
+  vendorFreeCreditsUsed: number;
+  vendorUnlockedRfqIds: string[];
+  refreshVendorCredits: () => Promise<void>;
+  unlockRFQForVendor: (rfqIdOrNumber: string) => Promise<{ success: boolean; error?: string; exhausted?: boolean; alreadyUnlocked?: boolean }>;
 
   // Vendor 360° AI Self-Evaluation & Infra Fee ($5 or $0 with Connect/Select)
   vendorSelfEvaluationCompleted: boolean;
@@ -510,6 +526,48 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedVendorEvaluation, setSelectedVendorEvaluation] = useState<VendorEvaluationRecord | null>(null);
   const [evaluationModalOpen, setEvaluationModalOpen] = useState<boolean>(false);
 
+  // Vendor Free RFQ Download Credits (5 Free Starter Allowance)
+  const [vendorFreeCreditsRemaining, setVendorFreeCreditsRemaining] = useState<number>(5);
+  const [vendorFreeCreditsAllocated, setVendorFreeCreditsAllocated] = useState<number>(5);
+  const [vendorFreeCreditsUsed, setVendorFreeCreditsUsed] = useState<number>(0);
+  const [vendorUnlockedRfqIds, setVendorUnlockedRfqIds] = useState<string[]>([]);
+
+  const refreshVendorCredits = async () => {
+    if (!authClient.getToken()) return;
+    try {
+      const res = await fetchVendorRfqCredits();
+      if (res.success && res.data) {
+        setVendorFreeCreditsRemaining(res.data.freeCreditsRemaining ?? 5);
+        setVendorFreeCreditsAllocated(res.data.freeCreditsAllocated ?? 5);
+        setVendorFreeCreditsUsed(res.data.freeCreditsUsed ?? 0);
+        setVendorUnlockedRfqIds(res.data.unlockedRfqIds || []);
+      }
+    } catch (err) {
+      console.error('Failed to refresh vendor RFQ credits:', err);
+    }
+  };
+
+  const unlockRFQForVendor = async (rfqIdOrNumber: string) => {
+    const res = await downloadAndUnlockRFQ(rfqIdOrNumber);
+    if (res.success) {
+      if (res.freeCreditsRemaining !== undefined) {
+        setVendorFreeCreditsRemaining(res.freeCreditsRemaining);
+        setVendorFreeCreditsUsed(Math.max(0, 5 - res.freeCreditsRemaining));
+      }
+      setVendorUnlockedRfqIds((prev) => {
+        const norm = String(rfqIdOrNumber);
+        return prev.includes(norm) ? prev : [...prev, norm];
+      });
+      return { success: true, alreadyUnlocked: res.alreadyUnlocked };
+    }
+    return {
+      success: false,
+      error: res.error,
+      exhausted: res.exhausted,
+      alreadyUnlocked: false,
+    };
+  };
+
   /**
    * Load this buyer organisation's RFQs from the authenticated API.
    *
@@ -582,6 +640,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           setAzureHealth(d.azureHealth);
         }
         setDbConnected(true);
+        await refreshRFQs();
+        await refreshVendorCredits();
       }
     } catch (err) {
       console.error('Failed to load reference data:', err);
@@ -693,6 +753,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     void refreshActiveBuyerAccount();
     void refreshCategoryTaxonomy();
     void refreshAIFeed();
+    void refreshVendorCredits();
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on identity,
     // not on the callbacks, which are recreated every render.
   }, [isLoggedIn, currentUserSession?.id, activeBuyerAccount?.id]);
@@ -963,6 +1024,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [initialSetupModalOpen, setInitialSetupModalOpen] = useState<boolean>(false);
   const [initialSetupCompleted, setInitialSetupCompleted] = useState<boolean>(false);
   const [historicalPurchaseDataPeriod, setHistoricalPurchaseDataPeriod] = useState<'1_year' | '2_years' | '3_years'>('1_year');
+  const [lastIngestionSummary, setLastIngestionSummary] = useState<IngestionSummary | null>(null);
 
   const processHistoricalPurchaseData = async (
     period: '1_year' | '2_years' | '3_years',
@@ -1023,13 +1085,30 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return 0;
     }
 
+    const summary: IngestionSummary = {
+      importedCount: data.importedCount ?? 0,
+      totalProcessed: data.totalProcessed ?? vendors.length,
+      mappedCount: data.mappedCount ?? mappedCount,
+      mappedEmailsSent: data.mappedEmailsSent ?? (data.mappedCount ?? mappedCount),
+      unmappedCount: data.unmappedCount ?? unmappedCount,
+      unmappedEmailsSent: data.unmappedEmailsSent ?? (data.unmappedCount ?? unmappedCount),
+      failedEmailCount: data.failedEmailCount ?? (Array.isArray(data.failedEmails) ? data.failedEmails.length : 0),
+      failedEmails: Array.isArray(data.failedEmails) ? data.failedEmails : [],
+      skippedCount: data.skippedCount ?? 0,
+      skipped: Array.isArray(data.skipped) ? data.skipped : [],
+      period: data.period ?? period,
+      totalVendors: data.totalVendors ?? vendors.length,
+      overallStatus: data.overallStatus ?? (data.failedEmailCount > 0 ? 'COMPLETED_WITH_FAILURES' : 'COMPLETED'),
+    };
+    setLastIngestionSummary(summary);
+
     await refreshFromDB();
     setInitialSetupCompleted(true);
-    setInitialSetupModalOpen(false);
+    // Note: Modal remains open so InitialSetupModal can display the Completion Summary to the user
 
     addFeedItem(
       `Historical Purchase & Vendor Master Ingestion Complete: ${data.importedCount} Vendors`,
-      `Processed separate Vendor Master & ${periodLabel} PO dumps. ${mappedCount} suppliers categorized into 1st/2nd sets. ${unmappedCount} suppliers notified to self-map categories.`,
+      `Processed separate Vendor Master & ${periodLabel} PO dumps. ${summary.mappedEmailsSent}/${summary.mappedCount} Template A sent. ${summary.unmappedEmailsSent}/${summary.unmappedCount} Template B sent. ${summary.failedEmailCount} failed.`,
       'invitation',
       undefined,
       `${data.importedCount} Ingested Vendors`,
@@ -1037,13 +1116,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     );
 
     addAuditLog(
-      `Ingested separate Vendor Master & ${periodLabel} PO files (${vendors.length} submitted, ${data.importedCount} new: ${mappedCount} PO-mapped, ${unmappedCount} self-mapping required).`
+      `Ingested separate Vendor Master & ${periodLabel} PO files (${vendors.length} submitted, ${data.importedCount} new: ${summary.mappedEmailsSent} Template A sent, ${summary.unmappedEmailsSent} Template B sent, ${summary.failedEmailCount} failed).`
     );
 
     showToast(
-      'Initial Setup Completed',
-      `Processed ${periodLabel} PO dump & Vendor Master. ${data.importedCount} new suppliers added (of ${vendors.length} submitted).`,
-      'success'
+      summary.failedEmailCount > 0 ? 'Setup Completed with Warnings' : 'Initial Setup Completed',
+      `Processed ${periodLabel} PO dump & Vendor Master. Dispatched ${summary.mappedEmailsSent} Template A and ${summary.unmappedEmailsSent} Template B emails (${summary.failedEmailCount} failed).`,
+      summary.failedEmailCount > 0 ? 'warning' : 'success'
     );
 
     return data.importedCount;
@@ -1367,12 +1446,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return revisionRecord;
   };
 
-  // Buyer Vendor Management — a buyer adding one vendor they deal with
-  // directly. Persists through the real POST /api/vendors endpoint (buyer
-  // role, server-scoped to the buyer's own account); state is only updated
-  // once the backend confirms the write, and nothing here claims an email
-  // was sent, since this endpoint never sends one (unlike the category
-  // manager's bulk-import path, which does dispatch a real onboarding email).
+  // Buyer Vendor Management — persists the vendor and waits for backend
+  // onboarding so the success message accurately reflects credential delivery.
   const addBuyerVendor = async (vendor: Omit<VendorEntry, 'id'>): Promise<VendorEntry | null> => {
     let res: Response;
     try {
@@ -1390,7 +1465,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
-    let body: { success?: boolean; data?: VendorEntry; error?: string } = {};
+    let body: { success?: boolean; data?: VendorEntry; error?: string; warning?: string } = {};
     try {
       body = await res.json();
     } catch {
@@ -1417,7 +1492,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       newV.name
     );
     addAuditLog(`Added vendor ${newV.name} (${newV.email})`);
-    showToast('Vendor Added', `${newV.name} has been added to your vendor directory.`, 'success');
+    if (newV.onboardingEmailStatus === 'failed') {
+      showToast(
+        'Vendor Added — Credentials Email Failed',
+        body.warning || 'The vendor was added, but their login credentials could not be delivered. Please contact support to resend the invitation.',
+        'warning'
+      );
+    } else if (newV.onboardingEmailStatus === 'account_exists') {
+      showToast('Vendor Added', `${newV.name} already has a Procucev login; no new credentials were sent.`, 'success');
+    } else {
+      showToast(
+        'Vendor Added',
+        `${newV.name} was added. Login credentials were sent to ${newV.email} with instructions to change the temporary password at first login.`,
+        'success'
+      );
+    }
 
     return newV;
   };
@@ -2228,13 +2317,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       category: rfqData.category,
       sourcingMode: rfqData.sourcingMode,
       status: 'Quotes Pending',
-      source: rfqData.source || 'web_portal',
+      source: rfqData.source || ((rfqData as any).aiSummary || rfqData.sourceFileName ? 'ai_extraction' : 'manual_entry'),
       sourceFileName: rfqData.sourceFileName,
       // Origin of an emailed requisition. Previously omitted here, so the sender
       // the wizard had already parsed was dropped before it ever reached the API.
       sourceEmail: rfqData.sourceEmail,
       budget: Number(rfqData.budget) || 0,
-      targetDeliveryDate: rfqData.targetDeliveryDate,
+      targetDeliveryDate:
+        rfqData.targetDeliveryDate ||
+        (rfqData as any).target_delivery_date ||
+        (rfqData as any).deadline ||
+        rfqData.extractedEntities?.[0]?.targetDate ||
+        '',
       deliveryLocation: rfqData.deliveryLocation || '',
       deliveryPincode: rfqData.deliveryPincode || '',
       extractedEntities: rfqData.extractedEntities,
@@ -2341,6 +2435,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         isLoadingDB,
         dbConnected,
         refreshFromDB,
+        refreshRFQs,
         refreshAIFeed,
         categoryTaxonomy,
         categoryTaxonomyError,
@@ -2390,6 +2485,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         updateVendorSubscription,
         createVendorPaymentLink,
         checkVendorPaymentLinkStatus,
+        vendorFreeCreditsRemaining,
+        vendorFreeCreditsAllocated,
+        vendorFreeCreditsUsed,
+        vendorUnlockedRfqIds,
+        refreshVendorCredits,
+        unlockRFQForVendor,
         vendorRfqDownloadsUsed,
         setVendorRfqDownloadsUsed,
         vendorCatalogue,
@@ -2411,6 +2512,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         historicalPurchaseDataPeriod,
         setHistoricalPurchaseDataPeriod,
         processHistoricalPurchaseData,
+        lastIngestionSummary,
+        setLastIngestionSummary,
         buyerVendors,
         addBuyerVendor,
         updateBuyerVendor,

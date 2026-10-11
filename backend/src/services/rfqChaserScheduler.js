@@ -263,6 +263,11 @@ function scheduleVendorChaser(rfq, vendor, creditInfo = {}) {
   if (!rfq || !vendor) return;
 
   const { rfqNumber } = rfq;
+  const isV0 =
+    rfq.sourcingMode === 'mode_0' ||
+    rfq.sourcingMode === 'v0' ||
+    rfq.sourcingMode === 'version_0';
+
   const smsDelay = process.env.NODE_ENV === 'test'
     ? (CHASER_DELAYS.SMS_MS ?? 5 * 60 * 1000)
     : Math.max(5 * 60 * 1000, Number(CHASER_DELAYS.SMS_MS) || (5 * 60 * 1000));
@@ -276,20 +281,22 @@ function scheduleVendorChaser(rfq, vendor, creditInfo = {}) {
 
   if (getD1Binding()) {
     const waitUntil = getWaitUntil();
-    const jobs = [
-      ['sms', smsDelay],
-      ['call', callDelay],
-      ['whatsapp', waDelay],
-      ['email', emailDelay],
-    ];
+    const jobs = isV0
+      ? [['sms', smsDelay]]
+      : [
+          ['sms', smsDelay],
+          ['call', callDelay],
+          ['whatsapp', waDelay],
+          ['email', emailDelay],
+        ];
     jobs.forEach(([channel, delay]) => {
       const jobId = _chaserJobId(rfqNumber, vendor.id, channel);
       const persistPromise = _persistChaserJob(jobId, rfq, vendor, channel, delay);
       if (waitUntil) waitUntil(persistPromise);
     });
     logger.info(
-      `[CHASER] Persisted Worker schedule for ${vendor.name} on ${rfqNumber}; dispatch is handled by Cron Trigger`,
-      { rfqNumber, vendorId: vendor.id },
+      `[CHASER] Persisted Worker schedule for ${vendor.name} on ${rfqNumber} (isV0=${isV0}); dispatch is handled by Cron Trigger`,
+      { rfqNumber, vendorId: vendor.id, isV0 },
       'RFQ_CHASER'
     );
     return;
@@ -297,7 +304,7 @@ function scheduleVendorChaser(rfq, vendor, creditInfo = {}) {
 
   const waitUntil = getWaitUntil();
 
-  // 1. SMS reminder — within 5 minutes of RFQ
+  // 1. SMS reminder — within 5 minutes of RFQ (reusing approved RFQ chaser SMS template)
   const smsJobId = _chaserJobId(rfqNumber, vendor.id, 'sms');
   let smsPromiseResolve;
   const smsPromise = new Promise((resolve) => { smsPromiseResolve = resolve; });
@@ -311,6 +318,16 @@ function scheduleVendorChaser(rfq, vendor, creditInfo = {}) {
   _registerTimer(rfqNumber, smsHandle);
   _persistChaserJob(smsJobId, rfq, vendor, 'sms', smsDelay);
   if (waitUntil) waitUntil(smsPromise);
+
+  // For V0 (Free Starter Trial): Only SMS notification is sent after 5 minutes. No follow-up notifications (Call, WhatsApp, Email).
+  if (isV0) {
+    logger.info(
+      `[CHASER] V0 RFQ: Scheduled SMS alert for ${vendor.name} on ${rfqNumber} with delay +${smsDelay}ms (no follow-up reminders)`,
+      { rfqNumber, vendorId: vendor.id, smsDelay },
+      'RFQ_CHASER'
+    );
+    return;
+  }
 
   // 2. Call reminder — after 6 hours (flow preserved, calling functionality deferred)
   const callJobId = _chaserJobId(rfqNumber, vendor.id, 'call');

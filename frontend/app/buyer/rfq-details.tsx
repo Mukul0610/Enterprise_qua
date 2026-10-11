@@ -12,7 +12,9 @@ import {
 } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { rfqAttachmentUrl, updateRFQ, replyToRFQInquiry, submitRFQInquiry } from '@/lib/rfqClient';
+import QuoteAttachmentLink from '@/app/components/QuoteAttachmentLink';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
+import { downloadFullQuotesExcel, downloadSingleVendorQuoteExcel } from '@/lib/bidComparisonExport';
 import type { ExtractedEntity, QuoteComparison, RFQAttachment, RFQInquiry, RFQItem, RFQSource } from '@/lib/types';
 import {
   ArrowLeft,
@@ -53,6 +55,9 @@ import {
   Clock,
   CheckCheck,
   MessageCircle,
+  ChevronDown,
+  ChevronUp,
+  Package,
 } from 'lucide-react';
 
 const DETAILS = UI_STRINGS.rfqDetails;
@@ -70,6 +75,7 @@ const SOURCE_LABELS: Record<RFQSource, string> = {
   email_gateway: DETAILS.sourceEmailGateway,
   email_upload: DETAILS.sourceEmailUpload,
   manual_entry: DETAILS.sourceManualEntry,
+  ai_extraction: DETAILS.sourceAiExtraction || 'AI Extraction',
 };
 
 /** Line-item columns the buyer can order the table by. */
@@ -440,6 +446,19 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
   const [replyModalInquiry, setReplyModalInquiry] = useState<RFQInquiry | null>(null);
   const [replyMessage, setReplyMessage] = useState('');
   const [isSubmittingReply, setIsSubmittingReply] = useState(false);
+  const [expandedQuoteIds, setExpandedQuoteIds] = useState<Set<string>>(new Set());
+
+  const toggleQuoteExpand = (vendorId: string) => {
+    setExpandedQuoteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(vendorId)) {
+        next.delete(vendorId);
+      } else {
+        next.add(vendorId);
+      }
+      return next;
+    });
+  };
 
   const checkIsProcucevVendor = useCallback(
     (
@@ -609,9 +628,6 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
     const inquiries = Array.isArray(activeRfq.inquiries) ? activeRfq.inquiries : [];
     inquiries.forEach((inq) => {
       const isProc = checkIsProcucevVendor(inq.vendorId, inq.vendorName, inq.vendorEmail, inq);
-      // Procucev/internal vendors are shown in the buyer's chat list by name
-      // only — their email/phone/other contact details are never exposed.
-      // See the `isProc` stripping applied below.
 
       const key = inq.vendorId || inq.vendorEmail || inq.vendorName || inq.id;
       const msgs = Array.isArray(inq.messages) && inq.messages.length > 0
@@ -676,8 +692,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         typeof v === 'object' ? v : undefined
       );
 
-      // Procucev/internal vendors are shown by name only — never their
-      // email, contact person or phone.
+      // Retain the classification for the buyer-only filter below.
       const key = vId || vEmail || vName;
       const existing = Array.from(map.values()).find(
         (c) => (vEmail && c.vendorEmail === vEmail) || c.vendorName === vName || (vId && c.vendorId === vId)
@@ -728,6 +743,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
     });
 
     return Array.from(map.values())
+      .filter((channel) => !channel.isProcucev)
       .sort((a, b) => {
         if (a.status === 'open' && b.status !== 'open') return -1;
         if (b.status === 'open' && a.status !== 'open') return 1;
@@ -1107,7 +1123,14 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
   const mode = SOURCING_MODES.find((m) => m.id === activeRfq.sourcingMode);
   const attachments = activeRfq.attachments || [];
   const quotes = activeRfq.quotes || [];
-  const countdown = deliveryCountdown(daysUntil(activeRfq.targetDeliveryDate));
+  const resolvedTargetDeliveryDate =
+    activeRfq.targetDeliveryDate ||
+    (activeRfq as any).target_delivery_date ||
+    (activeRfq as any).deadline ||
+    (activeRfq as any).deliveryDate ||
+    lineItems.find((i) => i.targetDate)?.targetDate ||
+    '';
+  const countdown = deliveryCountdown(daysUntil(resolvedTargetDeliveryDate));
   const autoClassified = lineItems.filter((i) => i.confidence >= HIGH_CONFIDENCE).length;
   const classifiedPercent = lineItems.length === 0 ? 0 : Math.round((autoClassified / lineItems.length) * 100);
   const totalQuantity = filteredItems.reduce((sum, item) => sum + item.quantity, 0);
@@ -1121,6 +1144,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
       case 'PO Generated':
         return 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-800';
       case 'In Evaluation':
+      case 'Quotes Received':
         return 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-200 dark:border-blue-800';
       case 'AI Recommended':
         return 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800';
@@ -1213,14 +1237,20 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         >
           <Row label={DETAILS.sourceLabel}>
             <span className="inline-flex items-center gap-1.5">
-              {activeRfq.source === 'email_gateway' ? (
+              {activeRfq.source === 'email_gateway' || activeRfq.source === 'email_upload' ? (
                 <Mail size={12} className="text-indigo-600 dark:text-indigo-400 shrink-0" />
               ) : activeRfq.source === 'manual_entry' ? (
                 <Pencil size={12} className="text-emerald-600 dark:text-emerald-400 shrink-0" />
+              ) : activeRfq.source === 'ai_extraction' || (!activeRfq.source && activeRfq.aiSummary) ? (
+                <Sparkles size={12} className="text-purple-600 dark:text-purple-400 shrink-0" />
               ) : (
                 <Globe size={12} className="text-indigo-600 dark:text-indigo-400 shrink-0" />
               )}
-              {activeRfq.source ? SOURCE_LABELS[activeRfq.source] : DETAILS.unsetValue}
+              {activeRfq.source
+                ? (SOURCE_LABELS[activeRfq.source] || activeRfq.source)
+                : activeRfq.aiSummary
+                  ? (DETAILS.sourceAiExtraction || 'AI Extraction')
+                  : DETAILS.unsetValue}
             </span>
           </Row>
           <Row label={DETAILS.createdLabel}>
@@ -1257,7 +1287,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
             <span>
               <span className="inline-flex items-center gap-1.5 mono">
                 <CalendarDays size={12} className="text-slate-400 shrink-0" />
-                {orUnset(formatIndianDate(activeRfq.targetDeliveryDate))}
+                {orUnset(formatIndianDate(resolvedTargetDeliveryDate))}
               </span>
               {countdown && (
                 <span
@@ -1682,17 +1712,41 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         title={DETAILS.quotesHeading}
         count={quotes.length}
         toolbar={
-          quotes.length > 0 && activeRfq ? (
-            <button
-              onClick={() => router.push(`/buyer/quote-matrix?rfq=${encodeURIComponent(activeRfq.rfqNumber)}`)}
-              className="btn btn-primary btn-xs font-bold inline-flex items-center gap-1.5"
-            >
-              <Sparkles size={12} /> Compare Quotations in Matrix ↗
-            </button>
+          quotes.length > 0 && activeRfq && (!isV0 || currentRole !== 'buyer') ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => downloadFullQuotesExcel(activeRfq, quotes)}
+                className="btn btn-secondary btn-xs font-bold inline-flex items-center gap-1.5 shadow-sm"
+                title="Download complete vendor quotations breakdown in Excel"
+              >
+                <Download size={12} /> Download Quotes (Excel)
+              </button>
+              <button
+                onClick={() => router.push(`/buyer/quote-matrix?rfq=${encodeURIComponent(activeRfq.rfqNumber)}`)}
+                className="btn btn-primary btn-xs font-bold inline-flex items-center gap-1.5"
+              >
+                <Sparkles size={12} /> Compare Quotations in Matrix ↗
+              </button>
+            </div>
           ) : undefined
         }
       >
-        {currentRole === 'buyer' && activeRfq?.quotesHidden ? (
+        {isV0 && currentRole === 'buyer' && !isVendor ? (
+          <div className="px-4 pb-10 pt-4 flex flex-col items-center text-center max-w-xl mx-auto space-y-3">
+            <span className="w-16 h-16 rounded-2xl bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400 flex items-center justify-center shadow-inner">
+              <Mail size={26} />
+            </span>
+            <h3 className="text-sm font-bold text-slate-900 dark:text-white">Quotes Delivered Directly to Email</h3>
+            <p className="text-xs text-slate-600 dark:text-gray-300 max-w-md">
+              In the V0 flow, when a matched vendor submits a quote, you will receive the complete quotation details directly in your registered email. Quotes are not displayed in the portal for comparison.
+            </p>
+            <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-blue-800 dark:text-blue-300 bg-blue-100/70 dark:bg-blue-900/40 px-3.5 py-1.5 rounded-full border border-blue-200 dark:border-blue-800 shadow-sm">
+              <CheckCircle2 size={13} />
+              When vendor submits quote, you will receive quote details in your email
+            </span>
+          </div>
+        ) : currentRole === 'buyer' && !isVendor && activeRfq?.quotesHidden ? (
           <div className="px-4 pb-10 pt-4 flex flex-col items-center text-center max-w-xl mx-auto space-y-3">
             <span className="w-16 h-16 rounded-2xl bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400 flex items-center justify-center shadow-inner">
               <Lock size={26} />
@@ -1727,6 +1781,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                     <th className="px-4 py-2.5">{DETAILS.colLeadTime}</th>
                     <th className="px-4 py-2.5">{DETAILS.colCompliance}</th>
                     <th className="px-4 py-2.5 text-center">{DETAILS.colMatchScore}</th>
+                    <th className="px-4 py-2.5">Bid Documents & Terms</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -1735,23 +1790,120 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                     const leadPts = quote.scoreBreakdown?.leadTime?.weighted ?? Math.round(Math.max(0, Math.min(100, 100 - (quote.leadTimeDays || 14) * 2)) * 0.3);
                     const warPts = quote.scoreBreakdown?.warranty?.weighted ?? Math.round(Math.min(100, Math.max(0, 50 + (quote.warrantyYears || 1) * 10)) * 0.25);
                     const displayScore = quote.aiMatchScore ?? (pricePts + leadPts + warPts);
+                    const hasLineItems = Array.isArray(quote.lineItemQuotes) && quote.lineItemQuotes.length > 0;
+                    const isExpanded = expandedQuoteIds.has(quote.vendorId);
 
                     return (
-                      <tr
-                        key={quote.vendorId}
-                        className={`border-t border-slate-100 dark:border-gray-800/70 ${
-                          index % 2 === 1 ? 'bg-slate-50/50 dark:bg-gray-950/30' : ''
-                        }`}
-                      >
-                        <td className="px-4 py-2.5 font-semibold text-slate-900 dark:text-white">{quote.vendorName}</td>
-                        <td className="px-4 py-2.5 text-right mono">{formatCurrency(quote.unitPrice)}</td>
-                        <td className="px-4 py-2.5 text-right mono font-bold">{formatCurrency(quote.totalPrice)}</td>
-                        <td className="px-4 py-2.5">{formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}</td>
-                        <td className="px-4 py-2.5 text-slate-500 dark:text-gray-400">{quote.complianceStatus}</td>
-                        <td className="px-4 py-2.5 text-center mono font-bold text-emerald-700 dark:text-emerald-400">
-                          {displayScore}%
-                        </td>
-                      </tr>
+                      <React.Fragment key={quote.vendorId}>
+                        <tr
+                          className={`border-t border-slate-100 dark:border-gray-800/70 ${
+                            index % 2 === 1 ? 'bg-slate-50/50 dark:bg-gray-950/30' : ''
+                          }`}
+                        >
+                          <td className="px-4 py-2.5">
+                            <div className="font-semibold text-slate-900 dark:text-white flex items-center gap-1.5 flex-wrap">
+                              <span>{quote.vendorName}</span>
+                              {hasLineItems && (
+                                <button
+                                  type="button"
+                                  onClick={() => toggleQuoteExpand(quote.vendorId)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 hover:bg-blue-100 transition-colors"
+                                  title="Toggle itemized line items"
+                                >
+                                  <span>{quote.lineItemQuotes!.length} items</span>
+                                  {isExpanded ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+                                </button>
+                              )}
+                            </div>
+                            {quote.vendorCategory && (
+                              <div className="text-[10px] text-slate-400 dark:text-gray-500">{quote.vendorCategory}</div>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5 text-right mono">{formatCurrency(quote.unitPrice)}</td>
+                          <td className="px-4 py-2.5 text-right mono font-bold">{formatCurrency(quote.totalPrice)}</td>
+                          <td className="px-4 py-2.5">{formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}</td>
+                          <td className="px-4 py-2.5 text-slate-500 dark:text-gray-400">{quote.complianceStatus}</td>
+                          <td className="px-4 py-2.5 text-center mono font-bold text-emerald-700 dark:text-emerald-400">
+                            {displayScore}%
+                          </td>
+                          <td className="px-4 py-2.5 min-w-56">
+                            <div className="space-y-1.5">
+                              <div className="text-[10px] text-slate-500 dark:text-gray-400">
+                                {quote.paymentTerms || 'Payment terms not specified'}
+                                {quote.submittedAt ? ` · Submitted ${formatIndianDateTime(quote.submittedAt)}` : ''}
+                              </div>
+                              {quote.remarks && <p className="text-[10px] text-slate-600 dark:text-gray-300 break-words">{quote.remarks}</p>}
+                              {(quote.attachments || []).map((attachment) => (
+                                <QuoteAttachmentLink
+                                  key={attachment.id}
+                                  rfqId={activeRfq?.id || activeRfq?.rfqNumber || ''}
+                                  attachment={attachment}
+                                />
+                              ))}
+                              <div className="pt-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                                  className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300"
+                                  title="Download this vendor quote as Excel"
+                                >
+                                  <Download size={11} />
+                                  <span>Download Quote (Excel)</span>
+                                </button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                        {hasLineItems && isExpanded && (
+                          <tr className="bg-slate-50/80 dark:bg-gray-950/60 border-t border-slate-100 dark:border-gray-800">
+                            <td colSpan={7} className="px-6 py-3">
+                              <div className="rounded-lg border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900 p-3 shadow-inner">
+                                <div className="text-[11px] font-bold text-slate-700 dark:text-gray-300 mb-2 flex items-center justify-between">
+                                  <div className="flex items-center gap-1.5">
+                                    <Package className="w-3.5 h-3.5 text-blue-500" />
+                                    <span>Line Item Breakdown ({quote.lineItemQuotes!.length} items)</span>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                                  >
+                                    <Download size={11} /> Export Items Excel
+                                  </button>
+                                </div>
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-[11px] text-left">
+                                    <thead className="text-[10px] uppercase text-slate-400 dark:text-gray-500 border-b border-slate-100 dark:border-gray-800 font-semibold">
+                                      <tr>
+                                        <th className="py-1.5 px-2.5">Item Name</th>
+                                        <th className="py-1.5 px-2.5 text-right">Quantity</th>
+                                        <th className="py-1.5 px-2.5 text-right">Unit Price</th>
+                                        <th className="py-1.5 px-2.5 text-right">Total Price</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-slate-100 dark:divide-gray-800/60">
+                                      {quote.lineItemQuotes!.map((li, liIdx) => (
+                                        <tr key={li.lineItemId || liIdx} className="hover:bg-slate-50/50 dark:hover:bg-gray-800/30">
+                                          <td className="py-1.5 px-2.5 font-medium text-slate-800 dark:text-gray-200">{li.itemName}</td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-600 dark:text-gray-400 mono">
+                                            {li.quantity.toLocaleString('en-IN')} {li.unit || ''}
+                                          </td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-800 dark:text-gray-200 mono font-medium">
+                                            {formatCurrency(li.unitPrice)}
+                                          </td>
+                                          <td className="py-1.5 px-2.5 text-right text-slate-900 dark:text-white mono font-bold">
+                                            {formatCurrency(li.totalPrice)}
+                                          </td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
@@ -1765,6 +1917,8 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                 const leadPts = quote.scoreBreakdown?.leadTime?.weighted ?? Math.round(Math.max(0, Math.min(100, 100 - (quote.leadTimeDays || 14) * 2)) * 0.3);
                 const warPts = quote.scoreBreakdown?.warranty?.weighted ?? Math.round(Math.min(100, Math.max(0, 50 + (quote.warrantyYears || 1) * 10)) * 0.25);
                 const displayScore = quote.aiMatchScore ?? (pricePts + leadPts + warPts);
+                const hasLineItems = Array.isArray(quote.lineItemQuotes) && quote.lineItemQuotes.length > 0;
+                const isExpanded = expandedQuoteIds.has(quote.vendorId);
 
                 return (
                   <div key={quote.vendorId} className="p-4 space-y-2.5">
@@ -1785,6 +1939,61 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                       {formatString(DETAILS.leadTimeDays, { days: quote.leadTimeDays })}
                     </CardField>
                     <CardField label={DETAILS.colCompliance}>{quote.complianceStatus}</CardField>
+                    <div className="col-span-2 rounded-lg bg-slate-50 dark:bg-gray-950/50 p-2.5 space-y-1.5">
+                      <p className="text-[10px] text-slate-600 dark:text-gray-300">
+                        {quote.paymentTerms || 'Payment terms not specified'}
+                        {quote.submittedAt ? ` · Submitted ${formatIndianDateTime(quote.submittedAt)}` : ''}
+                      </p>
+                      {quote.remarks && <p className="text-[10px] text-slate-500 dark:text-gray-400">{quote.remarks}</p>}
+                      {(quote.attachments || []).map((attachment) => (
+                        <QuoteAttachmentLink
+                          key={attachment.id}
+                          rfqId={activeRfq?.id || activeRfq?.rfqNumber || ''}
+                          attachment={attachment}
+                        />
+                      ))}
+                      <div className="pt-1 border-t border-slate-200 dark:border-gray-800">
+                        <button
+                          type="button"
+                          onClick={() => downloadSingleVendorQuoteExcel(activeRfq!, quote)}
+                          className="inline-flex items-center gap-1 text-[10px] font-semibold text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          <Download size={11} /> Download Vendor Quote (Excel)
+                        </button>
+                      </div>
+                    </div>
+                    {hasLineItems && (
+                      <div className="col-span-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => toggleQuoteExpand(quote.vendorId)}
+                          className="w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-gray-800 text-[11px] font-medium text-slate-700 dark:text-gray-300 hover:bg-slate-200 dark:hover:bg-gray-700 transition-colors"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Package className="w-3.5 h-3.5 text-blue-500" />
+                            <span>Line Item Breakdown ({quote.lineItemQuotes!.length} items)</span>
+                          </span>
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                        {isExpanded && (
+                          <div className="mt-2 space-y-1.5 border-t border-slate-200 dark:border-gray-800 pt-2">
+                            {quote.lineItemQuotes!.map((li, liIdx) => (
+                              <div key={li.lineItemId || liIdx} className="p-2 rounded bg-slate-50 dark:bg-gray-950/40 text-[10px] flex items-center justify-between gap-2">
+                                <div className="truncate">
+                                  <div className="font-semibold text-slate-800 dark:text-gray-200 truncate">{li.itemName}</div>
+                                  <div className="text-slate-500 dark:text-gray-400 mono">
+                                    {li.quantity.toLocaleString('en-IN')} {li.unit || ''} × {formatCurrency(li.unitPrice)}
+                                  </div>
+                                </div>
+                                <div className="font-bold text-slate-900 dark:text-white mono shrink-0">
+                                  {formatCurrency(li.totalPrice)}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
                 );

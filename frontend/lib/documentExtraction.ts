@@ -265,7 +265,11 @@ export async function buildExtractionRequest(file: File): Promise<RFQExtractionR
   if (isWordDocument(file.name)) {
     try {
       const docxText = await extractDocxText(await readAsArrayBuffer(file));
-      if (docxText && docxText.length > 0) {
+      // Require a meaningful amount of recovered text before trusting a text-only
+      // request. A near-empty result usually means the body is images or an
+      // unusual layout, so falling back to inline data lets the model read it
+      // directly rather than being handed almost nothing.
+      if (docxText && docxText.trim().length >= 15) {
         return { fileName: file.name, documentText: docxText };
       }
     } catch {
@@ -282,14 +286,18 @@ export async function buildExtractionRequest(file: File): Promise<RFQExtractionR
     return { fileName: file.name, inlineData: await readAsBase64(file), mimeType };
   }
   if (/\.pdf$/i.test(file.name)) {
+    let pdfText = '';
     try {
-      const pdfText = await extractPdfText(await readAsArrayBuffer(file));
-      if (pdfText && pdfText.length >= 15) {
-        return { fileName: file.name, documentText: pdfText };
-      }
+      pdfText = await extractPdfText(await readAsArrayBuffer(file));
     } catch {
       // fallback to inline data below
     }
+    return {
+      fileName: file.name,
+      inlineData: await readAsBase64(file),
+      mimeType: file.type || 'application/pdf',
+      ...(pdfText && pdfText.length >= 15 ? { documentText: pdfText } : {}),
+    };
   }
   return {
     fileName: file.name,

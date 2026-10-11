@@ -17,6 +17,25 @@ function renderWithProvider(ui: React.ReactElement) {
   return render(<AppProvider>{ui}</AppProvider>);
 }
 
+let vendorProfileResponse: Record<string, unknown> | null = null;
+
+function VendorSessionBootstrap() {
+  const { setCurrentRole, setCurrentUserSession, setIsLoggedIn } = useApp();
+  React.useEffect(() => {
+    setCurrentUserSession({
+      id: 'vendor-test-id',
+      email: 'vendor@example.com',
+      name: 'Test Vendor',
+      role: 'vendor',
+      orgId: 'vendor-test-org',
+      orgName: 'Test Vendor Ltd.',
+    });
+    setCurrentRole('vendor');
+    setIsLoggedIn(true);
+  }, [setCurrentRole, setCurrentUserSession, setIsLoggedIn]);
+  return null;
+}
+
 /** The provider exposes the toast in context but does not render it. */
 function ToastProbe() {
   const { toastMessage } = useApp();
@@ -104,6 +123,9 @@ function mockFetchImpl(url: string, options: any = {}) {
     return Promise.resolve({ ok: true, json: async () => ({ success: true, data: { id: 'v-mock-1', name: 'Mock Vendor' } }) });
   }
   if (/\/api\/vendors\/[^/]+$/.test(url)) {
+    if (vendorProfileResponse) {
+      return Promise.resolve({ ok: true, json: async () => ({ success: true, data: vendorProfileResponse }) });
+    }
     return Promise.resolve({ ok: false, status: 404, json: async () => ({ success: false, error: 'Not found' }) });
   }
   if (/\/api\/rfqs\/[^/]+\/quotes$/.test(url)) {
@@ -121,6 +143,7 @@ function mockFetchImpl(url: string, options: any = {}) {
 describe('Vendor Screens Comprehensive Suite', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    vendorProfileResponse = null;
     global.fetch = jest.fn(mockFetchImpl) as any;
   });
 
@@ -159,11 +182,12 @@ describe('Vendor Screens Comprehensive Suite', () => {
       fireEvent.change(categorySelect, { target: { value: 'Valves' } });
       fireEvent.change(categorySelect, { target: { value: 'All' } });
 
-      // Test Bulk Excel Import
-      const bulkBtn = screen.getByRole('button', { name: /Simulate Bulk Excel Import/i });
-      await act(async () => {
-        fireEvent.click(bulkBtn);
-      });
+      // Test Download Excel Template & Upload Input
+      const downloadBtn = screen.getByRole('button', { name: /Download Excel Template/i });
+      fireEvent.click(downloadBtn);
+
+      const uploadInput = screen.getByLabelText(/Upload catalogue Excel workbook/i);
+      expect(uploadInput).toBeInTheDocument();
 
       // Test Summary filter toggle
       const summaryBtn = screen.getByRole('button', { name: /Summary:/i });
@@ -194,8 +218,8 @@ describe('Vendor Screens Comprehensive Suite', () => {
         />
       );
 
-      expect(screen.getByText(/Vendor Workspace & Opportunity Feed/i)).toBeInTheDocument();
-      expect(screen.getAllByText(/Apex Supplies Ltd\./i)[0]).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /Vendor Workspace & Opportunity Feed/i })).not.toBeInTheDocument();
+      expect(screen.queryByText(/Apex Supplies Ltd\./i)).not.toBeInTheDocument();
 
       // Test search inputs
       const searchInputs = screen.getAllByPlaceholderText(/Specs, location, keywords\.\.\./i);
@@ -223,10 +247,38 @@ describe('Vendor Screens Comprehensive Suite', () => {
         fireEvent.click(bidBtns[0]);
       }
 
-      // Test self-evaluation banner button
-      const evalBtn = screen.getByRole('button', { name: /Start Self-Evaluation|View AI Rating/i });
-      fireEvent.click(evalBtn);
-      expect(onEval).toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: /Start Self-Evaluation|View AI Rating/i })).not.toBeInTheDocument();
+      expect(onEval).not.toHaveBeenCalled();
+    });
+
+    test('shows the buyer-added badge with the buyer company in the dashboard header', async () => {
+      vendorProfileResponse = {
+        source: 'buyer_manual',
+        buyerId: 'buyer-123',
+        addedByBuyerCompany: 'Acme Manufacturing',
+      };
+
+      render(
+        <AppProvider>
+          <VendorSessionBootstrap />
+          <OpportunityFeed onNavigateToBidForm={jest.fn()} />
+        </AppProvider>
+      );
+
+      expect(await screen.findByText('Procucev buyer added you · Acme Manufacturing')).toBeInTheDocument();
+    });
+
+    test('shows the self-onboarded badge for vendor self-registration', async () => {
+      vendorProfileResponse = { source: 'self_registration' };
+
+      render(
+        <AppProvider>
+          <VendorSessionBootstrap />
+          <OpportunityFeed onNavigateToBidForm={jest.fn()} />
+        </AppProvider>
+      );
+
+      expect(await screen.findByText('Self-onboarded vendor')).toBeInTheDocument();
     });
   });
 
@@ -331,7 +383,8 @@ describe('Vendor Screens Comprehensive Suite', () => {
       }
       renderWithProvider(<QuotationFormConnectWrapper onBack={onBack} />);
 
-      expect(screen.getByText(/Sourcing Enquiries & Quotation Tracking/i)).toBeInTheDocument();
+      expect(screen.queryByText(/Sourcing Enquiries & Quotation Tracking/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/Active sourcing enquiries/i)).toBeInTheDocument();
       expect(screen.getAllByText(/RFQs Received/i)[0]).toBeInTheDocument();
 
       // Test Download RFQ button inside table
@@ -360,7 +413,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
         }
       }
 
-      const backBtn = screen.getByRole('button', { name: /Back to Opportunity Feed/i });
+      const backBtn = screen.getByRole('button', { name: /Back to Dashboard/i });
       fireEvent.click(backBtn);
       expect(onBack).toHaveBeenCalled();
     });
@@ -370,7 +423,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
     test('renders profile form, modifies inputs, toggles categories, and saves vendor profile', () => {
       renderWithProvider(<VendorProfilePage />);
 
-      expect(screen.getByText(/Vendor Supplier Profile/i)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /Vendor Supplier Profile/i })).not.toBeInTheDocument();
       expect(screen.getByText(/Section 1: Supplier Tax & Business Details/i)).toBeInTheDocument();
 
       // Input changes
@@ -407,7 +460,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
         await Promise.resolve();
       });
 
-      expect(screen.getByText(/Vendor Subscription Plans & Quotas/i)).toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /Vendor Subscription Plans & Quotas/i })).not.toBeInTheDocument();
       expect(screen.getAllByText(/Premium Model/i)[0]).toBeInTheDocument();
       expect(screen.getAllByText(/Connect Model/i)[0]).toBeInTheDocument();
       expect(screen.getAllByText(/Select Model/i)[0]).toBeInTheDocument();

@@ -71,6 +71,7 @@ const SOURCE_LABELS: Record<string, string> = {
   email_gateway: DETAILS.sourceEmailGateway,
   email_upload: DETAILS.sourceEmailUpload,
   manual_entry: DETAILS.sourceManualEntry,
+  ai_extraction: DETAILS.sourceAiExtraction || 'AI Extraction',
 };
 
 /** Row counter for ids on rows the buyer adds, so React keys stay stable. */
@@ -158,7 +159,12 @@ export function toFormState(rfq: RFQItem | any): RFQEditFormState {
     category: rfq.category || '',
     status: rfq.status || 'Parsing',
     budget: numBudget !== null && numBudget > 0 ? numBudget : null,
-    targetDeliveryDate: rfq.targetDeliveryDate || rfq.target_delivery_date || '',
+    targetDeliveryDate:
+      rfq.targetDeliveryDate ||
+      (rfq as any).target_delivery_date ||
+      (rfq as any).deadline ||
+      (rfq as any).deliveryDate ||
+      '',
     deliveryLocation: rfq.deliveryLocation || rfq.delivery_location || '',
     deliveryPincode: rfq.deliveryPincode || rfq.delivery_pincode || '',
     lineItems: entitiesList.map(toEditRow),
@@ -555,7 +561,13 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
               <ReadOnlyRow label={EDIT.raisedByLabel} value={rfq.raisedByEmail || ''} />
               <ReadOnlyRow
                 label={EDIT.intakeSourceLabel}
-                value={rfq.source ? SOURCE_LABELS[rfq.source] || rfq.source : ''}
+                value={
+                  rfq.source
+                    ? SOURCE_LABELS[rfq.source] || rfq.source
+                    : rfq.aiSummary
+                      ? (DETAILS.sourceAiExtraction || 'AI Extraction')
+                      : ''
+                }
               />
             </div>
           </section>

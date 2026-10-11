@@ -86,6 +86,38 @@ describe('AllRFQsConsole', () => {
 
     expect(screen.getByText('Steel Pumps')).toBeInTheDocument();
     expect(screen.queryByText('Copper Cable')).not.toBeInTheDocument();
+    expect(screen.getByText('Showing 1 of 3 RFQs')).toBeInTheDocument();
+  });
+
+  it('clears all active search and filter values', async () => {
+    render(<AllRFQsConsole />);
+    await waitFor(() => expect(screen.getByText('Copper Cable')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(S.searchLabel), { target: { value: 'pumps' } });
+    fireEvent.change(screen.getByLabelText(S.statusFilterLabel), { target: { value: 'PO Generated' } });
+    expect(screen.getByText('Steel Pumps')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: S.clearFilters }));
+
+    expect(screen.getByLabelText(S.searchLabel)).toHaveValue('');
+    expect(screen.getByLabelText(S.statusFilterLabel)).toHaveValue('all');
+    expect(screen.getByLabelText(S.buyerFilterLabel)).toHaveValue('all');
+    expect(screen.getByText('Copper Cable')).toBeInTheDocument();
+    expect(screen.getByText('Showing 3 of 3 RFQs')).toBeInTheDocument();
+  });
+
+  it('clears the search field without resetting the other filters', async () => {
+    render(<AllRFQsConsole />);
+    await waitFor(() => expect(screen.getByText('Copper Cable')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText(S.searchLabel), { target: { value: 'pumps' } });
+    fireEvent.change(screen.getByLabelText(S.statusFilterLabel), { target: { value: 'PO Generated' } });
+    fireEvent.click(screen.getByRole('button', { name: S.clearSearch }));
+
+    expect(screen.getByLabelText(S.searchLabel)).toHaveValue('');
+    expect(screen.getByLabelText(S.statusFilterLabel)).toHaveValue('PO Generated');
+    expect(screen.getByText('Steel Pumps')).toBeInTheDocument();
+    expect(screen.queryByText('Copper Cable')).not.toBeInTheDocument();
   });
 
   it('filters by status', async () => {

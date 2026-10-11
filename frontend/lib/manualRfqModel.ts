@@ -36,6 +36,7 @@ import type {
   ManualRFQLineItemErrors,
   ManualRFQValidation,
   RFQCreatePayload,
+  RFQSource,
   SourcingMode,
 } from './types';
 
@@ -266,7 +267,8 @@ export function toRFQCreatePayload(
     email?: string | null;
     contactPerson?: string | null;
     phone?: string | null;
-  }>
+  }>,
+  source?: RFQSource
 ): RFQCreatePayload {
   const items = form.lineItems.map(toExtractedEntity);
   const leading = items[0];
@@ -281,7 +283,7 @@ export function toRFQCreatePayload(
     category: clean(form.majorCategory) || (leading ? leading.majorCategory : ''),
     sourcingMode: form.sourcingMode,
     status: MANUAL.defaultStatus,
-    source: 'manual_entry',
+    source: source || 'manual_entry',
     // Zero rather than null: the column is NOT NULL, and zero is rendered as
     // "not set" rather than as a real ceiling of nothing.
     budget: form.estimatedBudget === null ? 0 : Number(form.estimatedBudget),

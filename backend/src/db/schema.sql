@@ -798,3 +798,32 @@ CREATE TABLE IF NOT EXISTS bulk_vendor_import_sessions (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_bulk_vendor_import_sessions_status ON bulk_vendor_import_sessions (status);
+
+-- ============================================================================
+-- VENDOR RFQ UNLOCKS & CREDIT TRANSACTIONS (V0 Free Starter & Entitlements)
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS rfq_unlocks (
+  id VARCHAR(64) PRIMARY KEY,
+  vendor_id VARCHAR(64) NOT NULL,
+  rfq_id VARCHAR(64) NOT NULL,
+  credit_charged INTEGER NOT NULL DEFAULT 1,
+  source VARCHAR(50) DEFAULT 'free_credit',
+  unlocked_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_rfq_unlocks_vendor_rfq UNIQUE (vendor_id, rfq_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_unlocks_vendor ON rfq_unlocks (vendor_id);
+CREATE INDEX IF NOT EXISTS idx_rfq_unlocks_rfq ON rfq_unlocks (rfq_id);
+
+CREATE TABLE IF NOT EXISTS vendor_credit_transactions (
+  id VARCHAR(64) PRIMARY KEY,
+  vendor_id VARCHAR(64) NOT NULL,
+  rfq_id VARCHAR(64),
+  transaction_type VARCHAR(50) NOT NULL, -- 'INITIAL_ALLOCATION' | 'RFQ_UNLOCK' | 'SUBSCRIPTION_UPGRADE'
+  amount INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  idempotency_key VARCHAR(512) UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_vendor_credit_transactions_vendor ON vendor_credit_transactions (vendor_id, created_at DESC);
+

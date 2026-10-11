@@ -64,6 +64,25 @@ describe('Gemini document extraction service', () => {
       expect(gemini.parseExtractionJson('Here you go:\n{"items":[]}\nHope that helps.')).toEqual({ items: [] });
     });
 
+    // A trailing comma before a closing ] or } is the single most common defect
+    // in model JSON; the repair pass salvages it without inventing any values.
+    test('repairs a trailing comma before a closing bracket', () => {
+      expect(gemini.parseExtractionJson('{"items":[{"itemDescription":"Pump"},]}')).toEqual({
+        items: [{ itemDescription: 'Pump' }],
+      });
+    });
+
+    test('repairs a trailing comma before a closing brace', () => {
+      expect(gemini.parseExtractionJson('{"documentTitle":"X","items":[],}')).toEqual({
+        documentTitle: 'X',
+        items: [],
+      });
+    });
+
+    test('still returns null when the repair pass cannot fix the JSON', () => {
+      expect(gemini.parseExtractionJson('{"items":[{"a": }]}')).toBeNull();
+    });
+
     test.each(['', '   ', 'no json here', '{ broken', 'null', '{ invalid json syntax }'])('returns null for %p', (input) => {
       expect(gemini.parseExtractionJson(input)).toBeNull();
     });
@@ -322,6 +341,20 @@ describe('Gemini document extraction service', () => {
 
       expect(res.status).toBe(EXTRACTION_STATUS.AI_FAILED);
       expect(res.error).toContain('network down');
+      expect(global.fetch).toHaveBeenCalledTimes(gemini.resolveModelChain().length);
+    });
+
+    test('reports QUOTA_EXCEEDED when every model is rate limited', async () => {
+      GEMINI_CONFIG.API_KEY = 'test-key';
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () => '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}',
+      });
+
+      const res = await gemini.extractLineItems({ documentText: 'Pump | 12' });
+
+      expect(res.status).toBe(EXTRACTION_STATUS.QUOTA_EXCEEDED);
       expect(global.fetch).toHaveBeenCalledTimes(gemini.resolveModelChain().length);
     });
 
@@ -664,6 +697,24 @@ describe('POST /api/rfqs/extract', () => {
 
     expect(res.statusCode).toBe(422);
     expect(res.body.reason).toBe(EXTRACTION_STATUS.AI_FAILED);
+  });
+
+  test('returns actionable quota guidance when Gemini rate limits every model', async () => {
+    GEMINI_CONFIG.API_KEY = 'test-key';
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => '{"error":{"status":"RESOURCE_EXHAUSTED","message":"Quota exceeded"}}',
+    });
+
+    const res = await request(app)
+      .post('/api/rfqs/extract')
+      .set(authHeader('buyer'))
+      .send({ fileName: 'BOQ.xlsx', documentText: 'Pump | 12' });
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body.reason).toBe(EXTRACTION_STATUS.QUOTA_EXCEEDED);
+    expect(res.body.error).toMatch(/quota or rate limit/i);
   });
 
   // Defends the contract between extraction and classification: if the taxonomy
@@ -1129,6 +1180,23 @@ describe('geminiService.generateJson', () => {
       expect(result.lineItemQuotes[0].tax).toBe(500);
     });
 
+    test('extractQuotationFromEmail calculates unitPrice from totalPrice when unitPrice is 0 or missing', async () => {
+      GEMINI_CONFIG.API_KEY = 'test-key';
+      const aiResponse = {
+        unitPrice: 0,
+        totalPrice: 50000,
+        leadTimeDays: 7,
+        warrantyYears: 1,
+        lineItemQuotes: [],
+      };
+
+      global.fetch = jest.fn(async () => geminiReply(JSON.stringify(aiResponse)));
+      const result = await gemini.extractQuotationFromEmail({ bodyText: 'Quotation' }, sampleRfq);
+      expect(result).toBeDefined();
+      expect(result.totalPrice).toBe(50000);
+      expect(result.unitPrice).toBe(25000);
+    });
+
     test('extractQuotationFromEmail maps partial lineItemQuotes with missing fields and handles invalid complianceStatus', async () => {
       GEMINI_CONFIG.API_KEY = 'test-key';
       const aiResponse = {
@@ -1353,6 +1421,289 @@ describe('geminiService.generateJson', () => {
       global.fetch = jest.fn(async () => geminiReply(JSON.stringify(aiResponseMinor)));
       const resMinor = await gemini.extractQuotationFromEmail({ bodyText: 'Test' }, {});
       expect(resMinor.complianceStatus).toBe('Minor Exception');
+    });
+  });
+
+  // ── Multi-worksheet extraction without arbitrary 10-item limit ─────────────
+  describe('Enterprise QUA bulk RFQ extraction & validation', () => {
+    describe('parseValidQuantity', () => {
+      test.each([
+        [10, 10],
+        ['25', 25],
+        ['100.5', 100.5],
+        ['1,500', 1500],
+        ['10 Nos', 10],
+        ['+50', 50],
+      ])('parses valid positive quantity %p as %p', (input, expected) => {
+        expect(gemini.parseValidQuantity(input)).toBe(expected);
+      });
+
+      test.each([0, '0', -5, '-10', '', '   ', null, undefined, 'N/A', 'invalid', '0 Nos'])(
+        'returns null for invalid or non-positive quantity %p',
+        (input) => {
+          expect(gemini.parseValidQuantity(input)).toBeNull();
+        }
+      );
+    });
+
+    describe('matchHeaderField', () => {
+      test.each([
+        ['Item Description', 'itemDescription'],
+        ['Product', 'itemDescription'],
+        ['Material', 'itemDescription'],
+        ['Quantity', 'quantity'],
+        ['Qty', 'quantity'],
+        ['Purchase Qty', 'quantity'],
+        ['UOM', 'unit'],
+        ['Unit of Measure', 'unit'],
+        ['Technical Specification', 'specification'],
+        ['Material Grade', 'specification'],
+        ['Rate', 'unitPrice'],
+        ['Unit Price', 'unitPrice'],
+        ['Total Amount', 'totalPrice'],
+        ['Manufacturer', 'brand'],
+        ['Required By', 'targetDate'],
+        ['Delivery City', 'deliveryCity'],
+        ['Delivery State', 'deliveryState'],
+        ['Pincode', 'deliveryPincode'],
+        ['Destination', 'deliveryLocation'],
+        ['Category', 'category'],
+      ])('identifies %p as %p', (header, expected) => {
+        expect(gemini.matchHeaderField(header)).toBe(expected);
+      });
+
+      test('returns null for non-matching or empty headers', () => {
+        expect(gemini.matchHeaderField('')).toBeNull();
+        expect(gemini.matchHeaderField('Unknown Random Header')).toBeNull();
+        expect(gemini.matchHeaderField(123)).toBeNull();
+      });
+    });
+
+    describe('extractSpreadsheetLineItems', () => {
+      test('extracts all valid line items without arbitrary 10-item limit across multiple worksheets', () => {
+        // Build 200 items across 2 worksheets: 100 valid items (50 per sheet) and 100 invalid items (50 per sheet)
+        const sheet1Rows = [
+          'Item Description | Technical Specifications | Qty | Unit | Unit Price',
+        ];
+        const sheet2Rows = [
+          'Material | Specs | Order Qty | UOM | Rate',
+        ];
+
+        for (let i = 1; i <= 50; i++) {
+          // Valid item: positive quantity
+          sheet1Rows.push(`Mechanical Pump ${i} | SS316 Grade ${i}00 | ${10 + i} | Units | ${1000 * i}`);
+          // Invalid item: 0 or empty quantity
+          sheet1Rows.push(`Invalid Mechanical Item ${i} | Spec | 0 | Units | 500`);
+        }
+
+        for (let j = 1; j <= 50; j++) {
+          // Valid item: positive quantity
+          sheet2Rows.push(`Electrical Cable ${j} | 4-Core XLPE ${j}mm | ${100 + j} | Meters | ${50 * j}`);
+          // Invalid item: negative or non-numeric quantity
+          sheet2Rows.push(`Invalid Electrical Item ${j} | Spec | -5 | Meters | 200`);
+        }
+
+        const documentText = `SHEET: Mechanical\n${sheet1Rows.join('\n')}\n\nSHEET: Electrical\n${sheet2Rows.join('\n')}`;
+
+        const extracted = gemini.extractSpreadsheetLineItems(documentText);
+
+        // Exactly 100 valid items extracted (50 from Sheet 1, 50 from Sheet 2) out of 200 total items
+        expect(extracted).toHaveLength(100);
+
+        // Accurate extraction of item descriptions, quantities, units, technical specifications
+        expect(extracted[0].itemName).toBe('Mechanical Pump 1');
+        expect(extracted[0].quantity).toBe(11);
+        expect(extracted[0].unit).toBe('Units');
+        expect(extracted[0].technicalSpecs).toBe('SS316 Grade 100');
+        expect(extracted[0].category).toBe('Mechanical');
+        expect(extracted[0].unitPrice).toBe(1000);
+
+        const lastSheet1 = extracted[49];
+        expect(lastSheet1.itemName).toBe('Mechanical Pump 50');
+        expect(lastSheet1.quantity).toBe(60);
+
+        const firstSheet2 = extracted[50];
+        expect(firstSheet2.itemName).toBe('Electrical Cable 1');
+        expect(firstSheet2.quantity).toBe(101);
+        expect(firstSheet2.unit).toBe('Meters');
+        expect(firstSheet2.technicalSpecs).toBe('4-Core XLPE 1mm');
+        expect(firstSheet2.category).toBe('Electrical');
+
+        const lastSheet2 = extracted[99];
+        expect(lastSheet2.itemName).toBe('Electrical Cable 50');
+        expect(lastSheet2.quantity).toBe(150);
+
+        // Zero invalid items were included
+        expect(extracted.some((item) => item.itemName.startsWith('Invalid'))).toBe(false);
+      });
+
+      test('handles sheet without explicit SHEET: header and infers column mapping', () => {
+        const text = [
+          'Flanged Ball Valve | 25 | Nos | Forged Steel',
+          'Globe Valve | 15 | Nos | Bronze',
+          'Unusable Zero Qty Valve | 0 | Nos | Cast Iron',
+        ].join('\n');
+
+        const extracted = gemini.extractSpreadsheetLineItems(text);
+        expect(extracted).toHaveLength(2);
+        expect(extracted[0].itemName).toBe('Flanged Ball Valve');
+        expect(extracted[0].quantity).toBe(25);
+        expect(extracted[0].unit).toBe('Nos');
+        expect(extracted[0].technicalSpecs).toBe('Forged Steel');
+      });
+
+      test('splits compound description into itemName and specification if no separate spec column', () => {
+        const text = [
+          'Description | Qty | Unit',
+          'Industrial Gate Valve 4 inch, SS304, Class 150 | 12 | Nos',
+        ].join('\n');
+
+        const extracted = gemini.extractSpreadsheetLineItems(text);
+        expect(extracted).toHaveLength(1);
+        expect(extracted[0].itemName).toBe('Industrial Gate Valve 4 inch');
+        expect(extracted[0].technicalSpecs).toBe('SS304, Class 150');
+        expect(extracted[0].quantity).toBe(12);
+        expect(extracted[0].unit).toBe('Nos');
+      });
+
+      test('correctly processes rows with optional columns, empty descriptions, repeating headers, and non-pipe lines', () => {
+        const text = [
+          'SHEET: NotesOnlySheet',
+          'This sheet has no pipes at all',
+          '',
+          'SHEET: FullDataSheet',
+          'Item Description | Quantity | Unit | Specifications | Brand | Unit Price | Total Price | Required By | Delivery Location | City | State | Pincode | Category',
+          'Single cell line without pipe',
+          ' | 10 | Nos | | | | | | | | | | ',
+          'Item Description | 10 | Nos | | | | | | | | | | ',
+          'Complete Pump | 5 | Units | Centrifugal 500 GPM | Kirloskar | 1000 | 5000 | 2026-12-01 | Plant A | Pune | MH | 411001 | Mechanical',
+          'Bare Minimum Valve | 2 | Nos | | | | | | | | | | ',
+        ].join('\n');
+
+        const extracted = gemini.extractSpreadsheetLineItems(text);
+        expect(extracted).toHaveLength(2);
+
+        expect(extracted[0].itemName).toBe('Complete Pump');
+        expect(extracted[0].quantity).toBe(5);
+        expect(extracted[0].unit).toBe('Units');
+        expect(extracted[0].technicalSpecs).toBe('Centrifugal 500 GPM');
+        expect(extracted[0].brand).toBe('Kirloskar');
+        expect(extracted[0].unitPrice).toBe(1000);
+        expect(extracted[0].totalPrice).toBe(5000);
+        expect(extracted[0].targetDate).toBe('2026-12-01');
+        expect(extracted[0].deliveryLocation).toBe('Plant A');
+        expect(extracted[0].deliveryCity).toBe('Pune');
+        expect(extracted[0].deliveryState).toBe('MH');
+        expect(extracted[0].deliveryPincode).toBe('411001');
+        expect(extracted[0].category).toBe('Mechanical');
+
+        expect(extracted[1].itemName).toBe('Bare Minimum Valve');
+        expect(extracted[1].quantity).toBe(2);
+        expect(extracted[1].unit).toBe('Nos');
+        expect(extracted[1].technicalSpecs).toBe('');
+        expect(extracted[1].brand).toBeUndefined();
+        expect(extracted[1].deliveryLocation).toBeUndefined();
+      });
+
+      test('returns empty array for empty or whitespace document', () => {
+        expect(gemini.extractSpreadsheetLineItems('')).toEqual([]);
+        expect(gemini.extractSpreadsheetLineItems('   \n  ')).toEqual([]);
+        expect(gemini.extractSpreadsheetLineItems(null)).toEqual([]);
+      });
+    });
+
+    describe('extractLineItems integration with large multi-worksheet text', () => {
+      test('preserves all 100 valid items when model returns a truncated/sampled 10 items', async () => {
+        GEMINI_CONFIG.API_KEY = 'test-key';
+
+        // Simulate model only returning 10 items (the arbitrary limit)
+        const sample10 = Array.from({ length: 10 }, (_, i) => ({
+          itemDescription: `Sample Item ${i + 1}`,
+          quantity: i + 1,
+          unit: 'Units',
+        }));
+
+        global.fetch = jest.fn().mockResolvedValue(
+          geminiReply(
+            JSON.stringify({
+              documentTitle: 'Bulk Procurement 100 Items',
+              category: 'Mechanical',
+              items: sample10,
+            })
+          )
+        );
+
+        // Build documentText with 100 valid items across sheets
+        const sheetLines = ['Item | Qty | Unit | Specs'];
+        for (let i = 1; i <= 100; i++) {
+          sheetLines.push(`Procurement Item ${i} | ${i * 5} | Units | Spec ${i}`);
+        }
+        const documentText = `SHEET: Main\n${sheetLines.join('\n')}`;
+
+        const result = await gemini.extractLineItems({
+          documentText,
+          fileName: 'BulkRFQ.xlsx',
+        });
+
+        expect(result.status).toBe(gemini.EXTRACTION_STATUS.SUCCESS);
+        // All 100 valid items are preserved, overcoming the 10-item truncation
+        expect(result.lineItems).toHaveLength(100);
+        expect(result.lineItems[0].itemName).toBe('Procurement Item 1');
+        expect(result.lineItems[99].itemName).toBe('Procurement Item 100');
+        expect(result.documentTitle).toBe('Bulk Procurement 100 Items');
+      });
+    });
+
+    describe('POST /api/rfqs/extract with 200 items (100 valid, 100 invalid)', () => {
+      test('extracts, validates, classifies, and saves all 100 valid items into draft RFQ', async () => {
+        GEMINI_CONFIG.API_KEY = 'test-key';
+
+        // Build 200 items in tabular documentText (100 valid, 100 invalid)
+        const rows = ['Item Description | Technical Specifications | Quantity | Unit | Price'];
+        for (let i = 1; i <= 100; i++) {
+          rows.push(`Centrifugal Pump Model ${i} | SS316 500 GPM | ${10 + i} | Units | ${5000}`);
+          // Invalid row with missing or non-positive quantity
+          rows.push(`Unusable Scrap ${i} | N/A | 0 | Units | 0`);
+        }
+
+        const documentText = `SHEET: Mechanical Spares\n${rows.join('\n')}`;
+
+        // Model returns the items
+        global.fetch = jest.fn().mockResolvedValue(
+          geminiReply(
+            JSON.stringify({
+              documentTitle: 'Bulk 100 Pump Procurement',
+              category: 'Mechanical',
+              items: [
+                { itemDescription: 'Centrifugal Pump Model 1', quantity: 11, unit: 'Units' },
+              ],
+            })
+          )
+        );
+
+        const res = await request(app)
+          .post('/api/rfqs/extract')
+          .set(authHeader('buyer'))
+          .send({ fileName: 'Bulk_200_Items.xlsx', documentText });
+
+        expect(res.statusCode).toBe(200);
+        expect(res.body.success).toBe(true);
+        expect(res.body.data.extractedEntities).toHaveLength(100);
+        expect(res.body.classification.accepted).toBe(100);
+
+        // Validate first and last extracted items
+        expect(res.body.data.extractedEntities[0].itemName).toBe('Centrifugal Pump Model 1');
+        expect(res.body.data.extractedEntities[0].quantity).toBe(11);
+        expect(res.body.data.extractedEntities[0].unit).toBe('Units');
+
+        expect(res.body.data.extractedEntities[99].itemName).toBe('Centrifugal Pump Model 100');
+        expect(res.body.data.extractedEntities[99].quantity).toBe(110);
+
+        // Zero invalid scrap items were accepted
+        expect(
+          res.body.data.extractedEntities.some((entity) => entity.itemName.startsWith('Unusable Scrap'))
+        ).toBe(false);
+      });
     });
   });
 });

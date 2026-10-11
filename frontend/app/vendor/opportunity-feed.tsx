@@ -9,23 +9,16 @@ import { rfqAttachmentUrl } from '@/lib/rfqClient';
 import { SubscriptionPaymentModal } from '@/app/components/Modals';
 import { VendorOpportunity } from '@/lib/types';
 import {
-  Truck,
-  ShieldCheck,
-  Star,
   Clock,
   AlertTriangle,
   Send,
   Building,
-  CheckCircle2,
   ChevronRight,
   ExternalLink,
   Zap,
   Mail,
   Search,
-  Sparkles,
   Package,
-  ArrowRight,
-  MessageSquare,
 } from 'lucide-react';
 
 interface OpportunityFeedProps {
@@ -36,7 +29,6 @@ interface OpportunityFeedProps {
 
 export default function OpportunityFeed({
   onNavigateToBidForm,
-  onNavigateToEvaluation,
   onNavigateToSubscription,
 }: OpportunityFeedProps) {
   const router = useRouter();
@@ -48,13 +40,13 @@ export default function OpportunityFeed({
     updateVendorSubscription,
     vendorRfqDownloadsUsed,
     vendorCatalogue,
-    vendorSelfEvaluationCompleted,
-    vendorSelfEvaluationScore,
-    isVendorEvaluationFeeWaived,
     buyerVendors,
     currentUserSession,
     refreshFromDB,
     createVendorPaymentLink,
+    vendorFreeCreditsRemaining,
+    vendorUnlockedRfqIds,
+    refreshVendorCredits,
   } = useApp();
   const vendorLabel = currentUserSession?.orgName || currentUserSession?.name || 'Vendor';
 
@@ -69,16 +61,28 @@ export default function OpportunityFeed({
   // of what the vendor or the RFQ were actually categorised as.
   const [myMajorCategory, setMyMajorCategory] = React.useState<string>('');
   const [myMinorCategories, setMyMinorCategories] = React.useState<string[]>([]);
+  const [myAddedByBuyerCompany, setMyAddedByBuyerCompany] = React.useState<string>('');
+  const [myBuyerId, setMyBuyerId] = React.useState<string>('');
+  const [myOnboardingSource, setMyOnboardingSource] = React.useState<'buyer' | 'self' | null>(null);
   React.useEffect(() => {
     let cancelled = false;
     const email = currentUserSession?.email;
     if (!email) return;
+    setMyOnboardingSource(null);
+    setMyAddedByBuyerCompany('');
+    setMyBuyerId('');
     fetch(`/api/vendors/${encodeURIComponent(email)}`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data?.success || !data.data) return;
         setMyMajorCategory(data.data.majorCategory || '');
         setMyMinorCategories(Array.isArray(data.data.minorCategories) ? data.data.minorCategories : []);
+        setMyAddedByBuyerCompany(data.data.addedByBuyerCompany || '');
+        setMyBuyerId(data.data.buyerId || data.data.buyerAccountId || '');
+        const isBuyerAdded = data.data.addedByBuyerCompany || data.data.buyerId || data.data.buyerAccountId;
+        setMyOnboardingSource(
+          isBuyerAdded ? 'buyer' : data.data.source === 'self_registration' ? 'self' : null
+        );
       })
       .catch(() => {});
     return () => {
@@ -155,7 +159,15 @@ export default function OpportunityFeed({
   // enforcement in GET /api/rfqs/:id/email-preview checks).
   const myVendorRecord = buyerVendors.find((v) => v.email?.toLowerCase() === currentUserSession?.email?.toLowerCase());
   const isOwnBuyerRfq = (opp: VendorOpportunity) => {
-    return !!myVendorRecord?.addedByBuyerCompany && myVendorRecord.addedByBuyerCompany === opp.buyer;
+    if (!opp) return false;
+    if (myAddedByBuyerCompany && opp.buyer === myAddedByBuyerCompany) return true;
+    if (myBuyerId && opp.buyerAccountId === myBuyerId) return true;
+    if (myVendorRecord) {
+      if (myVendorRecord.addedByBuyerCompany && opp.buyer === myVendorRecord.addedByBuyerCompany) return true;
+      if (myVendorRecord.buyerId && opp.buyerAccountId === myVendorRecord.buyerId) return true;
+      if (myVendorRecord.buyerAccountId && opp.buyerAccountId === myVendorRecord.buyerAccountId) return true;
+    }
+    return false;
   };
 
   const handleDownloadRfq = async (opp: VendorOpportunity) => {
@@ -193,17 +205,20 @@ export default function OpportunityFeed({
       ...(authClient.getToken() ? { Authorization: `Bearer ${authClient.getToken()}` } : {}),
     };
     try {
-      const res = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}/email-preview`, {
+      const res = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}/download`, {
+        method: 'POST',
         headers: authHeaders,
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
+        if (data.exhausted || res.status === 403) {
+          showToast('Free Credits Exhausted', data.error || 'You have used all 5 free RFQ download credits. You cannot download another RFQ using your free allowance.', 'warning');
+          return;
+        }
         throw new Error(data.error || 'Could not generate the RFQ specification.');
       }
 
-      // The RFQ text info as a real downloaded file, not just a toast
-      // claiming an email was sent — a vendor without inbox access to that
-      // address previously had no way to actually see it.
+      // The RFQ text info as a real downloaded file
       const htmlBody: string = data.data?.htmlBody || '';
       const specUrl = URL.createObjectURL(new Blob([htmlBody], { type: 'text/html' }));
       const specLink = document.createElement('a');
@@ -214,10 +229,7 @@ export default function OpportunityFeed({
       specLink.remove();
       URL.revokeObjectURL(specUrl);
 
-      // Supporting documents the buyer attached, scoped server-side the
-      // same way as the vendor RFQ details page (canAccessRfq /
-      // vendorCoversRFQ), so this only returns attachments this vendor can
-      // already see.
+      // Supporting documents the buyer attached
       try {
         const rfqRes = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}`, { headers: authHeaders });
         const rfqData = await rfqRes.json();
@@ -236,10 +248,10 @@ export default function OpportunityFeed({
           URL.revokeObjectURL(fileUrl);
         }
       } catch {
-        // The specification itself already downloaded; a failure fetching
-        // attachments is surfaced by their absence, not a blocking error.
+        // Ignored
       }
 
+      await refreshVendorCredits();
       if (!isDirect) {
         await refreshFromDB();
       }
@@ -247,14 +259,6 @@ export default function OpportunityFeed({
       addAuditLog(`${vendorLabel} downloaded RFQ specifications for ${opp.rfqNumber}`, opp.rfqNumber, currentUserSession?.email);
     } catch (err: any) {
       showToast('Download Failed', err?.message || 'Could not download the RFQ specification.', 'warning');
-    }
-  };
-
-  const handleSubscriptionFeeClick = () => {
-    if (onNavigateToSubscription) {
-      onNavigateToSubscription();
-    } else {
-      openUpgradeModal();
     }
   };
 
@@ -380,107 +384,19 @@ export default function OpportunityFeed({
 
   return (
     <div className="space-y-6 animate-fade-in pb-10">
-      {/* Title & Screen Identification */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Vendor Workspace & Opportunity Feed
-            </h1>
-            <span className="badge badge-amber font-mono font-bold text-[10px]">⭐ Premium Vendor</span>
-          </div>
+          <h1 className="text-xl font-bold text-slate-900 dark:text-white">Vendor Dashboard</h1>
+          <p className="text-sm text-slate-500 dark:text-gray-400">Your sourcing opportunities and invitations</p>
         </div>
-      </div>
-
-      {/* ── TOP OF FIRST SCREEN BANNER: SELF-EVALUATION CALLOUT ── */}
-      <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-r from-indigo-900 via-purple-900 to-slate-900 text-white shadow-xl border-2 border-indigo-400/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fade-in">
-        <div className="flex items-center gap-3.5">
-          <div className="w-11 h-11 rounded-xl bg-amber-400/20 text-amber-300 flex items-center justify-center font-black shrink-0 text-xl shadow-inner border border-amber-400/30">
-            ⭐
-          </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-extrabold text-sm sm:text-base text-white">
-                Complete 360° AI Self-Evaluation: Get First-Priority RFQs & Multi-Buyer Showcase
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-400 text-slate-950 uppercase tracking-wide">
-                1st Priority Dispatch
-              </span>
-            </div>
-            <p className="text-xs text-indigo-200/90 mt-1 leading-relaxed">
-              Your verified rating will be displayed to new enterprise buyers while submitting RFQs. If sufficient subscribed vendors are not available for a requirement, <strong>evaluated vendors get 1st priority dispatch automatically across all RFQs irrespective of rating!</strong>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onNavigateToEvaluation}
-            className="btn btn-amber btn-sm font-black text-xs shadow-lg flex items-center gap-1.5 whitespace-nowrap"
-          >
-            <Sparkles size={13} /> {vendorSelfEvaluationCompleted ? `View AI Rating (${vendorSelfEvaluationScore}%)` : `Start Self-Evaluation (${isVendorEvaluationFeeWaived ? '$0 Free' : '$5'})`}
-          </button>
-        </div>
-      </div>
-
-      {/* Vendor Profile Header Card */}
-      <div className="glass-panel p-5 rounded-2xl flex flex-wrap items-center justify-between gap-4 border border-emerald-200 dark:border-emerald-500/30 bg-white dark:bg-gray-900/80 shadow-md">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-500 flex items-center justify-center text-white shadow-md">
-            <Truck size={24} />
-          </div>
-          <div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <h2 className="text-base font-extrabold text-slate-900 dark:text-white">Apex Supplies Ltd.</h2>
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500 text-white shadow-sm flex items-center gap-1">
-                ⭐ Premium Vendor (Client Uploaded)
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/40 flex items-center gap-1">
-                <ShieldCheck size={13} /> Verified Supplier
-              </span>
-              <span className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-50 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-500/40 flex items-center gap-1">
-                <Star size={12} className="fill-amber-400 text-amber-400" /> 4.8 / 5.0 Rating
-              </span>
-              <button
-                type="button"
-                onClick={onNavigateToSubscription}
-                className={`px-2.5 py-0.5 rounded-full text-[11px] font-bold flex items-center gap-1 border transition-all hover:scale-105 ${
-                  vendorSubscription === 'select'
-                    ? 'bg-purple-50 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-200 dark:border-purple-500/40'
-                    : vendorSubscription === 'connect'
-                    ? 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-500/40'
-                    : 'bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-400 border-slate-200'
-                }`}
-              >
-                {vendorSubscription === 'select' ? '👑 Select Partner' : vendorSubscription === 'connect' ? '🔗 Connect Partner' : '📋 Free Tier'}
-              </button>
-              {onNavigateToEvaluation && (
-                <button
-                  type="button"
-                  onClick={onNavigateToEvaluation}
-                  className="px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/40 hover:bg-indigo-100"
-                >
-                  <Sparkles size={11} /> 360° Audit
-                </button>
-              )}
-            </div>
-            <p className="text-xs text-slate-500 dark:text-gray-400 mt-1">
-              Vendor ID: <span className="mono text-indigo-600 dark:text-indigo-300 font-semibold">VN-APEX-4920</span> • Primary Category: Heavy Industrial Fluid Dynamics & Valves • Empanelled by <strong>Larsen & Toubro Ltd.</strong>
-            </p>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-4 text-xs">
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-gray-900 border border-slate-200 dark:border-gray-800 text-center">
-            <span className="text-[10px] text-slate-500 dark:text-gray-450 block uppercase">Active Bids</span>
-            <span className="text-base font-bold text-slate-900 dark:text-white mono">3 Live</span>
-          </div>
-          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-gray-905 border border-slate-200 dark:border-gray-800 text-center">
-            <span className="text-[10px] text-slate-500 dark:text-gray-450 block uppercase">Awarded POs</span>
-            <span className="text-base font-bold text-emerald-600 dark:text-emerald-400 mono">14 Contracts</span>
-          </div>
-        </div>
+        {myOnboardingSource && (
+          <span className="inline-flex w-fit items-center gap-2 rounded-full border border-indigo-200 bg-indigo-50 px-3 py-1.5 text-xs font-semibold text-indigo-800 dark:border-indigo-800 dark:bg-indigo-950/40 dark:text-indigo-200">
+            <Building size={14} aria-hidden="true" />
+            {myOnboardingSource === 'buyer'
+              ? `Procucev buyer added you${myAddedByBuyerCompany ? ` · ${myAddedByBuyerCompany}` : ''}`
+              : 'Self-onboarded vendor'}
+          </span>
+        )}
       </div>
 
       {/* Automated System Urgent Reminder Banner. Rendered only when there is an
@@ -772,140 +688,6 @@ export default function OpportunityFeed({
               })}
             </div>
           )}
-        </div>
-
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        {/* MID-SCREEN HIGHLIGHT: 360° AI SELF-EVALUATION & MULTI-BUYER SHOWCASE */}
-        {/* ═══════════════════════════════════════════════════════════════ */}
-        <div className="p-6 sm:p-7 rounded-3xl bg-gradient-to-br from-indigo-50/95 via-purple-50/80 to-amber-50/90 dark:from-indigo-950/70 dark:via-purple-950/50 dark:to-amber-950/50 border-2 border-indigo-300 dark:border-indigo-600/70 shadow-2xl space-y-6 relative overflow-hidden animate-fade-in">
-          {/* Ambient Glow */}
-          <div className="absolute top-0 right-0 w-96 h-96 bg-indigo-500/15 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20" />
-
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-5 relative z-10">
-            <div className="space-y-2.5 max-w-2xl">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="px-3 py-1 rounded-full text-xs font-black bg-indigo-600 text-white uppercase tracking-wider shadow-sm flex items-center gap-1.5">
-                  <Star size={13} className="fill-amber-300 text-amber-300" />
-                  ⭐ Premium Vendor Showcase & Priority Network
-                </span>
-                {vendorSelfEvaluationCompleted ? (
-                  <span className="px-3 py-1 rounded-full text-xs font-black bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border border-emerald-300 flex items-center gap-1">
-                    <CheckCircle2 size={13} /> Self-Evaluation Certified (Score: {vendorSelfEvaluationScore}%)
-                  </span>
-                ) : (
-                  <span className="px-3 py-1 rounded-full text-xs font-black bg-amber-400 text-slate-950 uppercase tracking-wide">
-                    1st Priority RFQ Status
-                  </span>
-                )}
-              </div>
-
-              <h3 className="text-lg sm:text-2xl font-black text-slate-900 dark:text-white leading-tight">
-                Complete 360° AI Self-Evaluation: Get First Priority in RFQs & Showcase Rating to New Buyers
-              </h3>
-
-              <p className="text-xs sm:text-sm text-slate-600 dark:text-gray-300 leading-relaxed">
-                When a buyer uploads your details, you are automatically recognized as a <strong>Premium Vendor</strong> for their private RFQs. Complete your 360° AI Self-Evaluation to unlock automatic first-priority matching and display your quality credentials across all enterprise buyers!
-              </p>
-            </div>
-
-            {/* Right Pricing Box */}
-            <div className="p-4 sm:p-5 rounded-2xl bg-white dark:bg-gray-900 border-2 border-indigo-200 dark:border-indigo-800 shadow-md space-y-2 shrink-0 md:w-64 text-center">
-              <span className="text-[10px] uppercase font-black text-indigo-600 dark:text-indigo-400 block tracking-wider">
-                Infra & AI Compute Fee
-              </span>
-              <div className="flex items-baseline justify-center gap-1">
-                {isVendorEvaluationFeeWaived ? (
-                  <>
-                    <span className="text-3xl font-black text-emerald-600 dark:text-emerald-400">$0</span>
-                    <span className="text-xs font-black text-emerald-700 dark:text-emerald-300 uppercase">FREE (Waived)</span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-3xl font-black text-slate-900 dark:text-white">$5</span>
-                    <span className="text-xs text-slate-400 line-through">$25</span>
-                    <span className="text-[10px] text-slate-500 font-medium">/ audit</span>
-                  </>
-                )}
-              </div>
-              <p className="text-[10px] text-slate-500 dark:text-gray-400 leading-relaxed font-medium">
-                {isVendorEvaluationFeeWaived
-                  ? `100% Free with your active ${vendorSubscription === 'connect' ? 'Connect' : 'Select'} subscription.`
-                  : 'Nominal fee towards cloud infrastructure & AI verification. Cost is $0 with Connect or Select!'}
-              </p>
-            </div>
-          </div>
-
-          {/* 4 Core Benefit Pillars Grid */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 relative z-10 text-xs">
-            <div className="p-3.5 rounded-2xl bg-white/90 dark:bg-gray-900/90 border border-indigo-200/80 dark:border-indigo-800/80 shadow-xs space-y-1.5">
-              <div className="w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold">
-                ⭐
-              </div>
-              <h4 className="font-black text-slate-900 dark:text-white text-xs">Showcase Rating to New Buyers</h4>
-              <p className="text-[11px] text-slate-500 dark:text-gray-400 leading-relaxed">
-                Your verified 360° AI rating is displayed directly on buyers&apos; RFQ selection screens while creating new RFQs to prompt direct invitations.
-              </p>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-white/90 dark:bg-gray-900/90 border border-emerald-200/80 dark:border-emerald-800/80 shadow-xs space-y-1.5">
-              <div className="w-7 h-7 rounded-lg bg-emerald-100 dark:bg-emerald-950/80 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold">
-                🚀
-              </div>
-              <h4 className="font-black text-slate-900 dark:text-white text-xs">Automatic 1st Priority Dispatch</h4>
-              <p className="text-[11px] text-slate-500 dark:text-gray-400 leading-relaxed">
-                If sufficient subscribed vendors are not available for a requirement selected by a buyer, evaluated vendors receive <strong>1st priority dispatch</strong> automatically.
-              </p>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-white/90 dark:bg-gray-900/90 border border-purple-200/80 dark:border-purple-800/80 shadow-xs space-y-1.5">
-              <div className="w-7 h-7 rounded-lg bg-purple-100 dark:bg-purple-950/80 text-purple-600 dark:text-purple-400 flex items-center justify-center font-bold">
-                🛡️
-              </div>
-              <h4 className="font-black text-slate-900 dark:text-white text-xs">Priority Irrespective of Score</h4>
-              <p className="text-[11px] text-slate-500 dark:text-gray-400 leading-relaxed">
-                Evaluated vendors are given first priority in all RFQs by the system automatically <strong>irrespective of evaluation rating</strong> compared to non-evaluated suppliers.
-              </p>
-            </div>
-
-            <div className="p-3.5 rounded-2xl bg-white/90 dark:bg-gray-900/90 border border-amber-200/80 dark:border-amber-800/80 shadow-xs space-y-1.5">
-              <div className="w-7 h-7 rounded-lg bg-amber-100 dark:bg-amber-950/80 text-amber-600 dark:text-amber-400 flex items-center justify-center font-bold">
-                🌐
-              </div>
-              <h4 className="font-black text-slate-900 dark:text-white text-xs">Multi-Buyer Expansion</h4>
-              <p className="text-[11px] text-slate-500 dark:text-gray-400 leading-relaxed">
-                Empanelled beyond your primary client (L&amp;T) to receive RFQs from Tata Steel, Reliance Industries, Adani Group, and global buyers.
-              </p>
-            </div>
-          </div>
-
-          {/* Bottom Actions Bar */}
-          <div className="pt-4 border-t border-indigo-200/60 dark:border-indigo-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4 relative z-10">
-            <div className="flex items-center gap-2 text-xs text-slate-600 dark:text-gray-300 font-medium">
-              <Sparkles size={14} className="text-amber-500" />
-              <span>Nominal $5 infra fee is completely waived ($0) with Connect or Select subscriptions.</span>
-            </div>
-
-            <div className="flex items-center gap-2.5 flex-wrap">
-              {!isVendorEvaluationFeeWaived && (
-                <button
-                  type="button"
-                  onClick={handleSubscriptionFeeClick}
-                  className="btn btn-secondary btn-sm text-xs font-bold"
-                >
-                  View Connect / Select ($0 Fee)
-                </button>
-              )}
-              <button
-                type="button"
-                onClick={onNavigateToEvaluation}
-                className="btn btn-primary font-bold text-xs py-2.5 px-6 shadow-lg shadow-indigo-600/30 flex items-center gap-2"
-              >
-                <Sparkles size={14} />
-                {vendorSelfEvaluationCompleted ? 'Retake 360° AI Self-Evaluation' : `Start 360° AI Self-Evaluation (${isVendorEvaluationFeeWaived ? '$0 Free' : '$5'})`}
-                <ArrowRight size={14} />
-              </button>
-            </div>
-          </div>
         </div>
 
         {/* ========================================================================= */}

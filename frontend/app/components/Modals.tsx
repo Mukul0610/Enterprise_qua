@@ -1360,6 +1360,8 @@ export function ActivePipelineModal({
   onNavigateToMatrix,
 }: ActivePipelineModalProps) {
   const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'in_evaluation' | 'ai_recommended' | 'quotes_received'>('all');
+  const [sourceFilter, setSourceFilter] = useState<'all' | 'email_gateway' | 'web_portal' | 'manual_entry'>('all');
 
   const totalActiveRFQs = rfqs.length;
   const inEvaluationCount = rfqs.filter((r) => r.status === 'In Evaluation').length;
@@ -1368,21 +1370,45 @@ export function ActivePipelineModal({
   const totalQuotes = rfqs.reduce((acc, r) => acc + (r.quotesCount || (r.quotes ? r.quotes.length : 0)), 0);
 
   const filteredRfqs = rfqs.filter((rfq) => {
+    if (statusFilter === 'in_evaluation' && rfq.status !== 'In Evaluation') return false;
+    if (statusFilter === 'ai_recommended' && rfq.status !== 'AI Recommended') return false;
+    if (statusFilter === 'quotes_received') {
+      const qCount = rfq.quotesCount || (rfq.quotes ? rfq.quotes.length : 0);
+      if (rfq.status !== 'Quotes Received' && qCount === 0) return false;
+    }
+
+    if (sourceFilter === 'email_gateway' && rfq.source !== 'email_gateway' && rfq.source !== 'email_upload') return false;
+    if (sourceFilter === 'web_portal' && rfq.source !== 'web_portal' && rfq.source !== 'ai_extraction' && rfq.source && rfq.source !== 'manual_entry') return false;
+    if (sourceFilter === 'manual_entry' && rfq.source !== 'manual_entry') return false;
+
     if (!searchTerm) return true;
-    const term = searchTerm.toLowerCase();
+    const term = searchTerm.trim().toLowerCase();
+    if (!term) return true;
+
+    const matchesLineItems = (rfq.extractedEntities || []).some(
+      (item) => ((item.itemName || '') + ' ' + (item.technicalSpecs || '') + ' ' + (item.category || '')).toLowerCase().includes(term)
+    );
+    const matchesVendors = (rfq.assignedVendors || []).some(
+      (v) => ((v.name || '') + ' ' + (v.contactPerson || '') + ' ' + (v.email || '')).toLowerCase().includes(term)
+    );
+
     return (
-      rfq.rfqNumber.toLowerCase().includes(term) ||
-      rfq.title.toLowerCase().includes(term) ||
-      rfq.category.toLowerCase().includes(term) ||
+      (rfq.rfqNumber || '').toLowerCase().includes(term) ||
+      (rfq.title || '').toLowerCase().includes(term) ||
+      (rfq.category || '').toLowerCase().includes(term) ||
       (rfq.status && rfq.status.toLowerCase().includes(term)) ||
-      (rfq.source && rfq.source.toLowerCase().includes(term))
+      (rfq.source && rfq.source.toLowerCase().includes(term)) ||
+      (rfq.sourcingMode && rfq.sourcingMode.toLowerCase().includes(term)) ||
+      (rfq.targetDeliveryDate && rfq.targetDeliveryDate.toLowerCase().includes(term)) ||
+      matchesLineItems ||
+      matchesVendors
     );
   });
 
   if (!isOpen) return null;
 
   const getSourceBadge = (source?: string) => {
-    if (source === 'email_gateway') {
+    if (source === 'email_gateway' || source === 'email_upload') {
       return (
         <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shrink-0">
           <span>via Email Upload</span>
@@ -1426,6 +1452,8 @@ export function ActivePipelineModal({
         return <span className="badge badge-emerald text-xs px-2.5 py-1">AI Recommended</span>;
       case 'In Evaluation':
         return <span className="badge badge-blue text-xs px-2.5 py-1">In Evaluation</span>;
+      case 'Quotes Received':
+        return <span className="badge badge-blue text-xs px-2.5 py-1">Quotes Received</span>;
       case 'PO Generated':
         return <span className="badge badge-purple text-xs px-2.5 py-1">PO Generated</span>;
       case 'Parsing':
@@ -1467,27 +1495,55 @@ export function ActivePipelineModal({
           </button>
         </div>
 
-        {/* Metrics Banner */}
+        {/* Metrics Banner (Interactive Filter Cards) */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3.5 my-4 shrink-0">
-          <div className="p-3.5 rounded-xl bg-slate-50 dark:bg-gray-800/60 border border-slate-200 dark:border-gray-700 shadow-xs">
-            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400 dark:text-gray-400">Total Active Requisitions</div>
+          <div
+            onClick={() => setStatusFilter('all')}
+            className={`p-3.5 rounded-xl border shadow-xs cursor-pointer transition-all ${
+              statusFilter === 'all'
+                ? 'bg-slate-100 dark:bg-gray-800 border-indigo-500 dark:border-indigo-400 ring-2 ring-indigo-500/20'
+                : 'bg-slate-50 dark:bg-gray-800/60 border-slate-200 dark:border-gray-700 hover:border-slate-400'
+            }`}
+          >
+            <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500 dark:text-gray-400">Total Active Requisitions</div>
             <div className="text-2xl font-black text-slate-900 dark:text-white mono mt-1">{totalActiveRFQs}</div>
             <div className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">100% On Schedule</div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-blue-50/60 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800/40 shadow-xs">
+          <div
+            onClick={() => setStatusFilter(statusFilter === 'in_evaluation' ? 'all' : 'in_evaluation')}
+            className={`p-3.5 rounded-xl border shadow-xs cursor-pointer transition-all ${
+              statusFilter === 'in_evaluation'
+                ? 'bg-blue-100 dark:bg-blue-950/80 border-blue-500 ring-2 ring-blue-500/20'
+                : 'bg-blue-50/60 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800/40 hover:border-blue-400'
+            }`}
+          >
             <div className="text-[11px] font-bold uppercase tracking-wider text-blue-700 dark:text-blue-400">In Evaluation</div>
             <div className="text-2xl font-black text-blue-900 dark:text-blue-200 mono mt-1">{inEvaluationCount}</div>
             <div className="text-xs text-blue-600 dark:text-blue-400 font-semibold mt-0.5">Parametric Scoring Active</div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800/40 shadow-xs">
+          <div
+            onClick={() => setStatusFilter(statusFilter === 'ai_recommended' ? 'all' : 'ai_recommended')}
+            className={`p-3.5 rounded-xl border shadow-xs cursor-pointer transition-all ${
+              statusFilter === 'ai_recommended'
+                ? 'bg-emerald-100 dark:bg-emerald-950/80 border-emerald-500 ring-2 ring-emerald-500/20'
+                : 'bg-emerald-50/60 dark:bg-emerald-950/30 border-emerald-200 dark:border-emerald-800/40 hover:border-emerald-400'
+            }`}
+          >
             <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">AI Recommended</div>
             <div className="text-2xl font-black text-emerald-900 dark:text-emerald-200 mono mt-1">{aiRecommendedCount}</div>
             <div className="text-xs text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">Ready for PO Approval</div>
           </div>
 
-          <div className="p-3.5 rounded-xl bg-purple-50/60 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/40 shadow-xs">
+          <div
+            onClick={() => setStatusFilter(statusFilter === 'quotes_received' ? 'all' : 'quotes_received')}
+            className={`p-3.5 rounded-xl border shadow-xs cursor-pointer transition-all ${
+              statusFilter === 'quotes_received'
+                ? 'bg-purple-100 dark:bg-purple-950/80 border-purple-500 ring-2 ring-purple-500/20'
+                : 'bg-purple-50/60 dark:bg-purple-950/30 border-purple-200 dark:border-purple-800/40 hover:border-purple-400'
+            }`}
+          >
             <div className="text-[11px] font-bold uppercase tracking-wider text-purple-700 dark:text-purple-400">Total Quotes Received</div>
             <div className="text-2xl font-black text-purple-900 dark:text-purple-200 mono mt-1">{totalQuotes}</div>
             <div className="text-xs text-purple-600 dark:text-purple-400 font-semibold mt-0.5">Across All Modes</div>
@@ -1495,16 +1551,75 @@ export function ActivePipelineModal({
         </div>
 
         {/* Filters and Search Bar */}
-        <div className="flex items-center gap-2.5 mb-3 pb-3 border-b border-slate-100 dark:border-gray-800 shrink-0">
-          <div className="relative flex-1 w-full">
-            <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search by RFQ number, title, category, or status..."
-              className="has-leading-icon w-full pl-10 pr-3.5 py-2 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-slate-50/50 dark:bg-gray-800/50 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-            />
+        <div className="space-y-2 mb-3 pb-3 border-b border-slate-100 dark:border-gray-800 shrink-0">
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex-1 w-full">
+              <Search size={15} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Search by RFQ number, title, category, or status..."
+                className="has-leading-icon w-full pl-10 pr-3.5 py-2 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-slate-50/50 dark:bg-gray-800/50 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            {(statusFilter !== 'all' || sourceFilter !== 'all' || searchTerm) && (
+              <button
+                onClick={() => {
+                  setStatusFilter('all');
+                  setSourceFilter('all');
+                  setSearchTerm('');
+                }}
+                className="btn btn-ghost btn-sm text-xs text-slate-500 hover:text-slate-900 dark:hover:text-white whitespace-nowrap"
+              >
+                Reset Filters
+              </button>
+            )}
+          </div>
+
+          {/* Quick Filter Pills */}
+          <div className="flex items-center gap-1.5 overflow-x-auto text-[11px] pt-1">
+            <span className="text-slate-400 dark:text-gray-500 text-[10px] uppercase font-bold mr-1">Source:</span>
+            <button
+              onClick={() => setSourceFilter('all')}
+              className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                sourceFilter === 'all'
+                  ? 'bg-slate-800 text-white dark:bg-white dark:text-slate-900 shadow-2xs'
+                  : 'bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-400 hover:bg-slate-200'
+              }`}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setSourceFilter('email_gateway')}
+              className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                sourceFilter === 'email_gateway'
+                  ? 'bg-amber-600 text-white shadow-2xs'
+                  : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-900/40'
+              }`}
+            >
+              via Email Upload
+            </button>
+            <button
+              onClick={() => setSourceFilter('web_portal')}
+              className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                sourceFilter === 'web_portal'
+                  ? 'bg-indigo-600 text-white shadow-2xs'
+                  : 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-900/40'
+              }`}
+            >
+              AI RFQ Ingestion
+            </button>
+            <button
+              onClick={() => setSourceFilter('manual_entry')}
+              className={`px-2.5 py-1 rounded-md font-medium transition-all ${
+                sourceFilter === 'manual_entry'
+                  ? 'bg-emerald-600 text-white shadow-2xs'
+                  : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-900/40'
+              }`}
+            >
+              Manual RFQ
+            </button>
           </div>
         </div>
 
@@ -1625,27 +1740,33 @@ export function IntakeSourcesModal({
   const [searchTerm, setSearchTerm] = useState('');
 
   const totalActiveRFQs = rfqs.length;
-  const emailGatewayRFQs = rfqs.filter((r) => r.source === 'email_gateway');
-  const webPortalRFQs = rfqs.filter((r) => r.source === 'web_portal' || !r.source);
+  const emailGatewayRFQs = rfqs.filter((r) => r.source === 'email_gateway' || r.source === 'email_upload');
+  const webPortalRFQs = rfqs.filter((r) => r.source === 'web_portal' || r.source === 'ai_extraction' || (!r.source && r.source !== 'manual_entry'));
   const manualRFQs = rfqs.filter((r) => r.source === 'manual_entry');
 
   const filteredRfqs = rfqs.filter((rfq) => {
+    if (!rfq) return false;
     const matchesTab =
       selectedSourceTab === 'all'
         ? true
         : selectedSourceTab === 'web_portal'
-        ? rfq.source === 'web_portal' || !rfq.source
+        ? rfq.source === 'web_portal' || rfq.source === 'ai_extraction' || (!rfq.source && rfq.source !== 'manual_entry')
+        : selectedSourceTab === 'email_gateway'
+        ? rfq.source === 'email_gateway' || rfq.source === 'email_upload'
         : rfq.source === selectedSourceTab;
 
-    const matchesSearch =
-      !searchTerm ||
-      rfq.rfqNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rfq.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rfq.category.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (rfq.sourceEmail && rfq.sourceEmail.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (rfq.sourceFileName && rfq.sourceFileName.toLowerCase().includes(searchTerm.toLowerCase()));
+    if (!matchesTab) return false;
+    if (!searchTerm || !searchTerm.trim()) return true;
+    const term = searchTerm.trim().toLowerCase();
 
-    return matchesTab && matchesSearch;
+    return (
+      String(rfq.rfqNumber || '').toLowerCase().includes(term) ||
+      String(rfq.title || '').toLowerCase().includes(term) ||
+      String(rfq.category || '').toLowerCase().includes(term) ||
+      String(rfq.status || '').toLowerCase().includes(term) ||
+      String(rfq.sourceEmail || '').toLowerCase().includes(term) ||
+      String(rfq.sourceFileName || '').toLowerCase().includes(term)
+    );
   });
 
   if (!isOpen) return null;
@@ -1828,9 +1949,9 @@ export function IntakeSourcesModal({
                 <div className="space-y-2 flex-1">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-black mono text-indigo-600 dark:text-indigo-400">{rfq.rfqNumber}</span>
-                    {rfq.source === 'email_gateway' && (
+                    {(rfq.source === 'email_gateway' || rfq.source === 'email_upload') && (
                       <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-800 flex items-center gap-1.5">
-                        Origin: {rfq.sourceEmail || 'Autonomous Corporate via Email Upload'}
+                        Origin: {rfq.sourceEmail || rfq.sourceFileName || 'Autonomous Corporate via Email Upload'}
                       </span>
                     )}
                     {rfq.source === 'manual_entry' && (
@@ -1838,7 +1959,7 @@ export function IntakeSourcesModal({
                         Direct Keyed Requisition
                       </span>
                     )}
-                    {(rfq.source === 'web_portal' || !rfq.source) && (
+                    {(rfq.source === 'web_portal' || rfq.source === 'ai_extraction' || (!rfq.source && rfq.source !== 'manual_entry')) && (
                       <span className="px-2.5 py-1 rounded-md text-[10px] font-bold bg-indigo-100 dark:bg-indigo-950 text-indigo-800 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-800 flex items-center gap-1.5">
                         Document: {rfq.sourceFileName || 'Uploaded BOQ Document'}
                       </span>
@@ -1954,14 +2075,17 @@ export function SupplierQuotesModal({
   const compliantQuotesCount = allQuotesWithRfq.filter((q) => q.quote.complianceStatus === 'Fully Compliant').length;
 
   const filteredQuotes = allQuotesWithRfq.filter(({ quote, rfq }) => {
-    const matchesSearch =
-      !searchTerm ||
-      quote.vendorName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rfq.rfqNumber.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      rfq.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (quote.complianceStatus && quote.complianceStatus.toLowerCase().includes(searchTerm.toLowerCase()));
-
-    return matchesSearch;
+    if (!quote || !rfq) return false;
+    if (!searchTerm || !searchTerm.trim()) return true;
+    const term = searchTerm.trim().toLowerCase();
+    return (
+      String(quote.vendorName || '').toLowerCase().includes(term) ||
+      String(quote.vendorCategory || '').toLowerCase().includes(term) ||
+      String(rfq.rfqNumber || '').toLowerCase().includes(term) ||
+      String(rfq.title || '').toLowerCase().includes(term) ||
+      String(rfq.category || '').toLowerCase().includes(term) ||
+      String(quote.complianceStatus || '').toLowerCase().includes(term)
+    );
   });
 
   const sortedQuotes = [...filteredQuotes].sort((a, b) => {

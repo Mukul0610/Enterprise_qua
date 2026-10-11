@@ -63,6 +63,10 @@ beforeEach(() => {
   setCategoryTaxonomy(CATEGORY_TAXONOMY_FIXTURE);
 });
 
+afterEach(() => {
+  jest.clearAllTimers();
+});
+
 // Global fetch mock
 // RFQs are no longer in the bootstrap payload: that endpoint is anonymous, and
 // serving the global RFQ array from it is what leaked RFQs between buyers. They

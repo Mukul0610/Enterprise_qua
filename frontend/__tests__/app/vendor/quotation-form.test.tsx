@@ -10,6 +10,7 @@ import "@testing-library/jest-dom";
 import QuotationForm from "@/app/vendor/quotation-form";
 import { AppProvider, useApp } from "@/lib/store";
 import { authClient } from "@/lib/authClient";
+import * as XLSX from "xlsx";
 
 const mockRouterPush = jest.fn();
 jest.mock("next/navigation", () => ({
@@ -230,21 +231,46 @@ describe("QuotationForm Comprehensive Suite", () => {
       <QuotationFormCustomWrapper onBack={onBack} />,
     );
 
-    expect(
-      screen.getByText(/Sourcing Enquiries & Quotation Tracking/i),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/Sourcing Enquiries & Quotation Tracking/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Active sourcing enquiries/i)).toBeInTheDocument();
     expect(
       screen.getByText(/RFQs Received \(Active Enquiries\)/i),
     ).toBeInTheDocument();
     expect(screen.getByText(/Quotations Submitted/i)).toBeInTheDocument();
 
     const backBtn = screen.getByRole("button", {
-      name: /Back to Opportunity Feed/i,
+      name: /Back to Dashboard/i,
     });
     fireEvent.click(backBtn);
     expect(onBack).toHaveBeenCalledTimes(1);
 
     unmount();
+  });
+
+  test("Search narrows the enquiry list and updates the result count", async () => {
+    serveVendorRFQs(["RFQ-2026-00421", "RFQ-2026-00501"]);
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={jest.fn()} withSession />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/Showing/)).toHaveTextContent("Showing 2 of 2 enquiries"),
+    );
+    fireEvent.change(screen.getByRole("searchbox", { name: /Search enquiries/i }), {
+      target: { value: "00501" },
+    });
+
+    expect(screen.getByText(/Showing/)).toHaveTextContent("Showing 1 of 2 enquiries");
+    expect(screen.getByText("Opportunity RFQ-2026-00501")).toBeInTheDocument();
+    expect(screen.queryByText("Opportunity RFQ-2026-00421")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: /Filter enquiries by status/i }), {
+      target: { value: "closed" },
+    });
+    expect(screen.getByText("No matching enquiries")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Clear search and filters/i }));
+    expect(screen.getByText(/Showing/)).toHaveTextContent("Showing 2 of 2 enquiries");
   });
 
   test("View Details navigates to the vendor RFQ details route for the clicked row", async () => {
@@ -582,7 +608,7 @@ describe("QuotationForm Comprehensive Suite", () => {
     // Should render normally without throwing despite the failed lookup
     await waitFor(() =>
       expect(
-        screen.getByText(/Sourcing Enquiries & Quotation Tracking/i),
+        screen.getByText(/Active sourcing enquiries/i),
       ).toBeInTheDocument(),
     );
   });
@@ -675,12 +701,46 @@ describe("QuotationForm Comprehensive Suite", () => {
     });
     fireEvent.click(submitBtns[0]);
 
-    expect(screen.getByText(/Unit Price \(₹\) per Line Item/i)).toBeInTheDocument();
+    expect(screen.getByText(/Line Item Pricing/i)).toBeInTheDocument();
 
-    const itemPriceInputs = screen.getAllByLabelText(/Unit price for/i);
+    // UOM shown read-only per row, matching the RFQ's own extracted unit.
+    expect(screen.getAllByText("Nos").length).toBe(2);
+
+    const itemPriceInputs = screen.getAllByLabelText(/Rate for/i);
     expect(itemPriceInputs).toHaveLength(2);
+
+    const worksheet = XLSX.utils.json_to_sheet([
+      { "Item ID": "li-1", Item: "Centrifugal Pump 15HP", "Rate (INR)": 1000 },
+      { "Item ID": "li-2", Item: "Mounting Base Plate", "Rate (INR)": 200 },
+    ]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Priced RFQ");
+    const pricedWorkbook = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const pricedFile = new File([pricedWorkbook], "priced-rfq.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const uploadButton = screen.getByRole("button", { name: /Upload Priced Excel/i });
+    const excelInput = uploadButton.parentElement?.querySelector('input[type="file"]');
+    expect(excelInput).not.toBeNull();
+    fireEvent.change(excelInput!, { target: { files: [pricedFile] } });
+    await waitFor(() => expect(itemPriceInputs[0]).toHaveValue(1000));
+    expect(itemPriceInputs[1]).toHaveValue(200);
+
     fireEvent.change(itemPriceInputs[0], { target: { value: "1000" } });
     fireEvent.change(itemPriceInputs[1], { target: { value: "200" } });
+
+    // Amount per row and the running Total recompute live as rates are typed.
+    expect(screen.getByText("2,000")).toBeInTheDocument(); // 1000 * qty 2
+    expect(screen.getByText("800")).toBeInTheDocument(); // 200 * qty 4
+    expect(screen.getByText("2,800")).toBeInTheDocument(); // Total
+
+    // Export as Excel — downloads the line items exactly as currently entered.
+    const createObjectURLSpy = jest.fn(() => "blob:mock-quotation");
+    const revokeObjectURLSpy = jest.fn();
+    global.URL.createObjectURL = createObjectURLSpy;
+    global.URL.revokeObjectURL = revokeObjectURLSpy;
+    fireEvent.click(screen.getByText(/Export as Excel/i));
+    expect(createObjectURLSpy).toHaveBeenCalled();
 
     const submitQuotationBtn = screen.getByRole("button", { name: /Submit Quotation/i });
     await act(async () => {
@@ -697,6 +757,27 @@ describe("QuotationForm Comprehensive Suite", () => {
       { lineItemId: "li-2", itemName: "Mounting Base Plate", quantity: 4, unitPrice: 200, totalPrice: 800 },
     ]);
     expect(body.totalPrice).toBe(2800); // 2000 + 800
+  });
+
+  test("displays small supporting-document sizes in KB instead of rounding them to 0.0 MB", async () => {
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={jest.fn()} withSession customSubscription="select" />,
+    );
+
+    const submitBtns = await waitFor(() => {
+      const btns = screen.getAllByRole("button", { name: /Submit Quote$/i });
+      expect(btns.length).toBeGreaterThan(0);
+      return btns;
+    });
+    fireEvent.click(submitBtns[0]);
+
+    const file = new File(["x".repeat(2048)], "supporting-document.pdf", { type: "application/pdf" });
+    const fileInput = screen.getByText(/Bid Documents/i).parentElement?.querySelector('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    fireEvent.change(fileInput!, { target: { files: [file] } });
+
+    expect(screen.getByText("(2.0 KB)")).toBeInTheDocument();
+    expect(screen.queryByText("(0.0 MB)")).not.toBeInTheDocument();
   });
 
   test("shows an error toast and keeps the modal open when quote submission fails", async () => {
@@ -796,7 +877,7 @@ describe("QuotationForm Comprehensive Suite", () => {
     });
     // No throw — handled gracefully via a warning toast
     expect(
-      screen.getByText(/Sourcing Enquiries & Quotation Tracking/i),
+      screen.getByText(/Active sourcing enquiries/i),
     ).toBeInTheDocument();
   });
 
@@ -876,7 +957,7 @@ describe("QuotationForm Comprehensive Suite", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(/Sourcing Enquiries & Quotation Tracking/i),
+        screen.getByText(/Active sourcing enquiries/i),
       ).toBeInTheDocument(),
     );
   });
@@ -908,7 +989,7 @@ describe("QuotationForm Comprehensive Suite", () => {
     // surfacing a blocking error over an already-successful download.
     await waitFor(() =>
       expect(
-        screen.getByText(/Sourcing Enquiries & Quotation Tracking/i),
+        screen.getByText(/Active sourcing enquiries/i),
       ).toBeInTheDocument(),
     );
   });
@@ -1047,8 +1128,39 @@ describe("QuotationForm Comprehensive Suite", () => {
                 quotesCount: 1,
                 targetDeliveryDate: "2026-09-25",
                 budget: 220000,
+                deliveryLocation: "Pune Plant",
                 createdAt: "2026-09-01",
                 chasingActive: false,
+                extractedEntities: [
+                  {
+                    id: "item-hvac",
+                    itemName: "Air Handling Unit",
+                    quantity: 2,
+                    unit: "units",
+                  },
+                ],
+                inquiries: [
+                  {
+                    id: "inquiry-mine",
+                    rfqNumber: "RFQ-2026-00501",
+                    vendorId: MOCK_MY_VENDOR.id,
+                    vendorName: MOCK_MY_VENDOR.name,
+                    vendorEmail: MOCK_MY_VENDOR.email,
+                    message: "Please confirm the drawing revision.",
+                    createdAt: "2026-09-02T10:00:00.000Z",
+                    status: "answered",
+                    reply: "Use revision C.",
+                  },
+                  {
+                    id: "inquiry-other-vendor",
+                    rfqNumber: "RFQ-2026-00501",
+                    vendorId: "another-vendor",
+                    vendorName: "Another Vendor",
+                    message: "Other vendor's private question.",
+                    createdAt: "2026-09-02T11:00:00.000Z",
+                    status: "open",
+                  },
+                ],
                 quotes: [
                   {
                     vendorId: MOCK_MY_VENDOR.id,
@@ -1086,7 +1198,13 @@ describe("QuotationForm Comprehensive Suite", () => {
     // "Submit Quote" is replaced by the real PO Generated status for this RFQ
     expect(await screen.findByText("PO Generated")).toBeInTheDocument();
     expect(screen.getByText("Quote Submitted")).toBeInTheDocument();
-    expect(screen.getAllByText("Portal Submission").length).toBe(2);
+    expect(screen.getAllByText(/Portal Submission/).length).toBe(2);
+    expect(screen.getByText("₹10,000")).toBeInTheDocument();
+    expect(screen.getByText("Air Handling Unit · 2 units")).toBeInTheDocument();
+    expect(screen.getByText(/Pune Plant/)).toBeInTheDocument();
+    expect(screen.getByText("1 sent · Buyer replied")).toBeInTheDocument();
+    expect(screen.getByText("Latest reply: Use revision C.")).toBeInTheDocument();
+    expect(screen.queryByText("Other vendor's private question.")).not.toBeInTheDocument();
   });
 
   test("sends a real auth token when one is present, and handles a non-ok vendor lookup response", async () => {
@@ -1203,5 +1321,112 @@ describe("QuotationForm Comprehensive Suite", () => {
     expect(
       screen.queryByRole("heading", { name: /Submit Quotation/i }),
     ).not.toBeInTheDocument();
+  });
+
+  test("filters opportunities by search query and status, and supports clearing filters", async () => {
+    const onBack = jest.fn();
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={onBack} withSession customSubscription="select" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/Search RFQ number, title, or buyer/i)).toBeInTheDocument();
+    });
+
+    const searchInput = screen.getByPlaceholderText(/Search RFQ number, title, or buyer/i);
+    const statusSelect = screen.getByRole("combobox");
+
+    // Search for pump
+    fireEvent.change(searchInput, { target: { value: "Pump" } });
+    expect(screen.getByText(/Centrifugal Water Pump/i)).toBeInTheDocument();
+
+    // Filter by open
+    fireEvent.change(statusSelect, { target: { value: "open" } });
+    expect(screen.getByText(/Centrifugal Water Pump/i)).toBeInTheDocument();
+
+    // Filter by submitted
+    fireEvent.change(statusSelect, { target: { value: "submitted" } });
+    expect(screen.getByText(/No matching enquiries/i)).toBeInTheDocument();
+
+    // Filter by closed
+    fireEvent.change(statusSelect, { target: { value: "closed" } });
+    expect(screen.getByText(/No matching enquiries/i)).toBeInTheDocument();
+
+    // Search with non-matching query
+    fireEvent.change(searchInput, { target: { value: "xyznonexistentquery999" } });
+    expect(screen.getByText(/No matching enquiries/i)).toBeInTheDocument();
+
+    // Click clear search and filters
+    const clearBtn = screen.getByRole("button", { name: /Clear search and filters/i });
+    fireEvent.click(clearBtn);
+
+    expect(screen.getByText(/Centrifugal Water Pump/i)).toBeInTheDocument();
+  });
+
+  test("opens inquiry modal, enters message, submits via Enter and button, and closes modal", async () => {
+    const onBack = jest.fn();
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={onBack} withSession customSubscription="select" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Centrifugal Water Pump/i)).toBeInTheDocument();
+    });
+
+    const clarifyBtn = screen.getByRole("button", { name: /Clarify/i });
+    fireEvent.click(clarifyBtn);
+
+    expect(
+      screen.getByRole("heading", { name: /Raise Issue \/ Clarification/i }),
+    ).toBeInTheDocument();
+
+    const textarea = screen.getByPlaceholderText(/Type your question regarding specs/i);
+    expect(textarea).toBeInTheDocument();
+
+    // Type query
+    fireEvent.change(textarea, { target: { value: "Can we deliver in batches?" } });
+
+    // Submit via Enter key
+    await act(async () => {
+      fireEvent.keyDown(textarea, { key: "Enter", shiftKey: false });
+    });
+
+    // Close button
+    const closeBtns = screen.getAllByRole("button", { name: /Close/i });
+    fireEvent.click(closeBtns[closeBtns.length - 1]);
+
+    expect(
+      screen.queryByRole("heading", { name: /Raise Issue \/ Clarification/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  test("handles inquiry dispatch with button click and failure toast", async () => {
+    const onBack = jest.fn();
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={onBack} withSession customSubscription="select" />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText(/Centrifugal Water Pump/i)).toBeInTheDocument();
+    });
+
+    const clarifyBtn = screen.getByRole("button", { name: /Clarify/i });
+    fireEvent.click(clarifyBtn);
+
+    const textarea = screen.getByPlaceholderText(/Type your question regarding specs/i);
+    fireEvent.change(textarea, { target: { value: "What is the warranty period?" } });
+
+    const submitBtn = screen.getByRole("button", { name: /Send Clarification/i });
+    await act(async () => {
+      fireEvent.click(submitBtn);
+    });
+
+    // Close via top X icon
+    const modalHeading = screen.getByRole("heading", { name: /Raise Issue \/ Clarification/i });
+    const modalHeader = modalHeading.closest(".flex");
+    const xBtn = modalHeader?.querySelector("button");
+    if (xBtn) {
+      fireEvent.click(xBtn);
+    }
   });
 });

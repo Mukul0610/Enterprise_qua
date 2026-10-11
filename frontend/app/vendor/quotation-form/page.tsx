@@ -12,6 +12,7 @@ function VendorQuotationFormContent() {
   const targetRfqParam = searchParams.get('rfq') || searchParams.get('id');
   const { selectedVendorOpportunity, vendorOpportunities, rfqs } = useApp();
   const backToFeed = () => router.push('/vendor/opportunity-feed');
+  const backToBidQuotes = () => router.push('/vendor/quotation-form');
 
   // Match targeted RFQ by query parameter if present
   let opportunity: VendorOpportunity | undefined = undefined;
@@ -67,7 +68,7 @@ function VendorQuotationFormContent() {
     );
   }
 
-  return <QuotationForm opportunity={opportunity} onBack={backToFeed} onSubmitSuccess={backToFeed} />;
+  return <QuotationForm opportunity={opportunity} onBack={backToFeed} onSubmitSuccess={backToBidQuotes} />;
 }
 
 export default function VendorQuotationFormPage() {

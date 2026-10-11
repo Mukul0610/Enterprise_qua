@@ -5,6 +5,7 @@ const { generateStandardRFQEmail } = require('../services/emailService');
 const rfqIngestionService = require('../services/rfqIngestionService');
 const geminiService = require('../services/geminiService');
 const rfqAttachmentService = require('../services/rfqAttachmentService');
+const quoteAttachmentService = require('../services/quoteAttachmentService');
 const rfqSummaryService = require('../services/rfqSummaryService');
 const { logger } = require('../services/loggerService');
 const emailGatewayService = require('../services/emailGatewayService');
@@ -112,6 +113,22 @@ function applyQuotesVisibility(rfq, role) {
   if (!rfq) return rfq;
   if (role !== 'buyer') return rfq;
 
+  const isV0 =
+    rfq.sourcingMode === 'mode_0' ||
+    rfq.sourcingMode === 'v0' ||
+    rfq.sourcingMode === 'version_0';
+
+  if (isV0) {
+    // For V0: Quotes and vendor details are not displayed in the buyer portal.
+    // The 48-hour restriction does not apply to V0.
+    return {
+      ...rfq,
+      quotes: [],
+      assignedVendors: [],
+      quotesHidden: false,
+    };
+  }
+
   const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
   const createdAtMs = rfq.createdAt ? new Date(rfq.createdAt).getTime() : 0;
   const isWithin48h = createdAtMs > 0 && Date.now() - createdAtMs < FORTY_EIGHT_HOURS_MS;
@@ -122,7 +139,6 @@ function applyQuotesVisibility(rfq, role) {
     return {
       ...rfq,
       quotes: [],
-      quotesCount: 0,
       quotesHidden: true,
       quotesHiddenUntil: unhideAt,
       quotesHiddenReason: 'Received quotes remain hidden from the buyer for 48 hours after release to preserve bidding integrity.',
@@ -702,9 +718,11 @@ async function extractRFQFromDocument(req, res, next) {
       title: extraction.documentTitle,
       category: extraction.category,
       estimatedBudget: extraction.estimatedBudget,
-      source: 'web_portal',
+      targetDeliveryDate: extraction.deliveryDate,
+      source: 'ai_extraction',
       sourceFileName: body.fileName,
       ...(sourceEmail ? { sourceEmail } : {}),
+      requireValidQuantity: true,
     });
 
     if (classification.accepted === 0) {
@@ -829,6 +847,86 @@ async function downloadRFQAttachment(req, res, next) {
   }
 }
 
+async function uploadQuoteAttachment(req, res, next) {
+  try {
+    if (req.user?.role !== 'vendor') {
+      return res.status(403).json({ success: false, error: 'Only vendors can attach bid documents.' });
+    }
+    const rfq = await storeService.getRFQByIdAsync(req.params.id);
+    const vendor = storeService.getVendorById(req.user.email, 'all');
+    if (!rfq || !(await canAccessRfq(req, rfq)) || !vendor) {
+      return res.status(404).json({ success: false, error: 'RFQ or vendor profile not found.' });
+    }
+
+    const result = await quoteAttachmentService.saveQuoteAttachment(
+      {
+        fileName: req.body?.fileName,
+        mimeType: req.body?.mimeType,
+        content: req.body?.content,
+      },
+      { rfqId: rfq.id, vendorId: vendor.id }
+    );
+    if (result.status !== rfqAttachmentService.ATTACHMENT_STATUS.SAVED) {
+      const status = result.status === rfqAttachmentService.ATTACHMENT_STATUS.WRITE_FAILED ? 500 : 422;
+      return res.status(status).json({
+        success: false,
+        reason: result.status,
+        error: ATTACHMENT_ERRORS[result.status] || ATTACHMENT_ERRORS.WRITE_FAILED,
+      });
+    }
+    return res.status(201).json({ success: true, data: result.attachment });
+  } catch (err) {
+    logger.error('Error storing vendor bid attachment', err, 'RFQ_CONTROLLER');
+    return next(err);
+  }
+}
+
+async function downloadQuoteAttachment(req, res, next) {
+  try {
+    const rfq = await storeService.getRFQByIdAsync(req.params.id);
+    if (!rfq || !(await canAccessRfq(req, rfq))) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    if (req.user?.role === 'buyer' && storeService.isWithin48HourWindow(rfq)) {
+      return res.status(403).json({ success: false, error: 'Bid documents remain sealed during the bidding window.' });
+    }
+
+    const attachmentId = req.params.attachmentId;
+    const quote = (rfq.quotes || []).find((item) =>
+      (item.attachments || []).some((attachment) => attachment.id === attachmentId)
+    );
+    if (!quote) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    if (req.user?.role === 'vendor') {
+      const vendor = storeService.getVendorById(req.user.email, 'all');
+      if (!vendor || quote.vendorId !== vendor.id) {
+        return res.status(404).json({ success: false, error: 'Document not found.' });
+      }
+    }
+
+    const stored = await quoteAttachmentService.loadQuoteAttachment(attachmentId);
+    if (
+      !stored ||
+      stored.access?.rfqId !== rfq.id ||
+      stored.access?.vendorId !== quote.vendorId
+    ) {
+      return res.status(404).json({ success: false, error: 'Document not found.' });
+    }
+
+    res.setHeader('Content-Type', stored.meta.mimeType || 'application/octet-stream');
+    res.setHeader('Content-Length', stored.content.length);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename="${stored.meta.fileName.replace(/["\r\n]/g, '')}"`);
+    return res.send(stored.content);
+  } catch (err) {
+    logger.error('Error reading vendor bid attachment', err, 'RFQ_CONTROLLER');
+    return next(err);
+  }
+}
+
 /**
  * Apply a buyer's edit to one of their own RFQs.
  *
@@ -936,23 +1034,17 @@ async function addQuote(req, res, next) {
       return res.status(400).json({ success: false, error: 'Create your vendor profile before submitting a quote.' });
     }
 
-    const eligibility = storeService.checkVendorQuotationEligibility(vendorRecord);
-    if (!eligibility.eligible) {
-      logger.warn(
-        `Vendor ${vendorRecord.name} (${vendorRecord.id}) attempted to quote RFQ ${id} but 5 free quotation credits are exhausted`,
-        { id, vendorId: vendorRecord.id, freeCreditsRemaining: eligibility.freeCreditsRemaining, subscriptionPlan: eligibility.subscriptionPlan },
-        'RFQ_CONTROLLER'
-      );
-      return res.status(403).json({
-        success: false,
-        error: 'Your 5 free quotation credits have been used. Please upgrade your subscription plan to continue submitting quotations.',
-        upgradeRequired: true,
-        freeCreditsRemaining: 0,
-        subscriptionPlan: eligibility.subscriptionPlan,
-      });
-    }
-
     const { unitPrice, totalPrice, leadTimeDays, warrantyYears, paymentTerms, remarks, vendorCategory, complianceStatus, lineItemQuotes } = req.body;
+    const requestedAttachments = req.body?.attachments;
+    if (requestedAttachments !== undefined && !Array.isArray(requestedAttachments)) {
+      return res.status(400).json({ success: false, error: 'Bid documents must be provided as a list.' });
+    }
+    if (
+      requestedAttachments &&
+      (requestedAttachments.length > 5 || requestedAttachments.some((item) => !item?.id))
+    ) {
+      return res.status(400).json({ success: false, error: 'Attach no more than five valid bid documents.' });
+    }
     if (!unitPrice) {
       logger.warn(`Failed to add quote to RFQ ${id}: Missing unitPrice`, { id }, 'RFQ_CONTROLLER');
       return res.status(400).json({ success: false, error: 'unitPrice is required.' });
@@ -978,6 +1070,51 @@ async function addQuote(req, res, next) {
       logger.warn(`RFQ not found or out of scope for quote submission: ${id}`, { id }, 'RFQ_CONTROLLER');
       return res.status(404).json({ success: false, error: `RFQ with ID ${id} not found.` });
     }
+
+    const isMode0 = targetRfq.sourcingMode === 'mode_0' || targetRfq.sourcingMode === 'v0';
+    const isUnlocked = storeService.isRfqUnlockedForVendor(vendorRecord.id, targetRfq.id);
+    if (isMode0 && !isUnlocked) {
+      logger.warn(
+        `Vendor ${vendorRecord.name} (${vendorRecord.id}) attempted to quote RFQ ${id} without downloading/unlocking it first`,
+        { id, vendorId: vendorRecord.id },
+        'RFQ_CONTROLLER'
+      );
+      return res.status(403).json({
+        success: false,
+        error: 'Please download the RFQ before submitting your bid.',
+        downloadRequired: true,
+      });
+    }
+
+    const eligibility = storeService.checkVendorQuotationEligibility(vendorRecord, targetRfq);
+    if (!eligibility.eligible) {
+      logger.warn(
+        `Vendor ${vendorRecord.name} (${vendorRecord.id}) attempted to quote RFQ ${id} but 5 free quotation credits are exhausted`,
+        { id, vendorId: vendorRecord.id, freeCreditsRemaining: eligibility.freeCreditsRemaining, subscriptionPlan: eligibility.subscriptionPlan },
+        'RFQ_CONTROLLER'
+      );
+      return res.status(403).json({
+        success: false,
+        error: 'Your 5 free quotation credits have been used. Please upgrade your subscription plan to continue submitting quotations.',
+        upgradeRequired: true,
+        freeCreditsRemaining: 0,
+        subscriptionPlan: eligibility.subscriptionPlan,
+      });
+    }
+
+    const bidAttachments = [];
+    for (const requested of requestedAttachments || []) {
+      const stored = await quoteAttachmentService.loadQuoteAttachment(requested.id);
+      if (
+        !stored ||
+        stored.access?.rfqId !== targetRfq.id ||
+        stored.access?.vendorId !== vendorRecord.id
+      ) {
+        return res.status(400).json({ success: false, error: 'One or more bid documents are invalid or belong to another RFQ.' });
+      }
+      bidAttachments.push(stored.meta);
+    }
+
     const quote = {
       vendorId: vendorRecord.id,
       vendorName: vendorRecord.name,
@@ -997,6 +1134,7 @@ async function addQuote(req, res, next) {
       // compares portal and email quotes the same way regardless of
       // submission channel.
       ...(Array.isArray(lineItemQuotes) && lineItemQuotes.length > 0 ? { lineItemQuotes } : {}),
+      ...(bidAttachments.length > 0 ? { attachments: bidAttachments } : {}),
     };
     logger.info(`Adding quote from ${quote.vendorName} to RFQ ${id}`, { id, vendorName: quote.vendorName, price: quote.unitPrice }, 'RFQ_CONTROLLER');
     const updatedRFQ = storeService.addQuoteToRFQ(id, quote);
@@ -1012,6 +1150,54 @@ async function addQuote(req, res, next) {
   }
 }
 
+async function downloadRFQ(req, res, next) {
+  try {
+    const { id } = req.params;
+    const rfq = await storeService.getRFQByIdAsync(id);
+    if (!rfq || !(await canAccessRfq(req, rfq))) {
+      logger.warn(`RFQ not found or access denied for download: ${id}`, { id }, 'RFQ_CONTROLLER');
+      return res.status(404).json({ success: false, error: `RFQ with ID ${id} not found.` });
+    }
+
+    if (req.user && req.user.role === 'vendor') {
+      const requestingVendor = storeService.getVendorById(req.user.email, 'all');
+      if (!requestingVendor) {
+        return res.status(400).json({ success: false, error: 'Vendor profile not found.' });
+      }
+
+      const used = requestingVendor.rfqDownloadsUsed || 0;
+      storeService.updateVendor(requestingVendor.id, { rfqDownloadsUsed: used + 1 });
+
+      const unlockResult = await storeService.unlockRFQForVendor(requestingVendor.id, rfq.id);
+      if (!unlockResult.success && unlockResult.creditsExhausted) {
+        return res.status(403).json({
+          success: false,
+          error: unlockResult.error || 'You have used all 5 free RFQ download credits. You cannot download another RFQ using your free allowance.',
+          freeCreditsRemaining: unlockResult.freeCreditsRemaining ?? 0,
+          exhausted: true,
+        });
+      }
+
+      const vendor = storeService.getVendorById(requestingVendor.id, 'all');
+      const emailPayload = generateStandardRFQEmail(rfq, vendor);
+      return res.json({
+        success: true,
+        data: emailPayload,
+        unlocked: true,
+        alreadyUnlocked: !!unlockResult.alreadyUnlocked,
+        creditBalance: unlockResult.creditBalance,
+        freeCreditsRemaining: unlockResult.freeCreditsRemaining,
+      });
+    }
+
+    const emailPayload = generateStandardRFQEmail(rfq, null);
+    res.json({ success: true, data: emailPayload });
+  } catch (err) {
+    logger.error(`Error downloading RFQ ${req.params.id}`, err, 'RFQ_CONTROLLER');
+    next(err);
+  }
+}
+
 async function generateEmailPreview(req, res, next) {
   try {
     const { id } = req.params;
@@ -1023,23 +1209,19 @@ async function generateEmailPreview(req, res, next) {
       return res.status(404).json({ success: false, error: `RFQ with ID ${id} not found.` });
     }
 
-    // This is the real "download RFQ" action both opportunity-feed.tsx and
-    // quotation-form.tsx call. A vendor downloading a marketplace RFQ (one
-    // not raised by the buyer who added them) is normally subject to their
-    // subscription's download quota (Connect/Select only) — temporarily
-    // disabled for every tier per explicit user request while testing the
-    // real-download feature, so free/premium vendors aren't blocked either.
-    // Usage is still tracked so the quota can be re-enabled later without
-    // losing the counters. To restore enforcement, reintroduce the
-    // quota/used check that used to 403 here (see git history on this file).
     if (req.user && req.user.role === 'vendor') {
       const requestingVendor = storeService.getVendorById(req.user.email, 'all');
       if (requestingVendor) {
-        const isDirect =
-          !!requestingVendor.addedByBuyerCompany && requestingVendor.addedByBuyerCompany === rfq.buyerAccountName;
-        if (!isDirect) {
-          const used = requestingVendor.rfqDownloadsUsed || 0;
-          storeService.updateVendor(requestingVendor.id, { rfqDownloadsUsed: used + 1 });
+        const used = requestingVendor.rfqDownloadsUsed || 0;
+        storeService.updateVendor(requestingVendor.id, { rfqDownloadsUsed: used + 1 });
+        const unlockResult = await storeService.unlockRFQForVendor(requestingVendor.id, rfq.id);
+        if (!unlockResult.success && unlockResult.creditsExhausted) {
+          return res.status(403).json({
+            success: false,
+            error: unlockResult.error || 'You have used all 5 free RFQ download credits. You cannot download another RFQ using your free allowance.',
+            freeCreditsRemaining: unlockResult.freeCreditsRemaining ?? 0,
+            exhausted: true,
+          });
         }
       }
     }
@@ -1186,8 +1368,11 @@ module.exports = {
   pollEmailGateway,
   uploadRFQAttachment,
   downloadRFQAttachment,
+  uploadQuoteAttachment,
+  downloadQuoteAttachment,
   updateRFQ,
   deleteRFQ,
+  downloadRFQ,
   addQuote,
   generateEmailPreview,
   triggerBatchChaser,

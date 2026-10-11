@@ -449,5 +449,56 @@ describe('validatePincode async postal API validator', () => {
     const res = await validatePincode('400701');
     expect(res.isValid).toBe(true);
   });
+
+  test('handles empty, non-Indian, and dummy pincode validation branches', async () => {
+    // Empty
+    expect(await validatePincode('')).toEqual({ isValid: false, message: 'PIN code is required' });
+
+    // Non-Indian valid
+    expect(await validatePincode('SW1A 1AA', false)).toEqual({ isValid: true });
+
+    // Non-Indian invalid
+    expect(await validatePincode('??!!', false)).toEqual({ isValid: false, message: 'Invalid postal code format' });
+
+    // Starts with 0
+    expect(await validatePincode('012345')).toEqual({
+      isValid: false,
+      message: 'PIN Code must be 6 digits and cannot start with 0',
+    });
+
+    // Dummy PIN
+    expect(await validatePincode('111111')).toEqual({
+      isValid: false,
+      message: 'Invalid test or sequential PIN code. Enter a valid postal code.',
+    });
+  });
+
+  test('exercises timeout abort callback in validatePincode', async () => {
+    jest.useFakeTimers();
+    let abortCalled = false;
+    global.fetch = jest.fn((url: any, init?: any) => {
+      if (init?.signal) {
+        init.signal.addEventListener('abort', () => {
+          abortCalled = true;
+        });
+      }
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          resolve({
+            ok: true,
+            json: async () => [{ Status: 'Success', PostOffice: [] }],
+          } as any);
+        }, 10000);
+      });
+    });
+
+    const promise = validatePincode('400701');
+    jest.advanceTimersByTime(6000);
+    jest.advanceTimersByTime(5000);
+    const res = await promise;
+    expect(res.isValid).toBe(true);
+    expect(abortCalled).toBe(true);
+    jest.useRealTimers();
+  });
 });
 

@@ -31,6 +31,7 @@ const EXTRACTION_STATUS = {
   DOCUMENT_TOO_LARGE: 'DOCUMENT_TOO_LARGE',
   UNSUPPORTED_TYPE: 'UNSUPPORTED_TYPE',
   AI_FAILED: 'AI_FAILED',
+  QUOTA_EXCEEDED: 'QUOTA_EXCEEDED',
   NO_ITEMS_FOUND: 'NO_ITEMS_FOUND',
 };
 
@@ -49,6 +50,12 @@ ACCURACY IS MORE IMPORTANT THAN COMPLETENESS. DO NOT GUESS.
 - DO NOT invent items, units, dates or specifications that are not stated.
 - A spreadsheet may be flattened with cells separated by " | ", one row per line. A label may sit in one cell with its value in the next cell on the same line, or as a column header with values in the rows beneath it. Read both layouts.
 - If the document is an image or a scan, read the table structure and match each quantity to the row it sits on.
+
+EXHAUSTIVE EXTRACTION ACROSS ALL WORKSHEETS (NO ARBITRARY LIMITS):
+- Extract ALL valid procurement line items across all worksheets (indicated by "SHEET: <sheetName>") and all sections in the document.
+- Do NOT limit extraction to 10 items or provide an arbitrary sample. If the document contains 50, 100, 200, or more items, extract every single valid item.
+- VALID LINE ITEM RULES: Only extract items that have an explicit product description and a valid stated positive purchase quantity (> 0).
+- If a row in the document lacks a quantity, or has a zero, negative, or invalid quantity, do NOT extract it and do NOT default the quantity to 1.
 
 DESCRIPTION vs SPECIFICATION
 - When a document prices items with a separate specification column, use it as stated.
@@ -107,9 +114,9 @@ function resolveApiKeys() {
     .filter(Boolean);
 }
 
-/** Models to attempt, primary first. */
+/** Models to attempt, primary first, deduplicated. */
 function resolveModelChain() {
-  return [GEMINI_CONFIG.PRIMARY_MODEL, ...GEMINI_CONFIG.FALLBACK_MODELS].filter(Boolean);
+  return Array.from(new Set([GEMINI_CONFIG.PRIMARY_MODEL, ...GEMINI_CONFIG.FALLBACK_MODELS].filter(Boolean)));
 }
 
 /**
@@ -149,7 +156,16 @@ function parseExtractionJson(text) {
   try {
     return JSON.parse(candidate);
   } catch {
-    return null;
+    // One repair pass for the single most common defect in model JSON: a trailing
+    // comma before a closing } or ]. This only removes a stray separator, so it
+    // cannot turn malformed data into fabricated values; anything still invalid
+    // falls through to null and is reported as a failed extraction (fail-closed).
+    try {
+      const repaired = candidate.replace(/,(\s*[}\]])/g, '$1');
+      return JSON.parse(repaired);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -197,9 +213,195 @@ function toRawLineItems(parsed) {
 }
 
 /**
- * Build the generateContent request body, sending the document either as text or
- * as inline base64 data depending on what the caller could produce.
+ * Match a header cell text to a known line-item field name.
  */
+function matchHeaderField(headerText) {
+  if (typeof headerText !== 'string') return null;
+  const clean = headerText.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!clean) return null;
+  if (/^(?:item|itemname|itemdesc|itemdescription|product|material|description|particulars|lineitem|itemdetails|materialdescription)$/.test(clean)) return 'itemDescription';
+  if (/^(?:qty|quantity|purchaseqty|orderqty|count|volume|reqqty|requiredqty|orderquantity)$/.test(clean)) return 'quantity';
+  if (/^(?:unit|uom|unitofmeasure|units|measure)$/.test(clean)) return 'unit';
+  if (/^(?:spec|specs|specification|specifications|techspec|techspecs|technicalspecs|technicalspecifications|technicalspecification|grade|materialgrade|standard|dimensions|size|details)$/.test(clean)) return 'specification';
+  if (/^(?:unitprice|rate|unitrate|priceperunit|price|rateperunit)$/.test(clean)) return 'unitPrice';
+  if (/^(?:totalprice|totalamount|total|linetotal|amount)$/.test(clean)) return 'totalPrice';
+  if (/^(?:brand|make|manufacturer)$/.test(clean)) return 'brand';
+  if (/^(?:deliverydate|targetdate|requiredby|duedate|deliveryby|date)$/.test(clean)) return 'targetDate';
+  if (/^(?:deliverycity|destinationcity|city)$/.test(clean)) return 'deliveryCity';
+  if (/^(?:deliverystate|state)$/.test(clean)) return 'deliveryState';
+  if (/^(?:deliverypincode|postalcode|pincode|pincode|zip|zipcode)$/.test(clean)) return 'deliveryPincode';
+  if (/^(?:deliverylocation|destination|location|site)$/.test(clean)) return 'deliveryLocation';
+  if (/^(?:category|majorcategory|minorcategory)$/.test(clean)) return 'category';
+  if (/^(?:sno|slno|srno|itemno|no)$/.test(clean)) return 'sNo';
+  return null;
+}
+
+/**
+ * Coerce raw string/cell into a positive quantity number.
+ * Returns null if missing, non-numeric, or <= 0 according to existing validation rules.
+ */
+function parseValidQuantity(raw) {
+  if (raw === null || raw === undefined) return null;
+  const str = String(raw).trim();
+  if (!str) return null;
+  const cleaned = str.replace(/,/g, '');
+  const match = cleaned.match(/^([+-]?(?:\d+(?:\.\d+)?|\.\d+))/);
+  if (!match) return null;
+  const num = Number(match[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return num;
+}
+
+/**
+ * Parses pipe-delimited spreadsheet text flattened from workbooks across all worksheets.
+ * Extracts item description, quantity, unit, specification, brand, prices, and dates.
+ * Only accepts valid items: non-empty description and valid positive quantity (> 0).
+ */
+function extractSpreadsheetLineItems(text) {
+  if (typeof text !== 'string' || !text.trim()) return [];
+
+  // Parse sheets
+  const sheetBlocks = [];
+  const sheetHeaderRegex = /(?:^|\n\n|\r\n\r\n)SHEET:\s*([^\n\r]+)[\n\r]+/g;
+  const matches = [...text.matchAll(sheetHeaderRegex)];
+
+  if (matches.length === 0) {
+    sheetBlocks.push({ sheetName: '', content: text });
+  } else {
+    for (let i = 0; i < matches.length; i++) {
+      const sheetName = matches[i][1].trim();
+      const startIndex = matches[i].index + matches[i][0].length;
+      const endIndex = i + 1 < matches.length ? matches[i + 1].index : text.length;
+      const content = text.slice(startIndex, endIndex).trim();
+      sheetBlocks.push({ sheetName, content });
+    }
+  }
+
+  const allItems = [];
+
+  for (const sheet of sheetBlocks) {
+    const lines = sheet.content.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && l.includes('|'));
+    if (lines.length === 0) continue;
+
+    // Detect header row
+    let headerIndex = -1;
+    let headerColMap = new Map();
+
+    for (let i = 0; i < Math.min(lines.length, 5); i++) {
+      const cells = lines[i].split('|').map((c) => c.trim());
+      const tempMap = new Map();
+      let recognizedCount = 0;
+
+      cells.forEach((cell, idx) => {
+        const field = matchHeaderField(cell);
+        if (field && field !== 'sNo') {
+          tempMap.set(field, idx);
+          recognizedCount++;
+        }
+      });
+
+      if (recognizedCount >= 2 || (tempMap.has('itemDescription') && tempMap.has('quantity'))) {
+        headerIndex = i;
+        headerColMap = tempMap;
+        break;
+      }
+    }
+
+    const dataLines = headerIndex >= 0 ? lines.slice(headerIndex + 1) : lines;
+
+    // Fallback column inference if no explicit header row was detected
+    if (headerIndex === -1 && lines.length > 0) {
+      const firstRowCells = lines[0].split('|').map((c) => c.trim());
+      firstRowCells.forEach((cell, idx) => {
+        const qtyVal = parseValidQuantity(cell);
+        if (qtyVal !== null && !headerColMap.has('quantity')) {
+          headerColMap.set('quantity', idx);
+        } else if (/^(?:nos|units|meters|m|kg|pcs|sets|bags|boxes|mtrs|cu\.m|sq\.ft|ltrs|liters|pairs)$/i.test(cell) && !headerColMap.has('unit')) {
+          headerColMap.set('unit', idx);
+        } else if (cell.length > 0 && !headerColMap.has('itemDescription')) {
+          headerColMap.set('itemDescription', idx);
+        } else if (cell.length > 0 && !headerColMap.has('specification')) {
+          headerColMap.set('specification', idx);
+        }
+      });
+    }
+
+    const descIdx = headerColMap.get('itemDescription') ?? 0;
+    const qtyIdx = headerColMap.get('quantity') ?? 1;
+    const unitIdx = headerColMap.get('unit');
+    const specIdx = headerColMap.get('specification');
+    const unitPriceIdx = headerColMap.get('unitPrice');
+    const totalPriceIdx = headerColMap.get('totalPrice');
+    const brandIdx = headerColMap.get('brand');
+    const dateIdx = headerColMap.get('targetDate');
+    const cityIdx = headerColMap.get('deliveryCity');
+    const stateIdx = headerColMap.get('deliveryState');
+    const pincodeIdx = headerColMap.get('deliveryPincode');
+    const locIdx = headerColMap.get('deliveryLocation');
+    const catIdx = headerColMap.get('category');
+
+    for (const line of dataLines) {
+      const cells = line.split('|').map((c) => c.trim());
+      if (cells.length < 2) continue;
+
+      const rawDesc = cells[descIdx] || '';
+      const rawQty = cells[qtyIdx];
+
+      // Validate quantity according to existing validation rules
+      const validQty = parseValidQuantity(rawQty);
+      if (validQty === null) {
+        // Skip rows without valid positive quantities
+        continue;
+      }
+
+      const itemName = rawDesc.trim();
+      if (!itemName) {
+        // Skip rows without description
+        continue;
+      }
+
+      // Skip lines that look like repeating headers
+      if (matchHeaderField(itemName)) continue;
+
+      let spec = specIdx !== undefined && cells[specIdx] ? cells[specIdx].trim() : '';
+      let cleanItemName = itemName;
+
+      // If no explicit specification column, check if description can be split
+      if (!spec && itemName.includes(',')) {
+        const parts = itemName.split(',').map((p) => p.trim());
+        if (parts.length >= 2) {
+          cleanItemName = parts[0];
+          spec = parts.slice(1).join(', ');
+        }
+      }
+
+      const rawUnit = unitIdx !== undefined ? cells[unitIdx] : '';
+      const unit = rawUnit ? rawUnit.trim() : 'Nos';
+
+      const row = {
+        itemName: cleanItemName,
+        quantity: validQty,
+        unit,
+        technicalSpecs: spec,
+        category: (catIdx !== undefined && cells[catIdx]) ? cells[catIdx].trim() : (sheet.sheetName || ''),
+        targetDate: dateIdx !== undefined && cells[dateIdx] ? cells[dateIdx].trim() : '',
+        unitPrice: unitPriceIdx !== undefined ? normalizeAmount(cells[unitPriceIdx]) : null,
+        totalPrice: totalPriceIdx !== undefined ? normalizeAmount(cells[totalPriceIdx]) : null,
+      };
+
+      if (brandIdx !== undefined && cells[brandIdx]) row.brand = cells[brandIdx].trim();
+      if (locIdx !== undefined && cells[locIdx]) row.deliveryLocation = cells[locIdx].trim();
+      if (cityIdx !== undefined && cells[cityIdx]) row.deliveryCity = cells[cityIdx].trim();
+      if (stateIdx !== undefined && cells[stateIdx]) row.deliveryState = cells[stateIdx].trim();
+      if (pincodeIdx !== undefined && cells[pincodeIdx]) row.deliveryPincode = cells[pincodeIdx].trim();
+
+      allItems.push(row);
+    }
+  }
+
+  return allItems;
+}
+
 /**
  * The category instruction block, listing only names held in the category master.
  * The model may not invent a category: a stated category that matches nothing in
@@ -216,6 +418,10 @@ Major categories: ${majors.join(' | ')}
 Minor categories: ${minors.join(' | ')}`;
 }
 
+/**
+ * Build the generateContent request body, sending the document either as text or
+ * as inline base64 data depending on what the caller could produce.
+ */
 function buildRequestBody({ documentText, inlineData, mimeType, fileName }) {
   const parts = [{ text: EXTRACTION_PROMPT + categoryPromptBlock() }];
 
@@ -234,6 +440,7 @@ function buildRequestBody({ documentText, inlineData, mimeType, fileName }) {
     generationConfig: {
       temperature: GEMINI_CONFIG.TEMPERATURE,
       response_mime_type: 'application/json',
+      max_output_tokens: 32768,
     },
   };
 }
@@ -246,6 +453,17 @@ function getActiveKeyIndex() {
 
 function setActiveKeyIndex(idx) {
   activeKeyIndex = Number(idx) || 0;
+}
+
+function resolveExtractionFailureStatus(failures) {
+  const attemptedFailures = failures.filter((failure) => !failure.startsWith('skipped '));
+  if (
+    attemptedFailures.length > 0 &&
+    attemptedFailures.every((failure) => /\bresponded 429\b|quota|resource_exhausted|rate.?limit/i.test(failure))
+  ) {
+    return EXTRACTION_STATUS.QUOTA_EXCEEDED;
+  }
+  return EXTRACTION_STATUS.AI_FAILED;
 }
 
 /**
@@ -345,6 +563,10 @@ async function extractLineItems(input = {}) {
     return { ...base, status: EXTRACTION_STATUS.NO_CONTENT };
   }
 
+  const tabularItems = (trimmedText && (trimmedText.includes('SHEET:') || trimmedText.includes('|')))
+    ? extractSpreadsheetLineItems(trimmedText)
+    : [];
+
   if (inlineData) {
     if (!mimeType || !GEMINI_INLINE_MIME_TYPES.includes(mimeType)) {
       return { ...base, status: EXTRACTION_STATUS.UNSUPPORTED_TYPE };
@@ -387,7 +609,16 @@ async function extractLineItems(input = {}) {
     try {
       // Never overrun the shared deadline, even if the per-attempt timeout is larger.
       const parsed = await callModel(model, requestBody, Math.min(GEMINI_CONFIG.REQUEST_TIMEOUT_MS, remainingMs));
-      const lineItems = toRawLineItems(parsed);
+      let lineItems = toRawLineItems(parsed);
+
+      if (tabularItems.length > lineItems.length) {
+        logger.info(
+          `Tabular extraction identified ${tabularItems.length} valid line items across worksheets vs ${lineItems.length} from ${model}. Preserving all valid items.`,
+          { tabularCount: tabularItems.length, modelCount: lineItems.length, model },
+          'GEMINI'
+        );
+        lineItems = tabularItems;
+      }
 
       if (lineItems.length === 0) {
         logger.info(`Gemini ${model} found no line items in ${fileName || 'document'}`, {}, 'GEMINI');
@@ -422,7 +653,7 @@ async function extractLineItems(input = {}) {
 
   return {
     ...base,
-    status: EXTRACTION_STATUS.AI_FAILED,
+    status: resolveExtractionFailureStatus(failures),
     error: failures.join(' | '),
   };
 }
@@ -795,4 +1026,7 @@ module.exports = {
   extractLineItems,
   extractQuotationFromEmail,
   extractQuotationFallback,
+  extractSpreadsheetLineItems,
+  parseValidQuantity,
+  matchHeaderField,
 };

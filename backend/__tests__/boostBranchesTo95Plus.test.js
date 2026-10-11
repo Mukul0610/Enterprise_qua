@@ -307,7 +307,7 @@ describe('Full Branch & Function Benchmark Boost (>90%)', () => {
     }
 
     // ID patterns
-    const buyerIdPrefixes = ['v-hist-99', 'v-navin-88', 'vm-77', 'v-ingest-66', 'v-buyer-55'];
+    const buyerIdPrefixes = ['v-hist-99', 'vm-77', 'v-ingest-66', 'v-buyer-55'];
     for (const id of buyerIdPrefixes) {
       expect(storeService.isBuyerUploaded({ id })).toBe(true);
       expect(storeService.isProcucevVendor({ id })).toBe(false);

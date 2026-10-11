@@ -422,81 +422,22 @@ describe('OpportunityFeed: pending-bid reminder', () => {
   });
 });
 
-describe('OpportunityFeed: self-evaluation banners', () => {
+describe('OpportunityFeed: streamlined dashboard', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     serveRFQs(ALL_FIXTURES);
   });
 
-  test('offers to start the evaluation, priced at $5 without a subscription', async () => {
+  test('omits promotional evaluation panels and fabricated vendor profile metrics', async () => {
     const onNavigateToEvaluation = jest.fn();
-    await renderFeed({ onNavigateToEvaluation, subscription: 'premium' });
+    await renderFeed({ onNavigateToEvaluation, selfEvaluationCompleted: true, selfEvaluationScore: 92 });
 
-    fireEvent.click(screen.getByRole('button', { name: /Start Self-Evaluation \(\$5\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Start 360° AI Self-Evaluation \(\$5\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: /360° Audit/i }));
-    expect(onNavigateToEvaluation).toHaveBeenCalledTimes(3);
-    expect(screen.getByText('1st Priority RFQ Status')).toBeInTheDocument();
-  });
-
-  test('reports the score and offers a retake once the evaluation is done', async () => {
-    const onNavigateToEvaluation = jest.fn();
-    await renderFeed({
-      onNavigateToEvaluation,
-      selfEvaluationCompleted: true,
-      selfEvaluationScore: 92,
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /View AI Rating \(92%\)/i }));
-    fireEvent.click(screen.getByRole('button', { name: /Retake 360° AI Self-Evaluation/i }));
-    expect(onNavigateToEvaluation).toHaveBeenCalledTimes(2);
-    expect(screen.getByText(/Self-Evaluation Certified \(Score: 92%\)/i)).toBeInTheDocument();
-  });
-
-  test('waives the fee on a Connect plan and hides the subscription upsell', async () => {
-    await renderFeed({ subscription: 'connect' });
-
-    expect(screen.getByText(/FREE \(Waived\)/i)).toBeInTheDocument();
-    expect(screen.getByText(/100% Free with your active Connect subscription/i)).toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /View Connect \/ Select/i })
-    ).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /🔗 Connect Partner/i })).toBeInTheDocument();
-  });
-
-  test('credits a Select plan for the waiver', async () => {
-    await renderFeed({ subscription: 'select' });
-
-    expect(screen.getByText(/100% Free with your active Select subscription/i)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /👑 Select Partner/i })).toBeInTheDocument();
-  });
-
-  test('falls back to the free-tier badge on an unrecognised plan', async () => {
-    await renderFeed({ subscription: 'premium_network' });
-
-    expect(screen.getByRole('button', { name: /📋 Free Tier/i })).toBeInTheDocument();
-  });
-
-  test('hides the audit shortcut when no evaluation screen is wired up', async () => {
-    await renderFeed({ onNavigateToEvaluation: undefined });
-
-    expect(screen.queryByRole('button', { name: /360° Audit/i })).not.toBeInTheDocument();
-  });
-
-  test('routes the fee upsell to the subscription screen when one is provided', async () => {
-    const onNavigateToSubscription = jest.fn();
-    await renderFeed({ onNavigateToSubscription, subscription: 'premium' });
-
-    fireEvent.click(screen.getByRole('button', { name: /View Connect \/ Select/i }));
-    expect(onNavigateToSubscription).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText(/Upgrade to Premium Sourcing Plan/i)).not.toBeInTheDocument();
-  });
-
-  test('falls back to the upgrade modal when no subscription screen is provided', async () => {
-    await renderFeed({ onNavigateToSubscription: undefined, subscription: 'premium' });
-
-    fireEvent.click(screen.getByRole('button', { name: /View Connect \/ Select/i }));
-    expect(screen.getByText(/Upgrade to Premium Sourcing Plan/i)).toBeInTheDocument();
+    expect(screen.queryByText(/Complete 360° AI Self-Evaluation/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Premium Vendor Showcase & Priority Network/i)).not.toBeInTheDocument();
+    expect(screen.queryByText('Apex Supplies Ltd.')).not.toBeInTheDocument();
+    expect(screen.queryByText('3 Live')).not.toBeInTheDocument();
+    expect(screen.queryByText('14 Contracts')).not.toBeInTheDocument();
+    expect(onNavigateToEvaluation).not.toHaveBeenCalled();
   });
 });
 

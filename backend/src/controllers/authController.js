@@ -29,7 +29,11 @@ async function login(req, res, next) {
 
     return res.status(400).json({ success: false, error: AUTH_MESSAGES.PASSWORD_OR_CODE_REQUIRED });
   } catch (err) {
-    logger.warn('Login failure in authController', { error: err.message, body: req.body }, 'AUTH_CONTROLLER');
+    logger.warn(
+      'Login failure in authController',
+      { error: err.message, email: req.body?.email, hasPassword: Boolean(req.body?.password), hasCode: Boolean(req.body?.code) },
+      'AUTH_CONTROLLER'
+    );
     return res.status(401).json({ success: false, error: err.message || AUTH_MESSAGES.AUTH_FAILED_FALLBACK });
   }
 }

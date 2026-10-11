@@ -102,7 +102,15 @@ export default function BuyerProfilePage() {
             setPincodePostOffices([]);
           } else {
             setPincodeError(null);
-            setPincodePostOffices(res.postOffices || []);
+            const pos = res.postOffices || [];
+            setPincodePostOffices(pos);
+            if (pos.length > 0) {
+              const primaryPo = pos[0];
+              const matchedCity = primaryPo.District || primaryPo.Division || primaryPo.Name || '';
+              const matchedState = primaryPo.State || '';
+              if (matchedCity) setCity(matchedCity);
+              if (matchedState) setState(matchedState);
+            }
           }
         } catch {
           setPincodeError(null);
@@ -254,149 +262,6 @@ export default function BuyerProfilePage() {
   // GST Validation Helper
   const isGstValid = (gst: string) => /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/.test(gst.toUpperCase());
 
-  // Calculate totals
-  const totalSelectedMinorCount = Object.values(selectedMinor).reduce((acc, curr) => acc + curr.length, 0);
-
-  /** Minors of a major, from the taxonomy the database returned. */
-  const minorsOf = (majorName: string) =>
-    taxonomy.find((c) => c.majorCategory === majorName)?.minorCategories || [];
-
-  /**
-   * Report that a cardinality cap blocked a selection.
-   *
-   * The caps exist because the RFQ distribution engine fans out per selected
-   * category, so an unbounded scope would broadcast every RFQ to the whole vendor
-   * base. The old screen let "Select All" bypass them; here every path goes
-   * through these checks.
-   */
-  const rejectForMajorCap = () => {
-    showToast(
-      UI_STRINGS.buyerProfile.limitReachedTitle,
-      formatString(UI_STRINGS.buyerProfile.maxMajorReached, { max: MAX_MAJOR_CATEGORIES }),
-      'warning'
-    );
-  };
-
-  const rejectForMinorCap = () => {
-    showToast(
-      UI_STRINGS.buyerProfile.limitReachedTitle,
-      formatString(UI_STRINGS.buyerProfile.maxMinorReached, {
-        count: totalSelectedMinorCount,
-        max: MAX_MINOR_CATEGORIES,
-      }),
-      'warning'
-    );
-  };
-
-  // Toggle Major Category
-  const toggleMajorCategory = (majorName: string) => {
-    if (selectedMajor.includes(majorName)) {
-      setSelectedMajor((prev) => prev.filter((m) => m !== majorName));
-      setSelectedMinor((prev) => {
-        const next = { ...prev };
-        delete next[majorName];
-        return next;
-      });
-      return;
-    }
-
-    if (selectedMajor.length >= MAX_MAJOR_CATEGORIES) {
-      rejectForMajorCap();
-      return;
-    }
-
-    const remainingSlots = MAX_MINOR_CATEGORIES - totalSelectedMinorCount;
-    if (remainingSlots <= 0) {
-      rejectForMinorCap();
-      return;
-    }
-
-    setSelectedMajor((prev) => [...prev, majorName]);
-    // Select as many minors as the remaining allowance permits, rather than all
-    // of them and then silently discarding the overflow at save time.
-    setSelectedMinor((prev) => ({ ...prev, [majorName]: minorsOf(majorName).slice(0, remainingSlots) }));
-  };
-
-  // Toggle Minor Category
-  const toggleMinorCategory = (majorName: string, minorName: string) => {
-    const currentList = selectedMinor[majorName] || [];
-    const isChecked = currentList.includes(minorName);
-
-    if (isChecked) {
-      const updated = currentList.filter((m) => m !== minorName);
-      setSelectedMinor((prev) => {
-        const next = { ...prev, [majorName]: updated };
-        if (updated.length === 0) delete next[majorName];
-        return next;
-      });
-      // If no minor selected, deselect major
-      if (updated.length === 0) {
-        setSelectedMajor((prev) => prev.filter((m) => m !== majorName));
-      }
-      return;
-    }
-
-    if (totalSelectedMinorCount >= MAX_MINOR_CATEGORIES) {
-      rejectForMinorCap();
-      return;
-    }
-    if (!selectedMajor.includes(majorName) && selectedMajor.length >= MAX_MAJOR_CATEGORIES) {
-      rejectForMajorCap();
-      return;
-    }
-
-    if (!selectedMajor.includes(majorName)) {
-      setSelectedMajor((prev) => [...prev, majorName]);
-    }
-    setSelectedMinor((prev) => ({ ...prev, [majorName]: [...(prev[majorName] || []), minorName] }));
-  };
-
-  // Select all minor for a major
-  const selectAllMinorInMajor = (majorName: string) => {
-    const alreadySelected = selectedMinor[majorName] || [];
-    if (!selectedMajor.includes(majorName) && selectedMajor.length >= MAX_MAJOR_CATEGORIES) {
-      rejectForMajorCap();
-      return;
-    }
-
-    // Room left once this major's current selection is set aside, since those
-    // minors are being replaced rather than added to.
-    const remainingSlots = MAX_MINOR_CATEGORIES - (totalSelectedMinorCount - alreadySelected.length);
-    if (remainingSlots <= 0) {
-      rejectForMinorCap();
-      return;
-    }
-
-    const allMinor = minorsOf(majorName);
-    if (allMinor.length > remainingSlots) {
-      rejectForMinorCap();
-    }
-
-    if (!selectedMajor.includes(majorName)) {
-      setSelectedMajor((prev) => [...prev, majorName]);
-    }
-    setSelectedMinor((prev) => ({ ...prev, [majorName]: allMinor.slice(0, remainingSlots) }));
-  };
-
-  // Clear minor for a major
-  const clearMinorInMajor = (majorName: string) => {
-    setSelectedMinor((prev) => {
-      const next = { ...prev };
-      delete next[majorName];
-      return next;
-    });
-    setSelectedMajor((prev) => prev.filter((m) => m !== majorName));
-  };
-
-  // Filtered Categories based on search
-  const filteredCategories = taxonomy.filter((cat) => {
-    if (!searchTerm.trim()) return true;
-    const term = searchTerm.toLowerCase();
-    const matchesMajor = cat.majorCategory.toLowerCase().includes(term);
-    const matchesMinor = cat.minorCategories.some((m) => m.toLowerCase().includes(term));
-    return matchesMajor || matchesMinor;
-  });
-
   /**
    * Persist the profile.
    *
@@ -439,14 +304,6 @@ export default function BuyerProfilePage() {
     }
 
     const categories = flattenCategorySelection(selectedMajor, selectedMinor);
-    if (categories.length === 0) {
-      showToast(
-        UI_STRINGS.buyerProfile.validationErrorTitle,
-        UI_STRINGS.buyerProfile.categoriesRequired,
-        'warning'
-      );
-      return;
-    }
 
     const payload: BuyerProfileUpdatePayload = {
       companyName,
@@ -489,7 +346,7 @@ export default function BuyerProfilePage() {
       setContactName(result.data.contactName);
     }
 
-    addAuditLog(`Updated Buyer Organization Profile & Procurement Categories for ${companyName}`);
+    addAuditLog(`Updated Buyer Organization Profile for ${companyName}`);
     showToast(
       UI_STRINGS.buyerProfile.savedTitle,
       formatString(UI_STRINGS.buyerProfile.savedMessage, {
@@ -789,161 +646,10 @@ export default function BuyerProfilePage() {
             </div>
           </div>
         </div>
-
-        {/* Section 3: Consolidated Major & Minor Categories Selector */}
-        <div className="glass-panel p-3.5 sm:p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-xs space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 border-b border-slate-100 dark:border-gray-800 pb-2.5">
-            <div>
-              <h2 className="text-xs sm:text-sm font-extrabold text-slate-900 dark:text-white uppercase tracking-wider flex items-center gap-2">
-                <Sliders className="text-indigo-600 dark:text-indigo-400" size={16} /> Section 3: Relevant Procurement Categories (13 Major & 120+ Minor)
-              </h2>
-              <p className="text-[11px] text-slate-500 dark:text-gray-400 mt-0.5">
-                Select your organization&apos;s active procurement scopes. This governs automated AI vendor matching &amp; RFQ distribution.
-              </p>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <span className="badge badge-purple font-mono text-[11px]">
-                {selectedMajor.length} Major • {totalSelectedMinorCount} Minor Selected
-              </span>
-            </div>
-          </div>
-
-          {/* Search Bar */}
-          <div className="relative">
-            <Search size={15} className="absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search across all 13 Major and 120+ Minor categories (e.g. Cables, Valves, Pumps, IT, Logistics)..."
-              className="w-full pl-9 pr-3 py-1.5 rounded-lg border border-slate-200 dark:border-gray-800 text-xs font-medium bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white"
-            />
-          </div>
-
-          {/* Categories Accordion / Selector Grid */}
-          <div className="space-y-2 pt-0.5">
-            {filteredCategories.map((cat) => {
-              const isMajorSelected = selectedMajor.includes(cat.majorCategory);
-              const selectedMinorsInCat = selectedMinor[cat.majorCategory] || [];
-              const isExpanded = expandedMajor[cat.majorCategory] || false;
-
-              return (
-                <div
-                  key={cat.majorCategory}
-                  className={`rounded-xl border transition-all ${
-                    isMajorSelected
-                      ? 'border-indigo-300 dark:border-indigo-500/40 bg-indigo-50/30 dark:bg-indigo-950/20'
-                      : 'border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900/60'
-                  }`}
-                >
-                  {/* Major Category Bar */}
-                  <div className="p-2.5 sm:p-3 flex items-center justify-between gap-3 cursor-pointer">
-                    <div className="flex items-center gap-2.5 flex-1" onClick={() => toggleMajorCategory(cat.majorCategory)}>
-                      <button type="button" className="text-indigo-600 dark:text-indigo-400">
-                        {isMajorSelected ? <CheckSquare size={16} /> : <Square size={16} className="text-slate-400" />}
-                      </button>
-                      <div>
-                        <h3 className="text-xs font-bold text-slate-900 dark:text-white">
-                          {cat.majorCategory}
-                        </h3>
-                        <p className="text-[10px] text-slate-500 dark:text-gray-400">
-                          {cat.minorCategories.length} Minor Categories available
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] sm:text-[11px] font-bold text-indigo-600 dark:text-indigo-300 mono bg-white dark:bg-gray-900 px-2 py-0.5 rounded-md border border-indigo-200 dark:border-indigo-800">
-                        {selectedMinorsInCat.length} / {cat.minorCategories.length} Selected
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedMajor((prev) => ({ ...prev, [cat.majorCategory]: !prev[cat.majorCategory] }))
-                        }
-                        className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-gray-200"
-                      >
-                        {isExpanded ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Minor Categories Grid */}
-                  {isExpanded && (
-                    <div className="p-3 pt-0 border-t border-slate-200/60 dark:border-gray-800/80 space-y-2">
-                      <div className="flex items-center justify-between text-[11px] pt-1.5">
-                        <span className="font-bold text-slate-500 dark:text-gray-400 uppercase tracking-wider text-[10px]">
-                          Minor Procurement Categories
-                        </span>
-                        <div className="flex items-center gap-2">
-                          <button
-                            type="button"
-                            onClick={() => selectAllMinorInMajor(cat.majorCategory)}
-                            className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
-                          >
-                            Select All
-                          </button>
-                          <span className="text-slate-300">|</span>
-                          <button
-                            type="button"
-                            onClick={() => clearMinorInMajor(cat.majorCategory)}
-                            className="text-[10px] font-bold text-slate-500 hover:text-slate-700 dark:hover:text-gray-300 hover:underline"
-                          >
-                            Clear
-                          </button>
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-1.5">
-                        {cat.minorCategories.map((minor) => {
-                          const isMinorChecked = selectedMinorsInCat.includes(minor);
-                          return (
-                            <label
-                              key={minor}
-                              className={`p-1.5 sm:p-2 rounded-lg border text-[11px] font-medium flex items-center gap-2 cursor-pointer transition-colors ${
-                                isMinorChecked
-                                  ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                                  : 'bg-slate-50 dark:bg-gray-950 text-slate-700 dark:text-gray-300 border-slate-200 dark:border-gray-800 hover:border-slate-300 dark:hover:border-gray-700'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={isMinorChecked}
-                                onChange={() => toggleMinorCategory(cat.majorCategory, minor)}
-                                className="sr-only"
-                              />
-                              <div className={`w-3.5 h-3.5 rounded flex items-center justify-center shrink-0 border ${isMinorChecked ? 'bg-white text-indigo-600 border-white' : 'border-slate-400'}`}>
-                                {isMinorChecked && <span className="text-[10px] font-bold">✓</span>}
-                              </div>
-                              <span className="truncate" title={minor}>{minor}</span>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Submit */}
-        <div className="flex justify-end pt-1">
-          <button
-            type="submit"
-            disabled={isLoading || isSaving}
-            aria-busy={isSaving}
-            className="btn btn-primary btn-md shadow-lg shadow-indigo-600/20 font-bold flex items-center gap-2 px-6"
-          >
-            <Save size={16} /> Save Buyer Organization Profile
-          </button>
-        </div>
       </form>
 
       {/* ══════════════════════════════════════════════════════════════════════ */}
-      {/* Section 4: Account & Security                                          */}
+      {/* Section 3: Account & Security                                          */}
       {/* ══════════════════════════════════════════════════════════════════════ */}
       {/* Sits outside the organisation form above on purpose. The panel has its  */}
       {/* own submit handlers, and nesting a <form> inside another is invalid     */}

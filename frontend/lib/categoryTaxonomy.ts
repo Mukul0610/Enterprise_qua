@@ -277,151 +277,361 @@ const KNOWN_KEYWORD_RULES: Array<{
   major: string;
   minor: string;
 }> = [
+  // 1. Engineering Spares - Mechanical
   {
     keywords: [
-      'pump', 'pumps', 'impeller', 'hydraulic', 'hydraulics', 'bearing', 'bearings', 'gear', 'gears',
-      'compressor', 'boiler', 'turbine', 'conveyor', 'conveyors', 'cylinder', 'piston', 'shaft', 'spares',
-      'mechanical', 'coupling', 'couplings', 'clutch', 'pulley', 'pulleys', 'spring', 'springs', 'nozzle', 'nozzles'
+      'pump', 'pumps', 'centrifugal pump', 'submersible pump', 'vacuum pump', 'dosing pump', 'rotary pump', 'water pump', 'impeller'
     ],
     major: 'Engineering Spares - Mechanical',
     minor: 'Pumps & Accessories',
   },
   {
-    keywords: ['valve', 'valves', 'hose', 'hoses', 'flange', 'flanges', 'fitting', 'fittings', 'gasket', 'gaskets', 'seal', 'seals', 'o-ring', 'o rings'],
+    keywords: [
+      'compressor', 'compressors', 'air compressor', 'reciprocating compressor', 'screw compressor', 'pneumatic compressor'
+    ],
+    major: 'Engineering Spares - Mechanical',
+    minor: 'Compressors & Accessories',
+  },
+  {
+    keywords: [
+      'valve', 'valves', 'ball valve', 'gate valve', 'globe valve', 'check valve', 'butterfly valve', 'solenoid valve',
+      'hose', 'hoses', 'hydraulic hose', 'flange', 'flanges', 'fitting', 'fittings', 'gasket', 'gaskets',
+      'seal', 'seals', 'o-ring', 'o rings', 'o-rings', 'mechanical seal'
+    ],
     major: 'Engineering Spares - Mechanical',
     minor: 'Hoses, Valves & Fittings',
   },
   {
-    keywords: ['pipe', 'pipes', 'piping', 'tubing', 'tube', 'tubes', 'nipple', 'elbow', 'tee', 'reducer'],
+    keywords: [
+      'pipe', 'pipes', 'piping', 'tubing', 'tube', 'tubes', 'nipple', 'elbow', 'tee', 'reducer', 'pipe fitting', 'seamless pipe', 'gi pipe', 'ms pipe', 'ss pipe'
+    ],
     major: 'Engineering Spares - Mechanical',
     minor: 'Pipes & Pipe Fittings',
   },
   {
-    keywords: ['filter', 'filters', 'cartridge', 'strainer', 'strainers', 'filtration'],
+    keywords: [
+      'filter', 'filters', 'air filter', 'oil filter', 'cartridge', 'cartridges', 'strainer', 'strainers', 'filtration', 'filter element', 'hydraulic filter'
+    ],
     major: 'Engineering Spares - Mechanical',
     minor: 'Filters',
   },
   {
-    keywords: ['tool', 'tools', 'tackle', 'tackles', 'wrench', 'spanner', 'drill', 'cutter', 'fastener', 'fasteners', 'bolt', 'bolts', 'nut', 'nuts', 'screw', 'screws'],
+    keywords: [
+      'tool', 'tools', 'tackle', 'tackles', 'wrench', 'spanner', 'drill', 'drill bit', 'cutter', 'pliers',
+      'fastener', 'fasteners', 'bolt', 'bolts', 'nut', 'nuts', 'screw', 'screws', 'washer', 'washers', 'stud', 'studs', 'anchor bolt'
+    ],
     major: 'Engineering Spares - Mechanical',
     minor: 'Tools & Tackles',
   },
   {
-    keywords: ['motor', 'motors', 'rotor', 'stator', 'servo', 'vfd', 'drive', 'drives'],
+    keywords: [
+      'bearing', 'bearings', 'ball bearing', 'roller bearing', 'gear', 'gears', 'gearbox', 'pulley', 'pulleys',
+      'sprocket', 'sprockets', 'shaft', 'shafts', 'coupling', 'couplings', 'clutch', 'clutches',
+      'boiler', 'boilers', 'turbine', 'turbines', 'conveyor', 'conveyors', 'conveyor belt', 'cylinder', 'cylinders',
+      'piston', 'pistons', 'spares', 'mechanical spares', 'spring', 'springs', 'nozzle', 'nozzles', 'machinery', 'machinery parts'
+    ],
+    major: 'Engineering Spares - Mechanical',
+    minor: 'Machinery Parts',
+  },
+  {
+    keywords: [
+      'customised parts', 'customized parts', 'machined part', 'precision component', 'custom component', 'cnc part'
+    ],
+    major: 'Engineering Spares - Mechanical',
+    minor: 'Customised Parts',
+  },
+
+  // 2. Engineering Spares - Electrical
+  {
+    keywords: ['motor', 'motors', 'rotor', 'stator', 'servo', 'vfd', 'drive', 'drives', 'induction motor', 'electric motor', 'variable frequency drive'],
     major: 'Engineering Spares - Electrical',
     minor: 'Motors',
   },
   {
-    keywords: ['cable', 'cables', 'wire', 'wires', 'wiring', 'conduit', 'conduits', 'harness', 'copper wire'],
+    keywords: ['cable', 'cables', 'wire', 'wires', 'wiring', 'conduit', 'conduits', 'cable gland', 'cable tray', 'copper wire', 'armoured cable', 'power cable'],
     major: 'Engineering Spares - Electrical',
     minor: 'Cables',
   },
   {
-    keywords: ['panel', 'panels', 'switchboard', 'distribution board', 'mcc', 'pcc', 'db box', 'enclosure'],
+    keywords: ['panel', 'panels', 'switchboard', 'distribution board', 'mcc', 'pcc', 'db box', 'enclosure', 'control panel', 'junction box'],
     major: 'Engineering Spares - Electrical',
     minor: 'Panels',
   },
   {
-    keywords: ['sensor', 'sensors', 'transducer', 'transmitter', 'detector', 'gauge', 'meter', 'flowmeter', 'thermocouple', 'rtd', 'plc', 'scada'],
-    major: 'Engineering Spares - Electrical',
-    minor: 'Sensors',
-  },
-  {
-    keywords: ['mccb', 'mcb', 'acb', 'breaker', 'breakers', 'switchgear', 'fuse', 'fuses', 'contactor', 'contactors', 'relay', 'relays', 'switch', 'switches'],
-    major: 'Engineering Spares - Electrical',
-    minor: 'Circuit Breakers',
-  },
-  {
-    keywords: ['transformer', 'transformers', 'inverter', 'inverters', 'rectifier', 'ups', 'battery', 'batteries', 'generator', 'generators'],
+    keywords: ['transformer', 'transformers', 'inverter', 'inverters', 'rectifier', 'ups', 'battery', 'batteries', 'generator', 'generators', 'diesel generator', 'dg set'],
     major: 'Engineering Spares - Electrical',
     minor: 'Transformers',
   },
   {
-    keywords: ['rebar', 'rebars', 'tmt', 'steel bar', 'reinforcement', 'tmt bar', 'tmt bars'],
+    keywords: ['mccb', 'mcb', 'acb', 'elcb', 'rccb', 'breaker', 'breakers', 'circuit breaker', 'fuse', 'fuses', 'contactor', 'contactors', 'relay', 'relays', 'switch', 'switches'],
+    major: 'Engineering Spares - Electrical',
+    minor: 'Circuit Breakers',
+  },
+  {
+    keywords: ['light', 'lights', 'lighting', 'led', 'led light', 'flood light', 'bay light', 'luminaire', 'lamp', 'lamps', 'bulb', 'bulbs'],
+    major: 'Engineering Spares - Electrical',
+    minor: 'Lighting',
+  },
+  {
+    keywords: ['switchgear', 'ht switchgear', 'lt switchgear', 'vcb', 'vacuum circuit breaker', 'ring main unit', 'rmu'],
+    major: 'Engineering Spares - Electrical',
+    minor: 'Switchgear',
+  },
+
+  // 3. Civil Works
+  {
+    keywords: ['rebar', 'rebars', 'tmt', 'steel bar', 'reinforcement', 'tmt bar', 'tmt bars', 'fe 500', 'fe 550'],
     major: 'Civil Works',
     minor: 'TMT BARS',
   },
   {
-    keywords: ['peb', 'pre-engineered', 'shed', 'warehouse structure', 'steel structure', 'roofing sheet', 'purlin'],
+    keywords: ['peb', 'peb structure', 'pre-engineered', 'shed', 'warehouse structure', 'steel structure', 'structural steel', 'purlin'],
     major: 'Civil Works',
     minor: 'PEB Structure',
   },
   {
-    keywords: ['cement', 'concrete', 'mortar', 'grout', 'r質', 'aggregate', 'sand'],
+    keywords: ['roofing', 'roofing sheet', 'roofing sheets', 'profile sheet', 'corrugated sheet', 'polycarbonate sheet'],
     major: 'Civil Works',
-    minor: 'Cement',
+    minor: 'Roofing Sheets',
   },
   {
-    keywords: ['brick', 'bricks', 'block', 'blocks', 'aac block', 'aac blocks', 'masonry', 'paver'],
+    keywords: ['paint', 'paints', 'primer', 'enamel', 'epoxy paint', 'wall paint', 'coating', 'coatings'],
+    major: 'Civil Works',
+    minor: 'Paints',
+  },
+  {
+    keywords: ['plumbing', 'sanitary', 'pipe fitting plumbing', 'faucet', 'tap', 'cpvc', 'upvc', 'drainage'],
+    major: 'Civil Works',
+    minor: 'Plumbing',
+  },
+  {
+    keywords: ['fabrication', 'structural fabrication', 'sheet metal fabrication', 'ms plate', 'steel plate', 'steel sheet', 'angle iron', 'ms angle', 'ms channel', 'i beam', 'h beam', 'ms beam'],
+    major: 'Civil Works',
+    minor: 'Fabrication',
+  },
+  {
+    keywords: ['brick', 'bricks', 'block', 'blocks', 'aac block', 'aac blocks', 'fly ash brick', 'concrete block', 'masonry', 'paver', 'paver blocks', 'cement', 'concrete', 'mortar', 'sand', 'aggregate'],
     major: 'Civil Works',
     minor: 'Bricks & Blocks',
   },
+
+  // 4. Information Technology (IT) & Software
   {
-    keywords: ['steel', 'steels', 'plate', 'plates', 'sheet', 'sheets', 'angle', 'channel', 'beam', 'beams', 'metal', 'alloy'],
-    major: 'Raw Material',
-    minor: 'Steels',
+    keywords: ['laptop', 'laptops', 'desktop', 'desktops', 'computer', 'computers', 'server', 'servers', 'monitor', 'monitors', 'keyboard', 'mouse', 'printer', 'printers', 'scanner', 'hard disk', 'ssd', 'ram'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'IT Hardware & Peripherals',
   },
   {
-    keywords: ['chemical', 'chemicals', 'acid', 'solvent', 'resin', 'oil', 'grease', 'lubricant', 'lubricants', 'paint', 'coating'],
-    major: 'Raw Material',
-    minor: 'Chemicals',
+    keywords: ['software', 'software license', 'software licenses', 'microsoft', 'oracle', 'sap', 'erp', 'crm', 'saas', 'license', 'licenses', 'antivirus', 'os license'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'Enterprise Software & Licenses',
   },
   {
-    keywords: ['laptop', 'laptops', 'desktop', 'computer', 'computers', 'server', 'servers', 'monitor', 'monitors', 'keyboard', 'printer'],
-    major: 'IT',
-    minor: 'Laptop',
+    keywords: ['cloud', 'aws', 'azure', 'gcp', 'cloud storage', 'cloud hosting', 'virtual machine', 's3', 'storage server'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'Cloud Infrastructure & Storage',
   },
   {
-    keywords: ['software', 'license', 'licenses', 'saas', 'cloud', 'antivirus', 'database', 'app'],
-    major: 'IT',
-    minor: 'Software',
+    keywords: ['cybersecurity', 'firewall', 'security software', 'vpn', 'edr', 'soc', 'endpoint security'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'Cybersecurity Solutions',
   },
   {
-    keywords: ['freight', 'transport', 'logistics', 'shipping', 'cargo', 'courier', 'road transport', 'trucking'],
-    major: 'Logistics',
-    minor: 'Road transport',
+    keywords: ['router', 'routers', 'network switch', 'access point', 'wifi', 'lan', 'patch cord', 'server rack', 'data cable'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'IT Infrastructure',
   },
   {
-    keywords: ['fire extinguisher', 'extinguisher', 'extinguishers', 'hydrant', 'sprinkler', 'fire fighting'],
-    major: 'Occuptional Health and Safety',
-    minor: 'Fire Extinguishers',
+    keywords: ['bi platform', 'power bi', 'tableau', 'analytics', 'database', 'sql server', 'data warehouse'],
+    major: 'Information Technology (IT) & Software',
+    minor: 'Data & Analytics Platforms',
   },
+
+  // 5. Occuptional Health and Safety
   {
-    keywords: ['safety jacket', 'safety jackets', 'high vis', 'vest', 'vests', 'reflective jacket'],
-    major: 'Occuptional Health and Safety',
-    minor: 'Safety jackets',
-  },
-  {
-    keywords: ['safety shoe', 'safety shoes', 'boots', 'steel toe', 'safety boot'],
-    major: 'Occuptional Health and Safety',
-    minor: 'Safety Shoes',
-  },
-  {
-    keywords: ['helmet', 'helmets', 'hard hat', 'hard hats', 'hemlet'],
+    keywords: ['helmet', 'helmets', 'hard hat', 'hard hats', 'hemlet', 'hemlets', 'safety helmet'],
     major: 'Occuptional Health and Safety',
     minor: 'Hemlets',
   },
   {
-    keywords: ['safety harness', 'fall arrest', 'safety belt', 'lanyard'],
+    keywords: ['safety harness', 'harness', 'fall arrest', 'fall protection', 'safety belt', 'lanyard'],
     major: 'Occuptional Health and Safety',
     minor: 'Harness',
   },
   {
-    keywords: ['glove', 'gloves', 'hand protection', 'safety gloves', 'nitrile gloves', 'leather gloves', 'mask', 'goggle', 'goggles', 'ppe'],
+    keywords: ['glove', 'gloves', 'safety gloves', 'leather gloves', 'nitrile gloves', 'cotton gloves', 'hand protection'],
     major: 'Occuptional Health and Safety',
     minor: 'Gloves',
   },
   {
-    keywords: ['storage rack', 'racking', 'pallet rack', 'shelving', 'slotted angle', 'mezzanine'],
+    keywords: ['safety shoe', 'safety shoes', 'safety boot', 'safety boots', 'steel toe', 'steel toe shoes', 'gumboot', 'gumboots'],
+    major: 'Occuptional Health and Safety',
+    minor: 'Safety Shoes',
+  },
+  {
+    keywords: ['safety goggle', 'safety goggles', 'safety glasses', 'eye protection', 'face shield', 'welding glass', 'goggle', 'goggles'],
+    major: 'Occuptional Health and Safety',
+    minor: 'Eye Protection',
+  },
+  {
+    keywords: ['fire extinguisher', 'fire extinguishers', 'extinguisher', 'extinguishers', 'fire hydrant', 'fire sprinkler', 'fire hose', 'fire alarm', 'smoke detector', 'fire fighting', 'fire safety', 'safety jacket', 'high vis', 'reflective jacket', 'vest'],
+    major: 'Occuptional Health and Safety',
+    minor: 'Fire Safety',
+  },
+
+  // 6. Logistics & Transportation
+  {
+    keywords: ['freight', 'freight forwarding', 'ocean freight', 'air freight', 'sea freight', 'customs clearance', 'shipping'],
+    major: 'Logistics & Transportation',
+    minor: 'Freight Forwarding',
+  },
+  {
+    keywords: ['transportation', 'road transport', 'road transportation', 'trucking', 'trailer', 'lorry', 'truck transport', 'ftl', 'ltl'],
+    major: 'Logistics & Transportation',
+    minor: 'Road Transportation',
+  },
+  {
+    keywords: ['warehousing & 3pl', 'warehouse storage', '3pl', 'logistics warehouse', 'pallet storage', 'distribution center'],
+    major: 'Logistics & Transportation',
+    minor: 'Warehousing & 3PL',
+  },
+  {
+    keywords: ['courier', 'express cargo', 'express cargo & courier', 'parcel delivery', 'speed post'],
+    major: 'Logistics & Transportation',
+    minor: 'Express Cargo & Courier',
+  },
+
+  // 7. Chemicals & Raw Materials
+  {
+    keywords: ['chemical', 'chemicals', 'industrial chemicals', 'acid', 'hydrochloric acid', 'sulfuric acid', 'caustic soda', 'sodium hydroxide', 'bleach', 'ammonia'],
+    major: 'Chemicals & Raw Materials',
+    minor: 'Industrial Chemicals',
+  },
+  {
+    keywords: ['solvent', 'solvents', 'lubricant', 'lubricants', 'industrial oil', 'engine oil', 'hydraulic oil', 'grease', 'lubricating grease', 'thinner', 'acetone', 'solvents & lubricants'],
+    major: 'Chemicals & Raw Materials',
+    minor: 'Solvents & Lubricants',
+  },
+  {
+    keywords: ['specialty chemicals', 'specialty chemical', 'catalyst', 'additive', 'corrosion inhibitor', 'water treatment chemical', 'flocculant', 'coagulant'],
+    major: 'Chemicals & Raw Materials',
+    minor: 'Specialty Chemicals',
+  },
+  {
+    keywords: ['polymer', 'polymers', 'resin', 'resins', 'epoxy resin', 'plastic granules', 'polyethylene', 'polypropylene', 'pvc resin', 'rubber compound', 'polymers & resins'],
+    major: 'Chemicals & Raw Materials',
+    minor: 'Polymers & Resins',
+  },
+
+  // 8. Others – New Product
+  {
+    keywords: ['storage rack', 'storage racks', 'racking', 'pallet rack', 'pallet racking', 'slotted angle', 'cantilever rack', 'mezzanine', 'shelving', 'industrial rack'],
     major: 'Others – New Product',
     minor: 'Storage Racks',
   },
   {
-    keywords: ['consulting', 'audit', 'training', 'installation service', 'maintenance service', 'service', 'repair', 'fabrication', 'commissioning', 'inspection', 'manpower', 'calibration'],
+    keywords: ['packaging', 'packaging material', 'corrugated box', 'carton', 'carton box', 'bubble wrap', 'stretch film', 'wooden pallet', 'strapping roll', 'tapes'],
+    major: 'Others – New Product',
+    minor: 'Packaging Material',
+  },
+  {
+    keywords: ['furniture', 'office chair', 'office desk', 'workstation', 'table', 'cupboard', 'cabinet', 'locker'],
+    major: 'Others – New Product',
+    minor: 'Furniture',
+  },
+  {
+    keywords: ['measuring equipment', 'caliper', 'micrometer', 'pressure gauge', 'temperature gauge', 'flow meter', 'weighing scale', 'vernier caliper', 'sensor', 'sensors', 'transducer', 'transmitter'],
+    major: 'Others – New Product',
+    minor: 'Measuring Equipment',
+  },
+  {
+    keywords: ['cleanroom', 'cleanroom solutions', 'hvac cleanroom', 'air shower', 'pass box', 'laminar air flow', 'hepa filter unit'],
+    major: 'Others – New Product',
+    minor: 'Cleanroom Solutions',
+  },
+  {
+    keywords: ['air purifier', 'air purifiers', 'dehumidifier'],
+    major: 'Others – New Product',
+    minor: 'Air Purifiers',
+  },
+  {
+    keywords: ['solar', 'solar panel', 'renewable energy', 'wind energy'],
+    major: 'Others – New Product',
+    minor: 'Renewable Energy',
+  },
+  {
+    keywords: ['water treatment plants', 'water treatment', 'ro plant', 'effluent treatment', 'etp', 'stp', 'sewage treatment', 'dm plant', 'water purification'],
+    major: 'Others – New Product',
+    minor: 'Water Treatment Plants',
+  },
+  {
+    keywords: ['consumable', 'consumables', 'general consumables', 'stationery', 'paper', 'cleaning chemical', 'mop', 'wiper'],
+    major: 'Others – New Product',
+    minor: 'General Consumables',
+  },
+  {
+    keywords: ['product', 'equipment', 'general item', 'hardware item'],
+    major: 'Others – New Product',
+    minor: 'Others',
+  },
+
+  // 9. Others – New Service
+  {
+    keywords: ['maintenance', 'amc', 'annual maintenance', 'repair service', 'overhaul', 'servicing', 'preventive maintenance', 'breakdown repair', 'maintenance & amc'],
+    major: 'Others – New Service',
+    minor: 'Maintenance & AMC',
+  },
+  {
+    keywords: ['installation', 'erection', 'installation service', 'commissioning', 'site fabrication', 'piping erection', 'equipment installation', 'installation & fabrication'],
+    major: 'Others – New Service',
+    minor: 'Installation & Fabrication',
+  },
+  {
+    keywords: ['inspection', 'testing', 'ndt', 'non destructive testing', 'quality inspection', 'third party inspection', 'load testing', 'hydro testing', 'inspection & testing'],
+    major: 'Others – New Service',
+    minor: 'Inspection & Testing',
+  },
+  {
+    keywords: ['calibration', 'calibration service', 'calibration services', 'instrument calibration', 'meter calibration'],
+    major: 'Others – New Service',
+    minor: 'Calibration Services',
+  },
+  {
+    keywords: ['appliances services', 'appliance repair', 'hvac service', 'ac service'],
+    major: 'Others – New Service',
+    minor: 'Appliances Services',
+  },
+  {
+    keywords: ['drone survey', 'drone surveys', 'aerial survey', 'drone inspection'],
+    major: 'Others – New Service',
+    minor: 'Drone Surveys',
+  },
+  {
+    keywords: ['warehousing service', 'storage service'],
+    major: 'Others – New Service',
+    minor: 'Warehousing',
+  },
+  {
+    keywords: ['waste management', 'hazardous waste', 'scrap disposal', 'effluent disposal', 'e-waste'],
+    major: 'Others – New Service',
+    minor: 'Waste Management',
+  },
+  {
+    keywords: ['consulting', 'consultancy', 'advisory', 'audit', 'energy audit', 'safety audit', 'training', 'manpower service', 'engineering consultancy'],
     major: 'Others – New Service',
     minor: 'Consulting',
   },
 ];
+
+function matchesRuleKeyword(combined: string, tokens: string[], kw: string): boolean {
+  const kwLower = kw.toLowerCase().trim();
+  if (!kwLower) return false;
+  if (kwLower.includes(' ')) {
+    const escaped = kwLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(^|\\s)${escaped}(\\s|$)`, 'i').test(combined);
+  }
+  return tokens.some((token) => token === kwLower || (kwLower.length >= 4 && token.startsWith(kwLower)));
+}
 
 /**
  * Automatically identify and assign the appropriate major and minor category
@@ -441,13 +651,7 @@ export function autoCategorizeItem(
 
   // 1. Direct match against known procurement keyword patterns
   for (const rule of KNOWN_KEYWORD_RULES) {
-    if (
-      rule.keywords.some(
-        (kw) =>
-          combined.includes(kw.toLowerCase()) ||
-          tokens.some((token) => token === kw.toLowerCase() || (kw.length >= 4 && token.startsWith(kw.toLowerCase())))
-      )
-    ) {
+    if (rule.keywords.some((kw) => matchesRuleKeyword(combined, tokens, kw))) {
       return { majorCategory: rule.major, minorCategory: rule.minor };
     }
   }
@@ -456,16 +660,11 @@ export function autoCategorizeItem(
   for (const group of groups) {
     const major = group.majorCategory;
     for (const minor of group.minorCategories || []) {
-      const minorLower = minor.toLowerCase();
-      if (
-        combined.includes(minorLower) ||
-        tokens.some((token) => token.length >= 4 && minorLower.split(/\s+/).includes(token))
-      ) {
+      if (minor && matchesRuleKeyword(combined, tokens, minor)) {
         return { majorCategory: major, minorCategory: minor };
       }
     }
-    const majorLower = major.toLowerCase();
-    if (combined.includes(majorLower) || tokens.some((token) => token.length >= 4 && majorLower.split(/\s+/).includes(token))) {
+    if (major && matchesRuleKeyword(combined, tokens, major)) {
       const defaultMinor = group.minorCategories?.[0] || '';
       return { majorCategory: major, minorCategory: defaultMinor };
     }

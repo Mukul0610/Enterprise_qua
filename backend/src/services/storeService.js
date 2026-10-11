@@ -7,6 +7,7 @@ const {
   resolveBuyerSourcingMode,
   VENDOR_FREE_CREDITS_LIMIT,
 } = require('../config/constants');
+const crypto = require('crypto');
 const pool = require('../db/pool');
 const domainQueries = require('../db/domainQueries');
 const identityQueries = require('../db/identityQueries');
@@ -182,7 +183,7 @@ class StoreService {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%';
     let password = '';
     for (let i = 0; i < 12; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
+      password += chars.charAt(crypto.randomInt(chars.length));
     }
     return password;
   }
@@ -631,14 +632,25 @@ class StoreService {
     // *profile* being created is not the same event as a vendor *identity*
     // being created — this only provisions identity/sends onboarding
     // credentials when there is genuinely no identity account yet.
-    const existingIdentity = await identityQueries.findUserByEmail(vendor.email).catch(() => null);
+    let existingIdentity;
+    try {
+      existingIdentity = await identityQueries.findUserByEmail(vendor.email);
+    } catch (err) {
+      logger.error(`Could not verify identity for vendor ${vendor.email}`, err, 'STORE_SERVICE');
+      this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
+      return {
+        status: 'failed',
+        error: 'The vendor was added, but their login could not be verified. Please contact support to resend the invitation.',
+      };
+    }
     if (existingIdentity) {
       logger.info(
         `Skipped onboarding identity provisioning for ${vendor.email}: an identity account already exists`,
         { vendorId: vendor.id },
         'STORE_SERVICE'
       );
-      return;
+      this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
+      return { status: 'account_exists' };
     }
 
     const tempPassword = this._generateTempPassword();
@@ -647,15 +659,21 @@ class StoreService {
     for (let attempt = 1; attempt <= 2 && !identityCreated; attempt += 1) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        await identityQueries.insertVendorAccount({
+        const result = await identityQueries.insertVendorAccount({
           email: vendor.email,
           password: tempPassword,
           phone: vendor.phone || null,
           fullName: vendor.contactPerson || vendor.name,
           organizationName: vendor.name,
           createdBy: actorEmail || 'buyer-manual-add',
+          resetExisting: false,
+          resetPasswordRequired: true,
         });
-        identityCreated = true;
+        identityCreated = result.created === true;
+        if (!identityCreated) {
+          this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
+          return { status: 'account_exists' };
+        }
       } catch (err) {
         logger.error(
           `Failed to create vendor identity account for ${vendor.email} (attempt ${attempt}/2)`,
@@ -667,9 +685,13 @@ class StoreService {
 
     if (!identityCreated) {
       this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
-      return;
+      return {
+        status: 'failed',
+        error: 'The vendor was added, but their login account could not be created. Please contact support to resend the invitation.',
+      };
     }
 
+    this.updateVendor(vendor.id, { tempPassword });
     const emailPayload = mailerService.buildVendorOnboardingEmail({
       to: vendor.email,
       recipientName: vendor.contactPerson || vendor.name,
@@ -684,13 +706,22 @@ class StoreService {
       if (delivery.sent) {
         this.updateVendor(vendor.id, { onboardingEmailStatus: 'sent', tempPassword });
         logger.info(`Onboarding email sent to ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
+        return { status: 'sent' };
       } else {
         this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
         logger.warn(`Failed to send onboarding email to ${vendor.email}`, { reason: delivery.reason }, 'STORE_SERVICE');
+        return {
+          status: 'failed',
+          error: 'The vendor account was created, but the credentials email could not be delivered. Please contact support to resend the invitation.',
+        };
       }
     } catch (err) {
       this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
       logger.error(`Error sending onboarding email to ${vendor.email}`, err, 'STORE_SERVICE');
+      return {
+        status: 'failed',
+        error: 'The vendor account was created, but the credentials email could not be delivered. Please contact support to resend the invitation.',
+      };
     }
   }
 
@@ -816,29 +847,25 @@ class StoreService {
     // requests by single Worker invocation"), confirmed live.
     const existingUsernames = await identityQueries
       .findExistingUsernames(insertedEmails.filter(Boolean))
-      .catch(() => new Set());
+      .catch((err) => {
+        logger.error('Failed to batch-check vendor identities before bulk onboarding', err, 'STORE_SERVICE');
+        return new Set();
+      });
 
     // insertVendorAccount itself makes several sequential subrequests per
     // call (role/org-type/status resolution + an org lookup + the insert),
     // so firing it for every new row in a large chunk hits the same
     // per-invocation subrequest cap the insert/lookup batching above just
     // fixed — a 1000-new-row chunk alone would need ~5000 more subrequests.
-    // Capped rather than removed: a typical CM/buyer upload chunk (a
-    // realistic mix of duplicates/existing-in-DB rows, not 1000 all-new
-    // synthetic emails) stays exactly as responsive as before for the
-    // common case; only the excess beyond this cap is deferred, left
-    // 'pending' (already the row's default), for a follow-up onboarding
-    // pass rather than crashing the whole request.
-    const MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT = 15;
-    let provisionedThisImport = 0;
-
+    // The controller caps each request at 15 rows, bounding identity
+    // provisioning to a safe number of sequential database operations.
     for (const { rowNumber, vendor } of toInsert) {
       // A null-email row can never hit the ON CONFLICT (email) target, so it
       // always inserts — there is nothing to look up in insertedEmailSet.
       const persisted = !vendor.email || insertedEmailSet.has(vendor.email.toLowerCase());
       if (persisted) {
         this.vendors.unshift(vendor);
-        results.push({
+        const importedResult = {
           rowNumber,
           status: 'imported',
           email: vendor.email,
@@ -846,7 +873,8 @@ class StoreService {
           hasIssues: vendor.hasIssues,
           issues: vendor.issues,
           vendor,
-        });
+        };
+        results.push(importedResult);
 
         if (vendor.email && existingUsernames.has(vendor.email.toLowerCase())) {
           // Same real bug as _provisionVendorOnboarding's comment describes:
@@ -859,52 +887,24 @@ class StoreService {
             { vendorId: vendor.id },
             'STORE_SERVICE'
           );
-        } else if (vendor.email && provisionedThisImport < MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT) {
-          provisionedThisImport += 1;
-          const tempPassword = this._generateTempPassword();
-          // Both handed to waitUntil (via _background) — bare fire-and-forget
-          // here meant Workers could cancel either before it actually ran,
-          // same bug confirmed live in addVendor's own onboarding call (see
-          // that comment). A bulk-imported vendor with no identity account
-          // and no onboarding email is a vendor with no way to ever log in.
-          this._background(
-            identityQueries.insertVendorAccount({
-              email: vendor.email,
-              password: tempPassword,
-              phone: vendor.phone || null,
-              fullName: vendor.contactPerson || vendor.name,
-              organizationName: vendor.name,
-              createdBy: 'vendor-bulk-import',
-            }),
-            `Failed to create vendor identity account for ${vendor.email}`
-          );
-
-          const emailPayload = mailerService.buildVendorOnboardingEmail({
-            to: vendor.email,
-            recipientName: vendor.contactPerson || vendor.name,
-            buyerOrganizationName: 'Procucev Enterprise',
-            vendorCode: vendor.id,
-            tempPassword,
-            contactPhone: vendor.phone,
-          });
-
-          this._background(
-            mailerService.sendVendorIngestionEmail(emailPayload, 'onboarding').then((delivery) => {
-              if (delivery.sent) {
-                this.updateVendor(vendor.id, { onboardingEmailStatus: 'sent', tempPassword });
-                logger.info(`Onboarding email sent to ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
-              } else {
-                logger.warn(`Failed to send onboarding email to ${vendor.email}`, { reason: delivery.reason }, 'STORE_SERVICE');
-              }
-            }),
-            `Error sending onboarding email to ${vendor.email}`
-          );
+          this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
         } else if (vendor.email) {
-          logger.info(
-            `Deferred onboarding provisioning for ${vendor.email}: synchronous cap (${MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT}) reached for this import`,
-            { vendorId: vendor.id },
-            'STORE_SERVICE'
-          );
+          try {
+            const onboarding = await this.provisionVendorOnboarding(vendor, 'vendor-bulk-import');
+            importedResult.onboardingEmailStatus = onboarding?.status || 'failed';
+            if (onboarding?.error) importedResult.onboardingError = onboarding.error;
+          } catch (err) {
+            logger.error(`Failed to provision login for bulk-imported vendor ${vendor.email}`, err, 'STORE_SERVICE');
+            this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
+            importedResult.onboardingEmailStatus = 'failed';
+            importedResult.onboardingError =
+              'The vendor was added, but their login could not be set up. Please contact support to resend the invitation.';
+          }
+        }
+
+        importedResult.vendor = this.getVendorById(vendor.id) || vendor;
+        if (importedResult.onboardingEmailStatus === undefined) {
+          importedResult.onboardingEmailStatus = importedResult.vendor.onboardingEmailStatus;
         }
       } else {
         results.push({ rowNumber, status: 'duplicate', email: vendor.email, reason: 'A vendor with this email already exists.' });
@@ -961,26 +961,142 @@ class StoreService {
 
 
   /**
+   * Checks whether a vendor is mapped to / owned by the buyer who created the given RFQ.
+   *
+   * A vendor is buyer-mapped when uploaded or added by that respective buyer:
+   *  - vendor.buyerId / vendor.buyerAccountId matches rfq.buyerAccountId
+   *  - vendor.addedByBuyerCompany matches rfq.buyerAccountName
+   *  - vendor.buyerEmail matches rfq.buyerEmail / rfq.raisedByEmail
+   *  - vendor.mappedBuyerIds / vendor.buyerIds includes rfq.buyerAccountId
+   *  - or the resolved buyerAccount for the RFQ matches the vendor's buyer fields.
+   */
+  isVendorMappedToRfqBuyer(vendor, rfq) {
+    if (!vendor || !rfq) return false;
+
+    const rfqBuyerId = rfq.buyerAccountId ? String(rfq.buyerAccountId).trim().toLowerCase() : null;
+    const rfqBuyerName = rfq.buyerAccountName ? String(rfq.buyerAccountName).trim().toLowerCase() : null;
+    const rfqBuyerEmail = (rfq.buyerEmail || rfq.raisedByEmail) ? String(rfq.buyerEmail || rfq.raisedByEmail).trim().toLowerCase() : null;
+
+    const vBuyerId = vendor.buyerId ? String(vendor.buyerId).trim().toLowerCase() : null;
+    const vBuyerAccountId = vendor.buyerAccountId ? String(vendor.buyerAccountId).trim().toLowerCase() : null;
+    const vAddedBy = vendor.addedByBuyerCompany ? String(vendor.addedByBuyerCompany).trim().toLowerCase() : null;
+    const vBuyerEmail = vendor.buyerEmail ? String(vendor.buyerEmail).trim().toLowerCase() : null;
+
+    // Direct id match
+    if (rfqBuyerId && (vBuyerId === rfqBuyerId || vBuyerAccountId === rfqBuyerId)) {
+      return true;
+    }
+
+    // Direct company name match
+    if (rfqBuyerName && vAddedBy && vAddedBy === rfqBuyerName) {
+      return true;
+    }
+
+    // Direct email match
+    if (rfqBuyerEmail && vBuyerEmail && vBuyerEmail === rfqBuyerEmail) {
+      return true;
+    }
+
+    // Array of mapped buyer ids if present
+    const mappedIds = Array.isArray(vendor.mappedBuyerIds)
+      ? vendor.mappedBuyerIds
+      : (Array.isArray(vendor.buyerIds) ? vendor.buyerIds : []);
+    if (rfqBuyerId && mappedIds.some((id) => String(id).trim().toLowerCase() === rfqBuyerId)) {
+      return true;
+    }
+
+    // Fallback: check buyerAccount lookup if one side only has email/id and the other has company name
+    if (rfqBuyerId && Array.isArray(this.buyerAccounts)) {
+      const buyerAcc = this.buyerAccounts.find(
+        (a) => a && (String(a.id).trim().toLowerCase() === rfqBuyerId || (a.corporateEmail && String(a.corporateEmail).trim().toLowerCase() === rfqBuyerId))
+      );
+      if (buyerAcc) {
+        const orgName = (buyerAcc.organizationName || '').trim().toLowerCase();
+        const corpEmail = (buyerAcc.corporateEmail || '').trim().toLowerCase();
+        if (orgName && vAddedBy && vAddedBy === orgName) return true;
+        if (corpEmail && vBuyerEmail && vBuyerEmail === corpEmail) return true;
+      }
+    }
+
+    // Direct invitation match: buyer specifically assigned or invited this vendor to this RFQ
+    const vId = vendor.id ? String(vendor.id).trim().toLowerCase() : null;
+    const vEmail = vendor.email ? String(vendor.email).trim().toLowerCase() : null;
+    const vName = vendor.name ? String(vendor.name).trim().toLowerCase() : null;
+
+    if (Array.isArray(rfq.assignedVendors)) {
+      const isAssigned = rfq.assignedVendors.some((av) => {
+        if (!av) return false;
+        const avId = av.id ? String(av.id).trim().toLowerCase() : null;
+        const avEmail = av.email ? String(av.email).trim().toLowerCase() : null;
+        const avName = av.name ? String(av.name).trim().toLowerCase() : null;
+        return (vId && avId && vId === avId) || (vEmail && avEmail && vEmail === avEmail) || (vName && avName && vName === avName);
+      });
+      if (isAssigned) return true;
+    }
+
+    if (rfq.followUpData && Array.isArray(rfq.followUpData.vendors)) {
+      const isInvited = rfq.followUpData.vendors.some((fv) => {
+        if (!fv) return false;
+        const fvId = (fv.id || fv.vendorId) ? String(fv.id || fv.vendorId).trim().toLowerCase() : null;
+        const fvEmail = fv.email ? String(fv.email).trim().toLowerCase() : null;
+        const fvName = (fv.name || fv.vendorName) ? String(fv.name || fv.vendorName).trim().toLowerCase() : null;
+        return (vId && fvId && vId === fvId) || (vEmail && fvEmail && vEmail === fvEmail) || (vName && fvName && vName === fvName);
+      });
+      if (isInvited) return true;
+    }
+
+    return false;
+  }
+
+  isVendorPrivateToDifferentBuyer(vendor, rfq) {
+    if (!vendor || !rfq) return false;
+
+    const hasBuyerOwnership = Boolean(
+      vendor.buyerId ||
+      vendor.buyerAccountId ||
+      vendor.addedByBuyerCompany ||
+      vendor.buyerEmail ||
+      (Array.isArray(vendor.mappedBuyerIds) && vendor.mappedBuyerIds.length > 0) ||
+      (Array.isArray(vendor.buyerIds) && vendor.buyerIds.length > 0)
+    );
+    if (!hasBuyerOwnership) return false;
+
+    // Invitation is an access grant, not evidence that a buyer owns a private
+    // vendor. Ignore invitation lists while resolving the owning buyer.
+    const rfqWithoutInvitations = { ...rfq, assignedVendors: [], followUpData: null };
+    return !this.isVendorMappedToRfqBuyer(vendor, rfqWithoutInvitations);
+  }
+
+  /**
    * Check whether a vendor is eligible to submit a quotation for an RFQ.
    *
+   * Buyer-specific vendor access rule:
+   * When a buyer uploads or adds a vendor to their vendor list, that vendor is eligible
+   * to submit unlimited quotations for RFQs created by that respective buyer, without requiring
+   * a subscription or consuming the vendor's 5 free bid credits.
+   *
+   * Otherwise (for other buyers' RFQs or network RFQs):
    * Initial allowance: Each vendor starts with 5 free quotation credits.
    * Once free credits are exhausted, an active paid subscription ('connect' or 'select')
    * is strictly required.
    */
-  checkVendorQuotationEligibility(vendor) {
+  checkVendorQuotationEligibility(vendor, rfq = null) {
     if (!vendor) {
       return {
         eligible: false,
         reason: 'Vendor record not found',
         freeCreditsRemaining: 0,
         isSubscribed: false,
+        isBuyerMapped: false,
         subscriptionPlan: 'none',
       };
     }
 
+    const isBuyerMapped = Boolean(rfq && this.isVendorMappedToRfqBuyer(vendor, rfq));
+
     const freeCredits = vendor.freeQuotationCredits !== undefined
       ? Number(vendor.freeQuotationCredits)
-      : VENDOR_FREE_CREDITS_LIMIT;
+      : (vendor.freeRfqDownloadCredits !== undefined ? Number(vendor.freeRfqDownloadCredits) : VENDOR_FREE_CREDITS_LIMIT);
 
     const isSubscribed = Boolean(
       vendor.subscriptionPlan === 'connect' ||
@@ -989,26 +1105,254 @@ class StoreService {
       vendor.subscriptionStatus === 'active'
     );
 
-    const eligible = freeCredits > 0 || isSubscribed;
+    // If buyer-mapped for this respective buyer's RFQ: unlimited quotations, no subscription needed.
+    const eligible = isBuyerMapped || freeCredits > 0 || isSubscribed;
 
     return {
       eligible,
       freeCreditsRemaining: Math.max(0, freeCredits),
+      isSubscribed: isSubscribed || isBuyerMapped,
+      isBuyerMapped,
+      subscriptionPlan: vendor.subscriptionPlan || 'premium',
+    };
+  }
+
+  /**
+   * Retrieves authoritative RFQ download credit balance & stats for a vendor.
+   */
+  getVendorRfqCredits(vendorIdOrEmail) {
+    const vendor = this.getVendorById(vendorIdOrEmail, 'all');
+    if (!vendor) {
+      return {
+        vendorId: vendorIdOrEmail,
+        freeCreditsAllocated: VENDOR_FREE_CREDITS_LIMIT,
+        freeCreditsUsed: 0,
+        freeCreditsRemaining: 0,
+        isSubscribed: false,
+        subscriptionPlan: 'none',
+        unlockedRfqIds: [],
+      };
+    }
+
+    const freeCredits = vendor.freeQuotationCredits !== undefined
+      ? Number(vendor.freeQuotationCredits)
+      : (vendor.freeRfqDownloadCredits !== undefined ? Number(vendor.freeRfqDownloadCredits) : VENDOR_FREE_CREDITS_LIMIT);
+
+    const isSubscribed = Boolean(
+      vendor.subscriptionPlan === 'connect' ||
+      vendor.subscriptionPlan === 'select' ||
+      vendor.isSubscribed === true ||
+      vendor.subscriptionStatus === 'active'
+    );
+
+    const allocated = vendor.freeCreditsAllocated !== undefined ? Number(vendor.freeCreditsAllocated) : VENDOR_FREE_CREDITS_LIMIT;
+    const remaining = Math.max(0, freeCredits);
+    const used = vendor.freeCreditsUsed !== undefined ? Number(vendor.freeCreditsUsed) : Math.max(0, allocated - remaining);
+
+    return {
+      vendorId: vendor.id,
+      freeCreditsAllocated: allocated,
+      freeCreditsUsed: used,
+      freeCreditsRemaining: remaining,
       isSubscribed,
       subscriptionPlan: vendor.subscriptionPlan || 'premium',
+      unlockedRfqIds: Array.isArray(vendor.unlockedRfqIds) ? vendor.unlockedRfqIds : [],
+    };
+  }
+
+  /**
+   * Checks whether an RFQ has been unlocked / downloaded by a given vendor.
+   * Buyer-mapped vendors quoting their own buyer's RFQs are always unlocked.
+   */
+  isRfqUnlockedForVendor(vendorIdOrEmail, rfqIdOrNumber) {
+    if (!vendorIdOrEmail || !rfqIdOrNumber) return false;
+    const vendor = this.getVendorById(vendorIdOrEmail, 'all');
+    if (!vendor) return false;
+    const rfq = this.getRFQById(rfqIdOrNumber);
+
+    // Direct buyer-mapped vendors always have access without lock
+    if (rfq && this.isVendorMappedToRfqBuyer(vendor, rfq)) {
+      return true;
+    }
+
+    const normRfqId = rfq ? String(rfq.id).toLowerCase() : String(rfqIdOrNumber).toLowerCase();
+    const normRfqNum = rfq && rfq.rfqNumber ? String(rfq.rfqNumber).toLowerCase() : String(rfqIdOrNumber).toLowerCase();
+
+    const unlockedList = Array.isArray(vendor.unlockedRfqIds) ? vendor.unlockedRfqIds : [];
+    return unlockedList.some((id) => {
+      const s = String(id).toLowerCase();
+      return s === normRfqId || s === normRfqNum;
+    });
+  }
+
+  /**
+   * Atomically unlocks / downloads an RFQ for a vendor, consuming 1 credit if using free allowance.
+   * Re-downloading an already-unlocked RFQ does NOT deduct another credit.
+   */
+  async unlockRFQForVendor(vendorIdOrEmail, rfqIdOrNumber, options = {}) {
+    const vendor = this.getVendorById(vendorIdOrEmail, 'all');
+    if (!vendor) {
+      return {
+        success: false,
+        error: 'Vendor record not found.',
+        notFound: true,
+      };
+    }
+
+    const rfq = (await this.getRFQByIdAsync(rfqIdOrNumber)) || this.getRFQById(rfqIdOrNumber);
+    if (!rfq) {
+      return {
+        success: false,
+        error: `RFQ ${rfqIdOrNumber} not found.`,
+        notFound: true,
+      };
+    }
+
+    // Check if vendor has permission to access the RFQ
+    if (!this.vendorCoversRFQ(vendor, rfq)) {
+      return {
+        success: false,
+        error: 'You do not have permission to access this RFQ.',
+        unauthorized: true,
+      };
+    }
+
+    // Check if RFQ has already been unlocked for this vendor
+    const isDirect = this.isVendorMappedToRfqBuyer(vendor, rfq);
+    const unlockedList = Array.isArray(vendor.unlockedRfqIds) ? [...vendor.unlockedRfqIds] : [];
+    const normRfqId = String(rfq.id);
+    const normRfqNum = rfq.rfqNumber ? String(rfq.rfqNumber) : normRfqId;
+    const isAlreadyUnlocked = unlockedList.includes(normRfqId) || unlockedList.includes(normRfqNum) || isDirect;
+
+    const creditInfo = this.getVendorRfqCredits(vendor.id);
+
+    if (isAlreadyUnlocked) {
+      return {
+        success: true,
+        alreadyUnlocked: true,
+        unlocked: true,
+        freeCreditsRemaining: creditInfo.freeCreditsRemaining,
+        creditCharged: 0,
+        rfq,
+        vendor,
+      };
+    }
+
+    // Direct buyer-mapped or subscribed vendors do not consume free credits
+    if (isDirect || creditInfo.isSubscribed) {
+      if (!unlockedList.includes(normRfqId)) unlockedList.push(normRfqId);
+      if (rfq.rfqNumber && !unlockedList.includes(normRfqNum)) unlockedList.push(normRfqNum);
+
+      vendor.unlockedRfqIds = unlockedList;
+      this.updateVendor(vendor.id, { unlockedRfqIds: unlockedList });
+      await domainQueries.unlockRFQInDB({
+        id: `unl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        vendorId: vendor.id,
+        rfqId: rfq.id,
+        creditCharged: 0,
+        source: isDirect ? 'buyer_mapped' : 'subscription',
+      });
+
+      this.addAuditLog({
+        userEmail: vendor.email || SYSTEM_ACTOR_EMAIL,
+        action: `Vendor ${vendor.name || vendor.id} unlocked RFQ ${rfq.rfqNumber} (unlimited entitlement).`,
+        rfqNumber: rfq.rfqNumber,
+      });
+
+      return {
+        success: true,
+        alreadyUnlocked: false,
+        unlocked: true,
+        freeCreditsRemaining: creditInfo.freeCreditsRemaining,
+        creditCharged: 0,
+        rfq,
+        vendor,
+      };
+    }
+
+    // Free allowance check
+    if (creditInfo.freeCreditsRemaining <= 0) {
+      this.addAuditLog({
+        userEmail: vendor.email || SYSTEM_ACTOR_EMAIL,
+        action: `Download rejected for Vendor ${vendor.name || vendor.id} on RFQ ${rfq.rfqNumber}: Free RFQ download credits exhausted (0 balance).`,
+        rfqNumber: rfq.rfqNumber,
+      });
+      return {
+        success: false,
+        error: 'You have used all 5 free RFQ download credits. You cannot download another RFQ using your free allowance.',
+        creditsExhausted: true,
+        freeCreditsRemaining: 0,
+      };
+    }
+
+    // Deduct 1 credit atomically and record unlock
+    const newRemaining = Math.max(0, creditInfo.freeCreditsRemaining - 1);
+    const newUsed = (creditInfo.freeCreditsUsed || 0) + 1;
+    if (!unlockedList.includes(normRfqId)) unlockedList.push(normRfqId);
+    if (rfq.rfqNumber && !unlockedList.includes(normRfqNum)) unlockedList.push(normRfqNum);
+
+    vendor.freeQuotationCredits = newRemaining;
+    vendor.freeRfqDownloadCredits = newRemaining;
+    vendor.freeCreditsUsed = newUsed;
+    vendor.unlockedRfqIds = unlockedList;
+
+    this.updateVendor(vendor.id, {
+      freeQuotationCredits: newRemaining,
+      freeRfqDownloadCredits: newRemaining,
+      freeCreditsUsed: newUsed,
+      unlockedRfqIds: unlockedList,
+    });
+
+    const unlockRecordId = `unl-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    await domainQueries.unlockRFQInDB({
+      id: unlockRecordId,
+      vendorId: vendor.id,
+      rfqId: rfq.id,
+      creditCharged: 1,
+      source: 'free_credit',
+    });
+
+    await domainQueries.recordCreditTransactionInDB({
+      id: `tx-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      vendorId: vendor.id,
+      rfqId: rfq.id,
+      transactionType: 'RFQ_UNLOCK',
+      amount: -1,
+      balanceAfter: newRemaining,
+      idempotencyKey: `tx-${vendor.id}-${rfq.id}`,
+    });
+
+    this.addAuditLog({
+      userEmail: vendor.email || SYSTEM_ACTOR_EMAIL,
+      action: `Vendor ${vendor.name || vendor.id} unlocked RFQ ${rfq.rfqNumber}. 1 credit consumed. Balance remaining: ${newRemaining}.`,
+      rfqNumber: rfq.rfqNumber,
+    });
+
+    return {
+      success: true,
+      alreadyUnlocked: false,
+      unlocked: true,
+      freeCreditsRemaining: newRemaining,
+      creditCharged: 1,
+      rfq,
+      vendor,
     };
   }
 
   /**
    * Deduct 1 quotation credit from a vendor after quotation submission on a new RFQ.
    * Resubmitting/updating a quote for the same RFQ does not consume an extra credit.
+   * Buyer-mapped vendors quoting their respective buyer's RFQs do NOT consume free credits.
    * Subscribed vendors do not consume free credits below 0.
    */
   consumeVendorQuotationCredit(vendorId, rfqId) {
     const vendor = this.getVendorById(vendorId, 'all');
     if (!vendor) return null;
 
-    const eligibility = this.checkVendorQuotationEligibility(vendor);
+    const rfq = rfqId ? this.getRFQById(rfqId) : null;
+    const isBuyerMapped = Boolean(rfq && this.isVendorMappedToRfqBuyer(vendor, rfq));
+
+    const eligibility = this.checkVendorQuotationEligibility(vendor, rfq);
     const quotedRfqIds = Array.isArray(vendor.quotedRfqIds) ? [...vendor.quotedRfqIds] : [];
     const normalizedRfqId = rfqId ? String(rfqId).trim() : null;
     const alreadyQuoted = normalizedRfqId && quotedRfqIds.includes(normalizedRfqId);
@@ -1017,27 +1361,42 @@ class StoreService {
       quotedRfqIds.push(normalizedRfqId);
     }
 
+    // Also ensure RFQ is marked in unlockedRfqIds
+    const unlockedList = Array.isArray(vendor.unlockedRfqIds) ? [...vendor.unlockedRfqIds] : [];
+    if (normalizedRfqId && !unlockedList.includes(normalizedRfqId)) {
+      unlockedList.push(normalizedRfqId);
+    }
+    if (rfq && rfq.rfqNumber && !unlockedList.includes(String(rfq.rfqNumber))) {
+      unlockedList.push(String(rfq.rfqNumber));
+    }
+
     let newCredits = eligibility.freeCreditsRemaining;
-    if (!alreadyQuoted && !eligibility.isSubscribed) {
+    // If the credit was not previously consumed during unlock, deduct it now
+    if (!alreadyQuoted && !eligibility.isSubscribed && !isBuyerMapped) {
       newCredits = Math.max(0, eligibility.freeCreditsRemaining - 1);
     }
 
     vendor.freeQuotationCredits = newCredits;
+    vendor.freeRfqDownloadCredits = newCredits;
     vendor.quotedRfqIds = quotedRfqIds;
+    vendor.unlockedRfqIds = unlockedList;
 
     const updated = this.updateVendor(vendor.id, {
       freeQuotationCredits: newCredits,
+      freeRfqDownloadCredits: newCredits,
       quotedRfqIds,
+      unlockedRfqIds: unlockedList,
     });
 
     logger.info(
-      `Quotation credit updated for vendor ${vendor.name || vendor.id}: remaining ${newCredits} (RFQ ${rfqId || 'N/A'}, subscribed: ${eligibility.isSubscribed})`,
-      { vendorId: vendor.id, freeQuotationCredits: newCredits, isSubscribed: eligibility.isSubscribed },
+      `Quotation credit updated for vendor ${vendor.name || vendor.id}: remaining ${newCredits} (RFQ ${rfqId || 'N/A'}, subscribed: ${eligibility.isSubscribed}, buyerMapped: ${isBuyerMapped})`,
+      { vendorId: vendor.id, freeQuotationCredits: newCredits, isSubscribed: eligibility.isSubscribed, isBuyerMapped },
       'STORE_SERVICE'
     );
 
     return updated;
   }
+
 
   // ==========================================
   // ZOHO PAYMENT LINKS
@@ -1447,8 +1806,8 @@ class StoreService {
       createdAt: rfqData.createdAt || new Date().toISOString().replace('T', ' ').substring(0, 16) + ' UTC',
       // No hardcoded fallback date. A fixed '2026-09-20' was previously stamped on
       // any RFQ that arrived without one, so an RFQ could show a deadline the
-      // buyer had not set — and one that was already in the past.
-      deadline: rfqData.deadline || rfqData.targetDeliveryDate || null,
+      deadline: rfqData.deadline || rfqData.targetDeliveryDate || rfqData.target_delivery_date || null,
+      targetDeliveryDate: rfqData.targetDeliveryDate || rfqData.target_delivery_date || rfqData.deadline || null,
       // Budget was previously dropped here, so an RFQ saved through the API came
       // back from hydration with no budget at all: the portfolio value totalled
       // zero and the quote matrix crashed reading it. It is validated as a
@@ -1526,6 +1885,30 @@ class StoreService {
       },
     };
 
+    // Private vendor records belong only to the buyer account that uploaded
+    // them. Never carry another buyer's private roster entry onto this RFQ.
+    const foreignPrivateVendors = [];
+    newRFQ.assignedVendors = newRFQ.assignedVendors.filter((entry) => {
+      const vendor = entry && entry.id ? this.getVendorById(entry.id, 'all') : null;
+      if (!this.isVendorPrivateToDifferentBuyer(vendor || entry, newRFQ)) return true;
+      foreignPrivateVendors.push(vendor || entry);
+      return false;
+    });
+    if (foreignPrivateVendors.length > 0) {
+      logger.warn(
+        `Excluded ${foreignPrivateVendors.length} private vendor(s) owned by another buyer from RFQ ${newRFQ.rfqNumber}.`,
+        {
+          rfqNumber: newRFQ.rfqNumber,
+          vendorIds: foreignPrivateVendors.map((vendor) => vendor.id).filter(Boolean),
+        },
+        'STORE_SERVICE'
+      );
+      if (newRFQ.followUpData) {
+        newRFQ.followUpData.vendors = newRFQ.assignedVendors;
+        newRFQ.followUpData.totalInvited = newRFQ.assignedVendors.length;
+      }
+    }
+
     // Verify each vendor in assignedVendors against the RFQ's category signals.
     // If a vendor does not match the category:
     // 1. Exclude the vendor from the RFQ vendor shortlist (assignedVendors).
@@ -1555,26 +1938,9 @@ class StoreService {
       }
 
       for (const vendor of mismatched) {
-        const vendorEmail = vendor.email || (vendor.id && vendor.id.includes('@') ? vendor.id : null);
-        if (vendorEmail) {
-          this._background(
-            mailerService.sendVendorCategoryMismatchEmail(vendorEmail, {
-              rfq: newRFQ,
-              rfqNumber,
-              rfqTitle: newRFQ.title,
-              rfqCategory: newRFQ.category || rfqCategorySignals[0] || 'Procurement Category',
-              vendorName: vendor.contactPerson || vendor.name,
-              vendorCurrentCategory: vendor.majorCategory || (Array.isArray(vendor.minorCategories) ? vendor.minorCategories.join(', ') : 'Not specified'),
-              buyerAccountName: newRFQ.buyerAccountName,
-              buyerEmail,
-              cc: buyerEmail || undefined,
-            }),
-            'Failed to email category mismatch notice to vendor'
-          );
-        }
         this.addAuditLog({
           userEmail: buyerEmail || SYSTEM_ACTOR_EMAIL,
-          action: `Vendor ${vendor.name || vendor.id} excluded from RFQ shortlist due to category mismatch. Category update request sent.`,
+          action: `Vendor ${vendor.name || vendor.id} excluded from automatic RFQ matching due to category mismatch.`,
           rfqNumber,
         });
       }
@@ -1583,13 +1949,30 @@ class StoreService {
     // Enterprise QUA – V0 (Free Starter Trial) Flow:
     // When buyer raises RFQ from V0 (mode_0), RFQ is sent ONLY to Procucev vendors.
     // Buyer-uploaded vendors are excluded from V0 RFQs.
-    if (newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0') {
+    if (newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0' || newRFQ.sourcingMode === 'version_0') {
       const MAX_V0_CATEGORY_INVITES = 100;
       // Filter existing assignedVendors to strictly Procucev vendors
       newRFQ.assignedVendors = (Array.isArray(newRFQ.assignedVendors) ? newRFQ.assignedVendors : []).filter((v) => {
         const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
         return this.isProcucevVendor(resolved);
       });
+
+      const signals = this._rfqCategorySignals(newRFQ);
+      if (signals.length > 0) {
+        for (const v of this.vendors) {
+          if (this.isProcucevVendor(v)) {
+            const hasCategory = v.majorCategory || (Array.isArray(v.minorCategories) && v.minorCategories.length > 0);
+            const isMatch = signals.some((sig) => this.vendorCoversCategory(v, sig));
+            if (hasCategory && !isMatch) {
+              this.addAuditLog({
+                userEmail: buyerEmail || SYSTEM_ACTOR_EMAIL,
+                action: `Vendor ${v.name || v.id} excluded from automatic RFQ matching due to category mismatch.`,
+                rfqNumber,
+              });
+            }
+          }
+        }
+      }
 
       // Auto-populate category-matched Procucev verified vendors
       let procucevMatches = this.candidateVendorsForRFQ(newRFQ)
@@ -1648,7 +2031,7 @@ class StoreService {
     // meant to stay strictly private). mode_1 now only ever gets whatever
     // the client-supplied assignedVendors already contains (the buyer's own
     // roster, category-filtered on the frontend).
-    if (newRFQ.sourcingMode === 'mode_2' || newRFQ.source === 'email_gateway') {
+    if (newRFQ.sourcingMode === 'mode_2' || newRFQ.sourcingMode === 'v2' || newRFQ.sourcingMode === 'version_2' || newRFQ.source === 'email_gateway') {
       // Capped: a bulk-imported category can match thousands of vendors (seen
       // live: 3000+ on a single RFQ, a 787KB payload) — embedding all of them
       // in assignedVendors on every future read of this RFQ is exactly the
@@ -1693,6 +2076,7 @@ class StoreService {
           email: v.email || null,
           contactPerson: v.contactPerson || null,
           phone: v.phone || null,
+          source: v.source || 'procucev_network',
         }));
       if (additions.length > 0) {
         newRFQ.assignedVendors = [...newRFQ.assignedVendors, ...additions];
@@ -1700,6 +2084,74 @@ class StoreService {
         newRFQ.followUpData.vendors = newRFQ.assignedVendors;
       }
     }
+
+    // Enterprise QUA – Version 3 (mode_3 / v3 / version_3, "AI Autonomous Sourcing Plan"):
+    // Autonomous Procucev Network Sourcing with double-blind evaluation protocol.
+    // Dynamically retrieve category-matched Procucev verified vendors for Version 3 RFQs.
+    let mode3ProcucevCount = 0;
+    if (
+      newRFQ.sourcingMode === 'mode_3' ||
+      newRFQ.sourcingMode === 'v3' ||
+      newRFQ.sourcingMode === 'version_3'
+    ) {
+      const MAX_V3_CATEGORY_INVITES = 100;
+      let v3Matches = this.candidateVendorsForRFQ(newRFQ)
+        .filter((v) => this.isProcucevVendor(v))
+        .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
+
+      if (newRFQ.deliveryPincode) {
+        const MAX_MODE3_PINCODE_INVITES = 100;
+        const targetPincode = String(newRFQ.deliveryPincode).trim();
+        const pinMatches = v3Matches.filter(
+          (v) => v.pincode && String(v.pincode).trim() === targetPincode
+        );
+        const pinNonMatches = v3Matches.filter(
+          (v) => !(v.pincode && String(v.pincode).trim() === targetPincode)
+        );
+        v3Matches = [...pinMatches, ...pinNonMatches].slice(0, MAX_MODE3_PINCODE_INVITES);
+      } else {
+        v3Matches = v3Matches.slice(0, MAX_V3_CATEGORY_INVITES);
+      }
+      mode3ProcucevCount = v3Matches.length;
+    }
+
+    // Dynamically calculate and attach vendor count for Version 0, Version 2, and Version 3.
+    // V0: Procucev-network-only count (all invited vendors ARE Procucev vendors for mode_0).
+    // V2: Total invited count = buyer private roster + Procucev network (hybrid mode).
+    // V3: Total invited count = buyer private roster (or category-matched pool if not supplied).
+    let procucevVendorCount = 0;
+    const isV0 = newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0' || newRFQ.sourcingMode === 'version_0';
+    const isV2 = newRFQ.sourcingMode === 'mode_2' || newRFQ.sourcingMode === 'v2' || newRFQ.sourcingMode === 'version_2';
+    const isV3 = newRFQ.sourcingMode === 'mode_3' || newRFQ.sourcingMode === 'v3' || newRFQ.sourcingMode === 'version_3';
+
+    if (isV0) {
+      // V0: Every invited vendor is a Procucev network vendor — report total assigned.
+      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
+        ? (newRFQ.assignedVendors || []).length
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+    } else if (isV2) {
+      // V2 Hybrid: report the count of Procucev verified vendors that can assign / are assigned to this RFQ
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      const candidateProcucevCount = this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : candidateProcucevCount;
+    } else if (isV3) {
+      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
+        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      procucevVendorCount = procucevAssigned.length > 0
+        ? procucevAssigned.length
+        : mode3ProcucevCount > 0
+        ? mode3ProcucevCount
+        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+    }
+
+    newRFQ.procucevVendorCount = procucevVendorCount;
 
     this.rfqs.unshift(newRFQ);
     this._persistRFQ(newRFQ);
@@ -1743,16 +2195,24 @@ class StoreService {
     //   • After 6 hours   → Call reminder (logic kept, telephony deferred)
     //   • After 12 hours  → WhatsApp reminder
     //   • After 24 hours  → Email reminder
-    // Only fires for mode_1 and mode_2 (mode_3 has no auto-assigned vendors
-    // at creation time; inviteVendorsToRFQ schedules chasers when they are
-    // manually added later).
     if (
       Array.isArray(newRFQ.assignedVendors) &&
       newRFQ.assignedVendors.length > 0
     ) {
+      const resolvedVendors = newRFQ.assignedVendors.map((v) => {
+        const full = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return {
+          ...v,
+          phone: full.phone || full.mobile || full.mobileNumber || v.phone,
+          email: full.email || v.email,
+          name: full.name || v.name,
+          contactPerson: full.contactPerson || v.contactPerson,
+        };
+      });
+
       rfqChaserScheduler.scheduleRFQChasers(
         newRFQ,
-        newRFQ.assignedVendors,
+        resolvedVendors,
         (vendor) => this.checkVendorQuotationEligibility(vendor)
       );
     }
@@ -1820,27 +2280,160 @@ class StoreService {
       }
     }
 
-    // 'Quotes Received' isn't a real RFQItem status (the type only allows
-    // 'Parsing' | 'In Evaluation' | 'AI Recommended' | 'PO Generated' |
-    // 'Quotes Pending') — writing it here left every quoted RFQ in a status
-    // no screen recognises, so nothing ever showed the RFQ as under
-    // evaluation once a vendor bid. 'In Evaluation' is the real state a
-    // quote actually puts an RFQ into.
+    const isV0 =
+      rfq.sourcingMode === 'mode_0' ||
+      rfq.sourcingMode === 'v0' ||
+      rfq.sourcingMode === 'version_0';
+
     rfq.quotes = quotes;
     rfq.quotesCount = quotes.length;
+
+    const nextStatus = isV0 ? 'Quotes Received' : (rfq.status === 'PO Generated' ? 'PO Generated' : 'In Evaluation');
+
+    // Requirement 1: Automatic RFQ Closure as soon as 100% of invited vendors submit valid quotes
+    const assignedVendors = Array.isArray(rfq.assignedVendors) && rfq.assignedVendors.length > 0
+      ? rfq.assignedVendors
+      : (followUpData && Array.isArray(followUpData.vendors) ? followUpData.vendors : []);
+
+    const allInvitedSubmitted =
+      assignedVendors.length > 0 &&
+      assignedVendors.every((av) => {
+        if (!av) return false;
+        const avId = av.id || av.vendorId;
+        const avEmail = av.email;
+        const avName = av.name || av.vendorName;
+        return quotes.some((q) =>
+          (avId && String(q.vendorId) === String(avId)) ||
+          (avEmail && String(q.vendorEmail || '').toLowerCase() === String(avEmail).toLowerCase()) ||
+          (avName && String(q.vendorName || '').trim().toLowerCase() === String(avName).trim().toLowerCase())
+        );
+      });
+
+    let autoClosed = false;
+    let finalStatus = nextStatus;
+
+    if (allInvitedSubmitted && rfq.status !== 'Closed' && rfq.status !== 'PO Generated') {
+      finalStatus = 'Closed';
+      autoClosed = true;
+      logger.info(
+        `[AUTO_RFQ_CLOSURE] 100% of invited vendors (${assignedVendors.length}) submitted quotes for RFQ ${rfq.rfqNumber}. Closing RFQ immediately.`,
+        { rfqNumber: rfq.rfqNumber, quotesCount: quotes.length, invitedCount: assignedVendors.length },
+        'STORE_SERVICE'
+      );
+    }
 
     const updated = this.updateRFQ(rfq.id, {
       quotes,
       quotesCount: quotes.length,
-      status: rfq.status === 'PO Generated' ? 'PO Generated' : 'In Evaluation',
+      status: finalStatus,
+      ...(autoClosed ? { quotesHidden: false, closedAt: new Date().toISOString(), autoClosedReason: 'All invited vendors submitted quotes' } : {}),
       followUpData,
     });
 
-    // Tell the RFQ's owning buyer a quote has landed — in-app and by email.
-    this.notifyBuyerOfQuote(rfq, quote);
-    this.emailQuoteToBuyer(rfq, quote);
+    if (autoClosed) {
+      this.cancelDelayedQuoteTimers(rfq.id);
+      this.notifyBuyerOfAutoClosureAndScheduleComparison(updated, quotes);
+    } else {
+      // Tell the RFQ's owning buyer a quote has landed — in-app and by email.
+      this.notifyBuyerOfQuote(rfq, quote);
+      this.emailQuoteToBuyer(rfq, quote);
+    }
 
     return updated;
+  }
+
+  cancelDelayedQuoteTimers(rfqId) {
+    if (!rfqId || !this._delayedQuoteTimers) return;
+    const timers = this._delayedQuoteTimers.get(rfqId);
+    if (Array.isArray(timers)) {
+      timers.forEach((t) => clearTimeout(t));
+      this._delayedQuoteTimers.delete(rfqId);
+    }
+  }
+
+  notifyBuyerOfAutoClosureAndScheduleComparison(rfq, quotes) {
+    if (!rfq) return;
+    const buyerEmail = this.resolveBuyerEmailForRFQ(rfq);
+    const buyer = (rfq.buyerAccountId && this.buyerAccounts.find((a) => a.id === rfq.buyerAccountId)) || {
+      id: rfq.buyerAccountId || null,
+      corporateEmail: buyerEmail,
+      organizationName: rfq.buyerAccountName || rfq.buyerName || 'Buyer',
+      phone: rfq.buyerPhone || null,
+    };
+
+    // 1. In-app notification for buyer
+    if (rfq.buyerAccountId) {
+      const notification = this._buildNotification({
+        recipientType: 'buyer',
+        recipientId: rfq.buyerAccountId,
+        kind: 'rfq_auto_closed',
+        rfq,
+        title: `RFQ ${rfq.rfqNumber} Auto-Closed (100% Quotes Received)`,
+        message: `All ${quotes.length} invited vendor(s) have submitted quotes for RFQ ${rfq.rfqNumber} — ${rfq.title}. RFQ is closed. Comparative evaluation will be ready in 5 minutes.`,
+        meta: {
+          quotesCount: quotes.length,
+          autoClosed: true,
+        },
+      });
+      this.notifications.unshift(notification);
+      this._persistNotification(notification);
+    }
+
+    // 2. Immediate RFQ Auto-Closure Acknowledgement Email to buyer
+    if (buyer.corporateEmail) {
+      this._background(
+        mailerService.sendRfqAutoClosureAcknowledgementEmail(buyer.corporateEmail, {
+          rfq,
+          quotesCount: quotes.length,
+          recipientName: buyer.organizationName,
+        }),
+        'Failed to email auto-closure acknowledgement to buyer'
+      );
+    }
+
+    // 3. Schedule 5-Minute Comparison-Ready Notification (Email + SMS)
+    const FIVE_MINUTES_MS = 5 * 60 * 1000;
+    const timer = setTimeout(() => {
+      try {
+        const freshRfq = this.getRFQById(rfq.id) || rfq;
+        logger.info(
+          `[AUTO_CLOSURE] 5-minute comparison delay complete for RFQ ${freshRfq.rfqNumber}. Dispatching final comparison email and SMS.`,
+          { rfqNumber: freshRfq.rfqNumber, quotesCount: quotes.length, buyerEmail: buyer.corporateEmail },
+          'STORE_SERVICE'
+        );
+
+        // Send comparison email
+        if (buyer.corporateEmail) {
+          this._background(
+            mailerService.sendRfqFinalComparisonEmail(buyer.corporateEmail, {
+              rfq: freshRfq,
+              quotes,
+              recipientName: buyer.organizationName,
+            }),
+            'Failed to dispatch 5-minute comparison email to buyer'
+          );
+        }
+
+        // Send comparison SMS to buyer's phone
+        const buyerPhone = buyer.phone || buyer.corporatePhone || freshRfq.buyerPhone;
+        if (buyerPhone) {
+          this._background(
+            smsService.sendBuyerComparisonSms(buyerPhone, {
+              rfqNumber: freshRfq.rfqNumber,
+              quotesCount: quotes.length,
+              buyerName: buyer.organizationName,
+            }),
+            'Failed to dispatch 5-minute comparison SMS to buyer'
+          );
+        }
+      } catch (err) {
+        logger.error(`Error in 5-minute comparison notification dispatch for ${rfq.rfqNumber}`, err, 'STORE_SERVICE');
+      }
+    }, FIVE_MINUTES_MS);
+
+    if (timer && timer.unref) {
+      timer.unref();
+    }
   }
 
   addInquiryToRFQ(rfqId, inquiry) {
@@ -2139,7 +2732,6 @@ class StoreService {
       s.includes('ingestion') ||
       s.includes('purchase_dump') ||
       id.startsWith('v-hist-') ||
-      id.startsWith('v-navin-') ||
       id.startsWith('vm-') ||
       id.startsWith('v-ingest-') ||
       id.startsWith('v-buyer-')
@@ -2191,6 +2783,78 @@ class StoreService {
   }
 
   /**
+   * Whether a vendor was uploaded privately by a buyer (via Excel, PO ingestion, ERP dump, or buyer roster).
+   */
+  isBuyerUploaded(vendor) {
+    if (!vendor) return false;
+    const src = String(vendor.source || '').toLowerCase();
+    const buyerKeywords = [
+      'buyer',
+      'client',
+      'excel',
+      'po_ingestion',
+      'ingestion',
+      'dump',
+      'historical',
+      'manual',
+      'erp',
+      'upload',
+      'vendor_master',
+      'raw_ingestion',
+    ];
+    if (src && buyerKeywords.some((k) => src.includes(k))) {
+      return true;
+    }
+    if (vendor.buyerId || vendor.buyerAccountId || vendor.addedByBuyerCompany) return true;
+    const vid = String(vendor.id || '');
+    if (vid.startsWith('v-hist-') || vid.startsWith('vm-') || vid.startsWith('v-ingest-') || vid.startsWith('v-buyer-')) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Whether a vendor belongs to the Procucev Network vendor pool (mode_0 / V0).
+   * Private buyer-uploaded vendors (having buyerId, buyerAccountId, or addedByBuyerCompany)
+   * are excluded from the public Procucev Network pool.
+   */
+  isProcucevVendor(vendor) {
+    if (!vendor) return false;
+    if (this.isBuyerUploaded(vendor)) return false;
+    return true;
+  }
+
+  /**
+   * Dynamically retrieves the count of Procucev verified / network vendors associated
+   * with the given RFQ and its sourcing mode.
+   * @param {Object} rfq
+   * @returns {number}
+   */
+  getProcucevVendorCount(rfq) {
+    if (!rfq) return 0;
+    if (typeof rfq.procucevVendorCount === 'number') {
+      return rfq.procucevVendorCount;
+    }
+    const mode = rfq.sourcingMode || '';
+    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+    const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+    const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+
+    if (isV0 || isV2) {
+      const assigned = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
+      const procucevAssigned = assigned.filter((v) => {
+        const resolved = (v && v.id ? this.getVendorById(v.id, 'all') : null) || v;
+        return this.isProcucevVendor(resolved);
+      });
+      if (procucevAssigned.length > 0) return procucevAssigned.length;
+    }
+    if (isV0 || isV2 || isV3) {
+      return this.candidateVendorsForRFQ(rfq).filter((v) => this.isProcucevVendor(v)).length;
+    }
+    return 0;
+  }
+
+  /**
    * Whether an RFQ should reach a given vendor.
    *
    * True when the vendor was explicitly added by the RFQ's buyer
@@ -2225,6 +2889,17 @@ class StoreService {
     // same rule candidateVendorsForRFQ/vendorCoversCategory already apply
     // to the network-wide invite pool — a private roster relationship
     // grants eligibility, it never bypasses relevance.
+    // Buyer-specific vendor access rule:
+    // When a buyer uploads or adds a vendor to their vendor list, that vendor can view
+    // RFQs created by that respective buyer.
+    if (this.isVendorMappedToRfqBuyer(vendor, rfq)) {
+      const signals = this._rfqCategorySignals(rfq);
+      if (signals.length === 0 || !vendor.majorCategory || signals.some((c) => this.vendorCoversCategory(vendor, c))) {
+        return true;
+      }
+      return this._isInvitedVendor(vendor, rfq);
+    }
+
     if (
       vendor.addedByBuyerCompany &&
       rfq.buyerAccountName &&
@@ -2260,6 +2935,7 @@ class StoreService {
   candidateVendorsForRFQ(rfq) {
     const signals = this._rfqCategorySignals(rfq);
     return this.vendors
+      .filter((v) => !this.isVendorPrivateToDifferentBuyer(v, rfq))
       .filter((v) => signals.some((c) => this.vendorCoversCategory(v, c)))
       .map((v) => ({ ...v, alreadyInvited: this._isInvitedVendor(v, rfq) }));
   }
@@ -2269,10 +2945,15 @@ class StoreService {
    *
    * Merges the given vendor ids into `assignedVendors` (dedup'd against
    * whoever's already on it), then — for each vendor newly added — fires the
-   * same simulated multi-channel chaser outreach `createRFQ` fires for an
-   * RFQ's initial assignedVendors, a real in-app notification, and a real
-   * RFQ-invite email. Unknown vendor ids are silently skipped rather than
-   * failing the whole batch.
+   * same simulated multi-channel chaser outreach `createRFQ` fires fo  /**
+   * Inviting specific vendors to an RFQ (Category Manager manual assignment or override).
+   *
+   * Only invited vendors (plus any direct buyer roster matches) can see, be
+   * notified about, or quote this RFQ afterward.
+   *
+   * Category Manager manual assignments allow manual override even if category
+   * does not automatically match, logging the override and sending normal RFQ
+   * invitation emails. Category mismatch emails are disabled.
    */
   async inviteVendorsToRFQ(rfqId, vendorIds, actorEmail) {
     const rfq = this.getRFQById(rfqId);
@@ -2280,68 +2961,51 @@ class StoreService {
 
     const existing = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
     const newlyInvited = [];
-    const mismatchedVendors = [];
+    const overrideVendors = [];
+    const excludedVendors = [];
     const signals = this._rfqCategorySignals(rfq);
 
     for (const id of Array.isArray(vendorIds) ? vendorIds : []) {
-      let vendor = this.getVendorById(id);
+      let vendor = this.getVendorById(id, 'all');
       if (!vendor) {
-        // this.vendors is a capped in-memory subset (see getVendorsPageFromDB's
-        // own comment on why — 600k+ real vendors can't all live in memory),
-        // but the CM's "All Vendors" picker searches D1 directly and can
-        // surface an id that was never in that subset. Falls back to D1
-        // before giving up, and caches the result so a repeat invite (or any
-        // other in-memory lookup) finds it without another round trip.
         vendor = await domainQueries.getVendorByIdFromDB(id);
         if (vendor && !this.vendors.some((v) => v.id === vendor.id)) {
           this.vendors.push(vendor);
         }
       }
       if (!vendor) continue;
+      if (this.isVendorPrivateToDifferentBuyer(vendor, rfq)) {
+        excludedVendors.push({
+          id: vendor.id,
+          name: vendor.name,
+          reason: 'This private vendor belongs to a different buyer account.',
+        });
+        logger.warn(
+          `Rejected invitation of private vendor ${vendor.id} owned by another buyer to RFQ ${rfq.rfqNumber}.`,
+          { rfqNumber: rfq.rfqNumber, vendorId: vendor.id },
+          'STORE_SERVICE'
+        );
+        continue;
+      }
       if (this._isInvitedVendor(vendor, rfq)) continue;
 
       const hasCategory = vendor.majorCategory || (Array.isArray(vendor.minorCategories) && vendor.minorCategories.length > 0);
       const isMatch = signals.length === 0 || !hasCategory || signals.some((c) => this.vendorCoversCategory(vendor, c));
 
       if (!isMatch) {
-        mismatchedVendors.push(vendor);
-        continue;
+        overrideVendors.push(vendor);
       }
 
       newlyInvited.push(vendor);
     }
 
-    // For any mismatched vendor: dispatch update email to vendor (with buyer cc)
-    for (const vendor of mismatchedVendors) {
-      if (vendor.email) {
-        const buyerEmail = this.resolveBuyerEmailForRFQ(rfq);
-        this._background(
-          mailerService.sendVendorCategoryMismatchEmail(vendor.email, {
-            rfq,
-            rfqNumber: rfq.rfqNumber,
-            rfqTitle: rfq.title,
-            rfqCategory: rfq.category || signals[0] || 'Procurement Category',
-            vendorName: vendor.contactPerson || vendor.name,
-            vendorCurrentCategory: vendor.majorCategory || (Array.isArray(vendor.minorCategories) ? vendor.minorCategories.join(', ') : 'Not specified'),
-            buyerAccountName: rfq.buyerAccountName,
-            buyerEmail,
-            cc: buyerEmail || undefined,
-          }),
-          'Failed to email category mismatch notice to vendor'
-        );
-      }
-      this.addAuditLog({
-        userEmail: actorEmail || SYSTEM_ACTOR_EMAIL,
-        action: `Vendor ${vendor.name} (${vendor.id}) excluded from RFQ shortlist due to category mismatch. Profile update email sent.`,
-        rfqNumber: rfq.rfqNumber,
-      });
-    }
-
     if (newlyInvited.length === 0) {
-      if (mismatchedVendors.length === 0) {
-        return { updatedRFQ: rfq, invitedCount: 0 };
-      }
-      return { updatedRFQ: rfq, invitedCount: 0, excludedCount: mismatchedVendors.length, excludedVendors: mismatchedVendors };
+      return {
+        updatedRFQ: rfq,
+        invitedCount: 0,
+        excludedCount: excludedVendors.length,
+        excludedVendors,
+      };
     }
 
     const entries = newlyInvited.map((v) => ({
@@ -2353,19 +3017,21 @@ class StoreService {
     }));
     const updatedRFQ = this.updateRFQ(rfq.id, { assignedVendors: [...existing, ...entries] });
 
-    this.addAuditLog({
-      userEmail: actorEmail || SYSTEM_ACTOR_EMAIL,
-      action: `Invited ${newlyInvited.length} vendor(s) to ${rfq.rfqNumber}`,
-      rfqNumber: rfq.rfqNumber,
-    });
-
     for (const vendor of newlyInvited) {
-      // Simulated multi-channel chaser outreach — same mechanism createRFQ
-      // already fires for anyone on assignedVendors.
+      const isOverride = overrideVendors.some((ov) => ov.id === vendor.id);
+      this.addAuditLog({
+        userEmail: actorEmail || SYSTEM_ACTOR_EMAIL,
+        action: isOverride
+          ? `Category Manager manual override: Vendor ${vendor.name} (${vendor.id}) invited to RFQ ${rfq.rfqNumber}`
+          : `Category Manager manual assignment: Vendor ${vendor.name} (${vendor.id}) invited to RFQ ${rfq.rfqNumber}`,
+        rfqNumber: rfq.rfqNumber,
+      });
+
+      // Simulated multi-channel chaser outreach
       const chaserLogs = simulateChaserOutreach(updatedRFQ, vendor);
       chaserLogs.forEach((log) => this.addAIFeedItem(log));
 
-      // Real in-app notification, same shape notifyVendorsOfNewRFQ builds.
+      // Real in-app notification
       const categoryLabel = updatedRFQ.category || this._rfqCategorySignals(updatedRFQ)[0] || 'your categories';
       const notification = this._buildNotification({
         recipientType: 'vendor',
@@ -2379,7 +3045,7 @@ class StoreService {
       this.notifications.unshift(notification);
       this._persistNotification(notification);
 
-      // Real invite email, if the vendor has an address.
+      // Real invite email
       if (vendor.email) {
         const buyerEmail = this.resolveBuyerEmailForRFQ(updatedRFQ);
         const creditInfo = this.checkVendorQuotationEligibility(vendor);
@@ -2400,26 +3066,27 @@ class StoreService {
           'Failed to email RFQ invite to vendor'
         );
       }
-
-      // Multi-channel reminder sequence:
-      //   • Within 5 minutes → SMS reminder
-      //   • After 6 hours   → Call reminder (logic kept, telephony deferred)
-      //   • After 12 hours  → WhatsApp reminder
-      //   • After 24 hours  → Email reminder
     }
+
+    this.addAuditLog({
+      userEmail: actorEmail || SYSTEM_ACTOR_EMAIL,
+      action: `Invited ${newlyInvited.length} vendor(s) to ${rfq.rfqNumber}`,
+      rfqNumber: rfq.rfqNumber,
+    });
 
     return {
       updatedRFQ,
       invitedCount: newlyInvited.length,
-      excludedCount: mismatchedVendors.length,
-      excludedVendors: mismatchedVendors,
+      overrideCount: overrideVendors.length,
+      excludedCount: excludedVendors.length,
+      excludedVendors,
     };
   }
 
   /**
    * Validates vendor candidates against RFQ category signals.
    * Shortlists vendors matching the category, and excludes mismatched vendors
-   * while dispatching profile update request emails to them.
+   * without sending mismatch emails.
    */
   validateAndShortlistVendors(rfq, vendorList, buyerEmail) {
     if (!rfq || !Array.isArray(vendorList)) return { shortlisted: [], excluded: [] };
@@ -2440,26 +3107,9 @@ class StoreService {
     }
 
     for (const vendor of excluded) {
-      const vendorEmail = vendor.email || (vendor.id && vendor.id.includes('@') ? vendor.id : null);
-      if (vendorEmail) {
-        this._background(
-          mailerService.sendVendorCategoryMismatchEmail(vendorEmail, {
-            rfq,
-            rfqNumber: rfq.rfqNumber,
-            rfqTitle: rfq.title,
-            rfqCategory: rfq.category || signals[0] || 'Procurement Category',
-            vendorName: vendor.contactPerson || vendor.name,
-            vendorCurrentCategory: vendor.majorCategory || (Array.isArray(vendor.minorCategories) ? vendor.minorCategories.join(', ') : 'Not specified'),
-            buyerAccountName: rfq.buyerAccountName,
-            buyerEmail,
-            cc: buyerEmail || undefined,
-          }),
-          'Failed to email category mismatch notice to vendor'
-        );
-      }
       this.addAuditLog({
         userEmail: buyerEmail || SYSTEM_ACTOR_EMAIL,
-        action: `Vendor ${vendor.name || vendor.id} excluded from RFQ shortlist due to category mismatch. Category update request sent.`,
+        action: `Vendor ${vendor.name || vendor.id} excluded from automatic RFQ matching due to category mismatch.`,
         rfqNumber: rfq.rfqNumber,
       });
     }
@@ -2832,6 +3482,11 @@ class StoreService {
    */
   isWithin48HourWindow(rfq) {
     if (!rfq || rfq.status === 'Closed') return false;
+    const isV0 =
+      rfq.sourcingMode === 'mode_0' ||
+      rfq.sourcingMode === 'v0' ||
+      rfq.sourcingMode === 'version_0';
+    if (isV0) return false;
     if (rfq.quotesHidden) return true;
     const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
     let createdAtMs = 0;
@@ -2921,10 +3576,17 @@ class StoreService {
       organizationName: rfq.buyerAccountName || rfq.buyerName || 'Buyer',
     };
 
+    const isV0 =
+      rfq.sourcingMode === 'mode_0' ||
+      rfq.sourcingMode === 'v0' ||
+      rfq.sourcingMode === 'version_0';
+
     const isPortal = this.isPortalRFQ(rfq);
     const in48hWindow = this.isWithin48HourWindow(rfq);
 
-    if (isPortal && in48hWindow) {
+    // For V0: Quotes are sent directly to the buyer's email immediately (48-hour restriction does not apply to V0).
+    // For non-V0 Portal RFQs within 48h: Delay email dispatch.
+    if (isPortal && in48hWindow && !isV0) {
       const delayMs = this.getRemaining48HourMs(rfq);
       logger.info(
         `[48H_BID_RULE] Portal RFQ ${rfq.rfqNumber}: stopped quote email to buyer (${buyerEmail}) for 48 hours. Scheduled dispatch in ${Math.round(delayMs / 1000 / 60)} minutes.`,
@@ -3180,34 +3842,59 @@ class StoreService {
       }
     }
 
+    const isMappedRecord = (rec) => {
+      if (rec.categoriesMappedByBuyer === true) return true;
+      if (rec.categoriesMappedByBuyer === false) return false;
+      const maj = (rec.majorCategory || '').trim();
+      return Boolean(maj && !maj.toLowerCase().includes('uncategorized'));
+    };
+
     /** Template A when the vendor has a buyer-mapped category, else Template B. */
-    const buildMappingEmail = (rec, { to, recipientName, vendorCode }) => {
-      const hasMapping = rec.categoriesMappedByBuyer === true || Boolean((rec.majorCategory || '').trim());
+    const buildMappingEmail = (rec, { to, recipientName, vendorCode, tempPassword, contactPhone }) => {
+      const hasMapping = isMappedRecord(rec);
       if (hasMapping) {
         const override = dispatchTemplates.category_mapped || {};
-        return mailerService.buildVendorCategoryMappingEmail({
+        return {
+          templateType: 'Template A',
+          payload: mailerService.buildVendorCategoryMappingEmail({
+            to,
+            recipientName,
+            buyerOrganizationName,
+            vendorCode,
+            majorCategory: rec.majorCategory || 'Engineering Spares - Mechanical',
+            minorCategories: Array.isArray(rec.minorCategories) ? rec.minorCategories : [],
+            customSubject: override.subject,
+            customMessage: override.message,
+            tempPassword,
+            contactPhone,
+          }),
+        };
+      }
+      const override = dispatchTemplates.self_map_required || {};
+      return {
+        templateType: 'Template B',
+        payload: mailerService.buildVendorSelfMappingEmail({
           to,
           recipientName,
           buyerOrganizationName,
           vendorCode,
-          majorCategory: rec.majorCategory,
-          minorCategories: Array.isArray(rec.minorCategories) ? rec.minorCategories : [],
           customSubject: override.subject,
           customMessage: override.message,
-        });
-      }
-      const override = dispatchTemplates.self_map_required || {};
-      return mailerService.buildVendorSelfMappingEmail({
-        to,
-        recipientName,
-        buyerOrganizationName,
-        vendorCode,
-        customSubject: override.subject,
-        customMessage: override.message,
-      });
+          tempPassword,
+          contactPhone,
+        }),
+      };
     };
 
-    vendorRecords.forEach((rec, idx) => {
+    let mappedCount = 0;
+    let mappedEmailsSent = 0;
+    let unmappedCount = 0;
+    let unmappedEmailsSent = 0;
+    const failedEmails = [];
+    const vendorsToEmail = [];
+
+    for (let idx = 0; idx < vendorRecords.length; idx++) {
+      const rec = vendorRecords[idx];
       const name = (rec.companyName || rec.name || '').trim();
       const email = (rec.email || '').trim();
 
@@ -3220,40 +3907,78 @@ class StoreService {
               ? 'Missing company name.'
               : 'Missing contact email.',
         });
-        return;
+        continue;
       }
 
-      // Check duplicates only within this buyer's scope (not global platform)
-      // Require both email AND name to match for a duplicate
-      const existing = this.vendors.find(
-        (v) => v.buyerId === buyerId &&
-          v.email && v.email.toLowerCase() === email.toLowerCase() &&
-          v.name && v.name.toLowerCase() === name.toLowerCase()
-      );
-      if (existing) {
-        if (existing.email && existing.onboardingEmailStatus !== 'sent') {
-          const emailPayload = buildMappingEmail(rec, {
-            to: existing.email,
-            recipientName: existing.contactPerson || existing.name,
-            vendorCode: existing.id,
-          });
-          mailerService.sendVendorIngestionEmail(emailPayload, 'onboarding')
-            .then((delivery) => {
-              if (delivery.sent) {
-                this.updateVendor(existing.id, { onboardingEmailStatus: 'sent' });
-                logger.info(`Onboarding email sent for existing vendor ${existing.email}`, { vendorId: existing.id }, 'STORE_SERVICE');
-              }
-            })
-            .catch((err) => {
-              logger.error(`Error sending onboarding email to ${existing.email}`, err, 'STORE_SERVICE');
-            });
-        }
-        return;
-      }
+      const isMapped = isMappedRecord(rec);
+      if (isMapped) mappedCount++;
+      else unmappedCount++;
 
       const minorCategories = Array.isArray(rec.minorCategories) ? rec.minorCategories : [];
+      const majorCategory = (rec.majorCategory || '').trim() || null;
+
+      // Check if vendor already exists in memory or in DB
+      let existing = this.vendors.find(
+        (v) => v.email && v.email.toLowerCase() === email.toLowerCase()
+      );
+      if (!existing && pool.hasStorage()) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          existing = await domainQueries.getVendorByEmailFromDB(email);
+          if (existing && !this.vendors.some((v) => v.id === existing.id)) {
+            this.vendors.push(existing);
+          }
+        } catch (e) {
+          logger.error('Failed to lookup vendor by email from DB', e, 'STORE_SERVICE');
+        }
+      }
+
+      if (existing) {
+        const sBuyerId = buyerId ? String(buyerId).toLowerCase() : null;
+        const sBuyerEmail = buyerEmail ? String(buyerEmail).toLowerCase() : null;
+        const alreadyScopedToThisBuyer = Boolean(
+          (sBuyerId && (
+            (existing.buyerId && String(existing.buyerId).toLowerCase() === sBuyerId) ||
+            (existing.buyerAccountId && String(existing.buyerAccountId).toLowerCase() === sBuyerId)
+          )) ||
+          (sBuyerEmail && existing.buyerEmail && String(existing.buyerEmail).toLowerCase() === sBuyerEmail)
+        );
+
+        existing.buyerId = buyerId || existing.buyerId || null;
+        existing.buyerAccountId = buyerId || existing.buyerAccountId || null;
+        existing.buyerEmail = buyerEmail || existing.buyerEmail || null;
+        if (name) existing.name = name;
+        if (rec.contactPerson) existing.contactPerson = (rec.contactPerson || '').trim();
+        if (rec.phone) existing.phone = (rec.phone || '').trim();
+        if (rec.location || rec.address) existing.location = (rec.location || rec.address || '').trim();
+        if (majorCategory) existing.majorCategory = majorCategory;
+        if (minorCategories.length > 0) {
+          existing.minorCategories = minorCategories;
+          existing.clientMappedCategories = minorCategories;
+        }
+        if (Number.isFinite(Number(rec.rating))) existing.rating = Number(rec.rating);
+        if (Number.isFinite(Number(rec.score))) existing.score = Number(rec.score);
+        existing.hasRecord = true;
+        existing.isExistingInDatabase = true;
+
+        if (pool.hasStorage()) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            await domainQueries.upsertVendorInDB(existing);
+          } catch (err) {
+            logger.error('Failed to update existing vendor in DB', err, 'STORE_SERVICE');
+          }
+        }
+
+        if (!alreadyScopedToThisBuyer) {
+          importedCount++;
+        }
+        vendorsToEmail.push({ rec, vendor: existing, isNew: !alreadyScopedToThisBuyer, isMapped });
+        continue;
+      }
+
       const newVendor = {
-        id: `v-hist-${Date.now()}-${idx}`,
+        id: `v-hist-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
         buyerId: buyerId || null,
         buyerAccountId: buyerId || null,
         buyerEmail: buyerEmail || null,
@@ -3261,7 +3986,7 @@ class StoreService {
         email,
         contactPerson: (rec.contactPerson || '').trim() || null,
         phone: (rec.phone || '').trim() || null,
-        majorCategory: (rec.majorCategory || '').trim() || null,
+        majorCategory,
         minorCategories,
         location: (rec.location || rec.address || '').trim() || null,
         // Absent, not assumed. A supplier arriving from a spend extract has not
@@ -3280,99 +4005,24 @@ class StoreService {
         isCategoryAligned: false,
       };
       this.vendors.push(newVendor);
-      createdThisRun.push({ row: idx + 1, vendor: newVendor });
+      createdThisRun.push({ row: idx + 1, vendor: newVendor, isMapped });
       importedCount++;
-
-      // Create identity database account for the vendor so they can log in —
-      // but only if one doesn't already exist. insertVendorAccount resets
-      // password+phone on an *existing* identity account (correct for the
-      // CLI provisioning script it also serves; wrong here, where the row is
-      // just a historical-purchase-dump entry that may well already have a
-      // real login). Confirmed live: this exact class of call silently
-      // clobbered a real vendor's password with a random one they were never
-      // told, via bulkAddVendors' sibling path — see that fix's comment.
-      // Checked up front (not just logged after the fact once
-      // insertVendorAccount's own `result.created === false` came back,
-      // which is what this used to do) so the reset never happens at all.
-      if (newVendor.email) {
-        // The whole sequence below is handed to waitUntil (via _background),
-        // via a real async IIFE with genuine awaits — the previous version
-        // used nested .then()/.catch() chains where the inner
-        // insertVendorAccount/sendVendorIngestionEmail calls were never
-        // returned from their enclosing .then() callback, so even wrapping
-        // the outer promise wouldn't have covered them: the outer chain
-        // resolved as soon as its synchronous body finished, not once the
-        // inner unawaited calls actually completed. Confirmed live (same
-        // root cause as addVendor's own onboarding call, see that comment):
-        // a buyer-added vendor's identity account and onboarding email
-        // silently never happened.
-        this._background(
-          (async () => {
-            const existingIdentity = await identityQueries.findUserByEmail(newVendor.email).catch((err) => {
-              logger.error(`Failed to check existing identity for ${newVendor.email}`, err, 'STORE_SERVICE');
-              return null;
-            });
-            if (existingIdentity) {
-              logger.info(
-                `Skipped onboarding identity provisioning for ${newVendor.email}: an identity account already exists`,
-                { vendorId: newVendor.id },
-                'STORE_SERVICE'
-              );
-              return;
-            }
-
-            const tempPassword = this._generateTempPassword();
-
-            try {
-              const result = await identityQueries.insertVendorAccount({
-                email: newVendor.email,
-                password: tempPassword,
-                phone: newVendor.phone || null,
-                fullName: newVendor.contactPerson || newVendor.name,
-                organizationName: newVendor.name,
-                createdBy: 'vendor-ingestion',
-              });
-              if (result.created) {
-                logger.info(`Vendor identity account created for ${newVendor.email}`, { vendorId: newVendor.id }, 'STORE_SERVICE');
-              }
-            } catch (err) {
-              logger.error(`Failed to create vendor identity account for ${newVendor.email}`, err, 'STORE_SERVICE');
-              return;
-            }
-
-            const emailPayload = buildMappingEmail(rec, {
-              to: newVendor.email,
-              recipientName: newVendor.contactPerson || newVendor.name,
-              vendorCode: newVendor.id,
-            });
-
-            try {
-              const delivery = await mailerService.sendVendorIngestionEmail(emailPayload, 'onboarding');
-              if (delivery.sent) {
-                this.updateVendor(newVendor.id, { onboardingEmailStatus: 'sent', tempPassword });
-                logger.info(`Onboarding email sent to ${newVendor.email}`, { vendorId: newVendor.id }, 'STORE_SERVICE');
-              } else {
-                logger.warn(`Failed to send onboarding email to ${newVendor.email}`, { reason: delivery.reason }, 'STORE_SERVICE');
-              }
-            } catch (err) {
-              logger.error(`Error sending onboarding email to ${newVendor.email}`, err, 'STORE_SERVICE');
-            }
-          })(),
-          `Onboarding provisioning failed for ${newVendor.email}`
-        );
-      }
-    });
+      vendorsToEmail.push({ rec, vendor: newVendor, isNew: true, isMapped });
+    }
 
     // Confirm each new vendor actually landed in Postgres before reporting
     // success for it — a row whose email collided with one from a different
     // buyer (or the marketplace directory) is rolled back here instead of
     // staying an in-memory-only phantom.
-    for (const { row, vendor } of createdThisRun) {
+    for (const { row, vendor, isMapped } of createdThisRun) {
       try {
         await this.confirmVendorPersisted(vendor);
       } catch (err) {
         this.vendors = this.vendors.filter((v) => v.id !== vendor.id);
         importedCount--;
+        if (isMapped) mappedCount--; else unmappedCount--;
+        const toEmailIdx = vendorsToEmail.findIndex((item) => item.vendor.id === vendor.id);
+        if (toEmailIdx !== -1) vendorsToEmail.splice(toEmailIdx, 1);
         skipped.push({
           row,
           reason: err && err.statusCode === 409
@@ -3382,20 +4032,115 @@ class StoreService {
       }
     }
 
+    // Process email dispatches for both mapped (Template A) and unmapped (Template B) vendors in a single action
+    for (const { rec, vendor, isNew, isMapped } of vendorsToEmail) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!vendor.email || !emailRegex.test(vendor.email)) {
+        failedEmails.push({
+          vendorId: vendor.id,
+          vendorName: vendor.name,
+          email: vendor.email || '',
+          template: isMapped ? 'Template A' : 'Template B',
+          reason: !vendor.email ? 'Vendor record has no registered email address.' : 'Invalid email address format.',
+        });
+        continue;
+      }
+
+      // Avoid duplicate emails on retried actions if already confirmed sent
+      if (vendor.onboardingEmailStatus === 'sent') {
+        if (isMapped) mappedEmailsSent++;
+        else unmappedEmailsSent++;
+        logger.info(`Skipping duplicate onboarding email to ${vendor.email} (already sent)`, { vendorId: vendor.id }, 'STORE_SERVICE');
+        continue;
+      }
+
+      let tempPassword = this._generateTempPassword();
+      try {
+        const existingIdentity = await identityQueries.findUserByEmail(vendor.email).catch(() => null);
+        if (existingIdentity) {
+          logger.info(`Skipped onboarding identity provisioning for ${vendor.email}: an identity account already exists`, { vendorId: vendor.id }, 'STORE_SERVICE');
+          if (isNew) {
+            continue;
+          }
+        } else {
+          const result = await identityQueries.insertVendorAccount({
+            email: vendor.email,
+            password: tempPassword,
+            phone: vendor.phone || null,
+            fullName: vendor.contactPerson || vendor.name,
+            organizationName: vendor.name,
+            createdBy: 'vendor-ingestion',
+          });
+          if (result && result.created) {
+            logger.info(`Vendor identity account created for ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
+          }
+        }
+      } catch (idErr) {
+        logger.error(`Failed to verify or provision identity for ${vendor.email}`, idErr, 'STORE_SERVICE');
+      }
+
+      const { templateType, payload } = buildMappingEmail(rec, {
+        to: vendor.email,
+        recipientName: vendor.contactPerson || vendor.name,
+        vendorCode: vendor.id,
+        tempPassword,
+        contactPhone: String(rec.phone || vendor.phone || '').trim(),
+      });
+
+      try {
+        const delivery = await mailerService.sendVendorIngestionEmail(payload, 'onboarding');
+        if (delivery && delivery.sent) {
+          this.updateVendor(vendor.id, { onboardingEmailStatus: 'sent', tempPassword });
+          if (isMapped) mappedEmailsSent++;
+          else unmappedEmailsSent++;
+          logger.info(`Onboarding email (${templateType}) sent to ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
+        } else {
+          failedEmails.push({
+            vendorId: vendor.id,
+            vendorName: vendor.name,
+            email: vendor.email,
+            template: templateType,
+            reason: (delivery && delivery.reason) || 'Email service rejected delivery',
+          });
+          logger.warn(`Failed to send onboarding email to ${vendor.email}`, { reason: delivery?.reason }, 'STORE_SERVICE');
+        }
+      } catch (sendErr) {
+        failedEmails.push({
+          vendorId: vendor.id,
+          vendorName: vendor.name,
+          email: vendor.email,
+          template: templateType,
+          reason: sendErr.message || 'Error communicating with email service',
+        });
+        logger.error(`Error sending onboarding email to ${vendor.email}`, sendErr, 'STORE_SERVICE');
+      }
+    }
+
+    const totalProcessed = mappedCount + unmappedCount;
+    const overallStatus = failedEmails.length === 0 ? 'COMPLETED' : (mappedEmailsSent + unmappedEmailsSent > 0 ? 'COMPLETED_WITH_FAILURES' : 'FAILED');
+
     // Attributed to the requesting buyer's own account when the controller
     // resolved one from the session (same convention as createRFQ).
     this.addAuditLog({
       userEmail: attributedAccount ? attributedAccount.corporateEmail : SYSTEM_ACTOR_EMAIL,
-      action: `Processed ${period.replace('_', ' ')} historical purchase dump: ${importedCount} supplier(s) empanelled, ${skipped.length} row(s) rejected as unidentifiable.`,
+      action: `Processed ${period.replace('_', ' ')} historical purchase dump: ${importedCount} supplier(s) empanelled (${mappedEmailsSent} Template A sent, ${unmappedEmailsSent} Template B sent, ${failedEmails.length} failed).`,
     });
 
     return {
       success: true,
       importedCount,
+      totalProcessed,
+      mappedCount,
+      mappedEmailsSent,
+      unmappedCount,
+      unmappedEmailsSent,
+      failedEmailCount: failedEmails.length,
+      failedEmails,
       skippedCount: skipped.length,
       skipped,
       period,
       totalVendors: this.vendors.length,
+      overallStatus,
     };
   }
 

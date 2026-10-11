@@ -89,6 +89,8 @@ export default function Header() {
     setCurrentUserSession,
     remainingFreeRFQs,
     activeSubscription,
+    vendorFreeCreditsRemaining,
+    vendorSubscription,
   } = useApp();
 
   const router = useRouter();
@@ -228,6 +230,37 @@ export default function Header() {
                 </div>
               )}
             </>
+          )}
+
+          {/* Vendor Free RFQ Download Credits Display */}
+          {currentRole === 'vendor' && (
+            <div
+              className={`flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3 py-1 rounded-xl border shadow-xs transition-colors ${
+                (vendorFreeCreditsRemaining ?? 5) > 0
+                  ? 'bg-emerald-50/80 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800'
+                  : 'bg-rose-50/80 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800'
+              }`}
+              title={`Free RFQ Credits: ${vendorFreeCreditsRemaining ?? 5} remaining out of 5 allocated`}
+            >
+              <span
+                className={`text-[11px] font-bold ${
+                  (vendorFreeCreditsRemaining ?? 5) > 0
+                    ? 'text-emerald-800 dark:text-emerald-300'
+                    : 'text-rose-800 dark:text-rose-300'
+                }`}
+              >
+                Free RFQ Credits:
+              </span>
+              <span
+                className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                  (vendorFreeCreditsRemaining ?? 5) > 0
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-rose-600 text-white'
+                }`}
+              >
+                {vendorFreeCreditsRemaining ?? 5}
+              </span>
+            </div>
           )}
 
           {/* Theme Toggle (Light / Dark) */}

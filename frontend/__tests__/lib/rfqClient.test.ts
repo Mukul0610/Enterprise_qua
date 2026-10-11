@@ -1,6 +1,7 @@
 import {
   extractLineItemsFromDocument,
   classifyLineItems,
+  downloadQuoteAttachment,
   uploadRFQAttachment,
   rfqAttachmentUrl,
   createRFQ,
@@ -12,6 +13,8 @@ import {
   inviteVendorsToRFQ,
   updateRFQ,
   deleteRFQ,
+  submitRFQInquiry,
+  replyToRFQInquiry,
   requestVendorCategoryUpdateEmail,
 } from '@/lib/rfqClient';
 import { authClient } from '@/lib/authClient';
@@ -1693,6 +1696,121 @@ describe('rfqClient.deleteRFQ', () => {
   });
 });
 
+describe('rfqClient.downloadQuoteAttachment', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    jest.restoreAllMocks();
+  });
+
+  test('downloads an attachment from the encoded RFQ endpoint', async () => {
+    const urlSpy = jest.spyOn(URL, 'createObjectURL').mockReturnValue('blob:quote-file');
+    const blob = new Blob(['quote document']);
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, blob: async () => blob });
+
+    await expect(downloadQuoteAttachment('RFQ/1', {
+      id: 'attachment/1',
+      fileName: 'quote.pdf',
+      mimeType: 'application/pdf',
+      size: 10,
+      uploadedAt: '2026-10-10',
+    })).resolves.toEqual({ success: true, url: 'blob:quote-file' });
+    expect(global.fetch).toHaveBeenCalledWith('/api/rfqs/RFQ%2F1/quote-attachments/attachment%2F1', { headers: {} });
+    expect(urlSpy).toHaveBeenCalledWith(blob);
+  });
+
+  test('returns a server message or a useful fallback when the download is rejected', async () => {
+    const attachment = { id: 'a1', fileName: 'quote.pdf', mimeType: 'application/pdf', size: 10, uploadedAt: '' };
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Attachment expired' }) })
+      .mockResolvedValueOnce({ ok: false, json: async () => { throw new Error('not JSON'); } });
+
+    await expect(downloadQuoteAttachment('1', attachment))
+      .resolves.toEqual({ success: false, error: 'Attachment expired' });
+    await expect(downloadQuoteAttachment('1', attachment))
+      .resolves.toEqual({ success: false, error: 'The bid document could not be downloaded.' });
+  });
+
+  test('returns a network error when the attachment request fails', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('offline'));
+
+    await expect(downloadQuoteAttachment('1', {
+      id: 'a1',
+      fileName: 'quote.pdf',
+      mimeType: 'application/pdf',
+      size: 10,
+      uploadedAt: '',
+    })).resolves.toEqual({ success: false, error: UI_STRINGS.auth.networkUnreachable });
+  });
+});
+
+describe('rfqClient inquiry APIs', () => {
+  const originalFetch = global.fetch;
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    authClient.setSession(null, null);
+    jest.restoreAllMocks();
+  });
+
+  test('submits an inquiry and returns the created data', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, data: { id: 'inq-1' }, rfq: { id: 'rfq-1' } }),
+    });
+
+    await expect(submitRFQInquiry('RFQ/1', { message: 'Please clarify delivery', vendorName: 'Acme' }))
+      .resolves.toEqual({ success: true, data: { id: 'inq-1' }, rfq: { id: 'rfq-1' } });
+    expect(global.fetch).toHaveBeenCalledWith('/api/rfqs/RFQ%2F1/inquiries', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ message: 'Please clarify delivery', vendorName: 'Acme' }),
+    }));
+  });
+
+  test('returns an API message or a default when inquiry submission fails', async () => {
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce({ ok: false, json: async () => ({ error: 'Inquiry rejected' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ success: false }) });
+
+    await expect(submitRFQInquiry('1', { message: 'Question' }))
+      .resolves.toEqual({ success: false, error: 'Inquiry rejected' });
+    await expect(submitRFQInquiry('1', { message: 'Question' }))
+      .resolves.toEqual({ success: false, error: 'Failed to submit inquiry.' });
+  });
+
+  test('returns a network error when inquiry submission throws a non-Error value', async () => {
+    global.fetch = jest.fn().mockRejectedValue(null);
+
+    await expect(submitRFQInquiry('1', { message: 'Question' }))
+      .resolves.toEqual({ success: false, error: 'Network error submitting inquiry.' });
+  });
+
+  test('replies to an inquiry and returns updated records', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true, data: { id: 'inq-1' }, rfq: { id: 'rfq-1' } }),
+    });
+
+    await expect(replyToRFQInquiry('RFQ 1', 'inq/1', { reply: 'Delivery is 10 days', repliedBy: 'Buyer' }))
+      .resolves.toEqual({ success: true, data: { id: 'inq-1' }, rfq: { id: 'rfq-1' } });
+    expect(global.fetch).toHaveBeenCalledWith('/api/rfqs/RFQ%201/inquiries/inq%2F1/reply', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ reply: 'Delivery is 10 days', repliedBy: 'Buyer' }),
+    }));
+  });
+
+  test('returns API failures and network failures for inquiry replies', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, json: async () => ({ success: false, error: 'Reply rejected' }) });
+    await expect(replyToRFQInquiry('1', '2', { reply: 'Reply' }))
+      .resolves.toEqual({ success: false, error: 'Reply rejected' });
+
+    global.fetch = jest.fn().mockRejectedValue(new Error('Offline'));
+    await expect(replyToRFQInquiry('1', '2', { reply: 'Reply' }))
+      .resolves.toEqual({ success: false, error: 'Offline' });
+  });
+});
+
 describe('rfqClient.requestVendorCategoryUpdateEmail', () => {
   const originalFetch = global.fetch;
 
@@ -1748,4 +1866,3 @@ describe('rfqClient.requestVendorCategoryUpdateEmail', () => {
     expect(res).toEqual({ success: false, error: 'Network offline' });
   });
 });
-

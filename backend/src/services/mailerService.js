@@ -15,6 +15,20 @@ if (typeof dns.setDefaultResultOrder === 'function') {
   dns.setDefaultResultOrder('ipv4first');
 }
 
+/**
+ * Reads an environment variable or secret, checking both process.env and
+ * Cloudflare Worker globalThis.__CF_ENV__.
+ */
+function getEnv(key) {
+  if (process.env && process.env[key] !== undefined && process.env[key] !== '') {
+    return process.env[key];
+  }
+  if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__ && globalThis.__CF_ENV__[key] !== undefined && globalThis.__CF_ENV__[key] !== '') {
+    return globalThis.__CF_ENV__[key];
+  }
+  return undefined;
+}
+
 let transporter;
 let vendorTransporter;
 
@@ -74,7 +88,7 @@ function getTransporter() {
 }
 
 function fromAddress() {
-  const user = process.env.SMTP_FROM || process.env.SMTP_USER || 'RFQ@procucev.com';
+  const user = process.env.SMTP_FROM || process.env.SMTP_USER || 'manav.procucev@gmail.com';
   if (user.includes('<') && user.includes('>')) {
     return user;
   }
@@ -88,10 +102,9 @@ function fromAddress() {
  */
 function getPublicFrontendUrl() {
   const envVal =
-    process.env.PUBLIC_FRONTEND_URL ||
-    process.env.APP_PUBLIC_URL ||
-    process.env.FRONTEND_URL ||
-    (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__ && globalThis.__CF_ENV__.PUBLIC_FRONTEND_URL);
+    getEnv('PUBLIC_FRONTEND_URL') ||
+    getEnv('APP_PUBLIC_URL') ||
+    getEnv('FRONTEND_URL');
   if (envVal && typeof envVal === 'string' && envVal.trim()) {
     return envVal.trim().replace(/\/+$/, '');
   }
@@ -119,24 +132,24 @@ function getLogoUrl() {
 function getVendorTransporter() {
   if (vendorTransporter) return vendorTransporter;
 
-  const user = process.env.VENDOR_SMTP_USER;
-  const rawPass = process.env.VENDOR_SMTP_PASSWORD;
+  const user = getEnv('VENDOR_SMTP_USER');
+  const rawPass = getEnv('VENDOR_SMTP_PASSWORD');
   if (!user || !rawPass) return undefined;
 
   const pass = rawPass.replace(/\s+/g, '');
-  const host = process.env.VENDOR_SMTP_HOST || 'smtp.gmail.com';
+  const host = getEnv('VENDOR_SMTP_HOST') || 'smtp.gmail.com';
   const isGmail =
-    (process.env.VENDOR_SMTP_SERVICE && process.env.VENDOR_SMTP_SERVICE.toLowerCase() === 'gmail') ||
+    (getEnv('VENDOR_SMTP_SERVICE') && getEnv('VENDOR_SMTP_SERVICE').toLowerCase() === 'gmail') ||
     host.toLowerCase().includes('gmail');
 
   let port;
   let secure;
 
-  if (process.env.VENDOR_SMTP_PORT) {
-    port = Number(process.env.VENDOR_SMTP_PORT);
-    secure = process.env.VENDOR_SMTP_SECURE !== undefined ? process.env.VENDOR_SMTP_SECURE === 'true' : port === 465;
-  } else if (process.env.VENDOR_SMTP_SECURE !== undefined) {
-    secure = process.env.VENDOR_SMTP_SECURE === 'true';
+  if (getEnv('VENDOR_SMTP_PORT')) {
+    port = Number(getEnv('VENDOR_SMTP_PORT'));
+    secure = getEnv('VENDOR_SMTP_SECURE') !== undefined ? getEnv('VENDOR_SMTP_SECURE') === 'true' : port === 465;
+  } else if (getEnv('VENDOR_SMTP_SECURE') !== undefined) {
+    secure = getEnv('VENDOR_SMTP_SECURE') === 'true';
     port = secure ? 465 : 587;
   } else if (isGmail) {
     port = 465;
@@ -165,7 +178,7 @@ function getVendorTransporter() {
 }
 
 function vendorFromAddress() {
-  const user = process.env.VENDOR_SMTP_FROM || process.env.VENDOR_SMTP_USER || 'srinu20252026@gmail.com';
+  const user = getEnv('VENDOR_GMAIL_SENDER_EMAIL') || getEnv('VENDOR_SMTP_FROM') || getEnv('VENDOR_SMTP_USER') || 'srinu20252026@gmail.com';
   if (user.includes('<') && user.includes('>')) {
     return user;
   }
@@ -174,9 +187,10 @@ function vendorFromAddress() {
 
 function vendorGatewayAddress() {
   return (
-    process.env.VENDOR_EMAIL_GATEWAY_ADDRESS ||
-    process.env.VENDOR_EMAIL_GATEWAY_USER ||
-    process.env.VENDOR_SMTP_USER ||
+    getEnv('VENDOR_EMAIL_GATEWAY_ADDRESS') ||
+    getEnv('VENDOR_GMAIL_SENDER_EMAIL') ||
+    getEnv('VENDOR_EMAIL_GATEWAY_USER') ||
+    getEnv('VENDOR_SMTP_USER') ||
     'srinu20252026@gmail.com'
   );
 }
@@ -260,6 +274,9 @@ async function deliverVendor(message, label) {
         'MAILER_SERVICE'
       );
       return deliverViaGmailApi(message, label);
+    }
+    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
+      return deliverViaMailChannels(message, label);
     }
     throw err;
   }
@@ -379,16 +396,59 @@ async function deliverViaResend(message, label) {
   return { sent: true, messageId: body.id };
 }
 
-/** True when GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN are all set. */
+/**
+ * Sends email via MailChannels HTTPS API (natively supported on Cloudflare Workers without raw sockets).
+ */
+async function deliverViaMailChannels(message, label) {
+  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'manav.procucev@gmail.com';
+  const fromName = 'Procucev Enterprise';
+
+  logger.info(`Dispatching ${label} to ${message.to} via MailChannels API`, { subject: message.subject }, 'MAILER_SERVICE');
+  const res = await fetch('https://api.mailchannels.net/tx/v1/send', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      personalizations: [{ to: [{ email: message.to }] }],
+      from: {
+        email: fromEmail,
+        name: fromName,
+      },
+      subject: message.subject,
+      content: [
+        {
+          type: 'text/plain',
+          value: message.text || (message.html ? message.html.replace(/<[^>]+>/g, ' ') : ''),
+        },
+        {
+          type: 'text/html',
+          value: message.html || '',
+        },
+      ],
+    }),
+  });
+
+  if (!res.ok && res.status !== 202) {
+    const errorBody = await res.text().catch(() => '');
+    const err = new Error(`MailChannels responded ${res.status}: ${errorBody}`);
+    err.code = 'MAILCHANNELS_API_ERROR';
+    throw err;
+  }
+
+  logger.info(`${label} sent successfully to ${message.to} via MailChannels`, {}, 'MAILER_SERVICE');
+  return { sent: true, provider: 'mailchannels' };
+}
+
+let gmailApiDisabled = false;
+
+/** True when GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN are all set and active. */
 function isGmailApiConfigured() {
+  if (gmailApiDisabled) return false;
   const hasClientId = Boolean(process.env.GMAIL_CLIENT_ID);
   const hasClientSecret = Boolean(process.env.GMAIL_CLIENT_SECRET);
   const hasRefreshToken = Boolean(process.env.GMAIL_REFRESH_TOKEN);
   if (!hasClientId || !hasClientSecret || !hasRefreshToken) {
-    // Diagnostic only — booleans, never the secret values themselves.
-    // Added while tracking down why the Gmail API branch wasn't firing in
-    // production despite `wrangler secret list` confirming all three are
-    // registered on the Worker.
     logger.warn(
       'Gmail API not configured',
       { hasClientId, hasClientSecret, hasRefreshToken },
@@ -401,27 +461,17 @@ function isGmailApiConfigured() {
 let gmailOAuthClient;
 let gmailOAuthClientRefreshToken;
 
-/**
- * Lazily builds an OAuth2 client from the refresh token minted once via
- * scripts/get-gmail-refresh-token.js. googleapis' OAuth2Client caches and
- * auto-refreshes the short-lived access token internally — no manual token
- * refresh logic needed here.
- *
- * Rebuilds whenever GMAIL_REFRESH_TOKEN no longer matches what this client
- * was built with: a Worker isolate stays warm across many invocations (a
- * cron poll especially), so a plain "build once" singleton would keep using
- * whichever identity happened to be live the first time this ran on that
- * isolate, silently ignoring a `wrangler secret put` rotation until the
- * isolate eventually recycles on its own.
- */
 function getGmailOAuthClient() {
-  if (gmailOAuthClient && gmailOAuthClientRefreshToken === process.env.GMAIL_REFRESH_TOKEN) {
+  const refreshToken = getEnv('GMAIL_REFRESH_TOKEN');
+  if (gmailOAuthClient && gmailOAuthClientRefreshToken === refreshToken) {
     return gmailOAuthClient;
   }
   if (!isGmailApiConfigured()) return undefined;
-  gmailOAuthClient = new google.auth.OAuth2(process.env.GMAIL_CLIENT_ID, process.env.GMAIL_CLIENT_SECRET);
-  gmailOAuthClient.setCredentials({ refresh_token: process.env.GMAIL_REFRESH_TOKEN });
-  gmailOAuthClientRefreshToken = process.env.GMAIL_REFRESH_TOKEN;
+  const clientId = getEnv('GMAIL_CLIENT_ID');
+  const clientSecret = getEnv('GMAIL_CLIENT_SECRET');
+  gmailOAuthClient = new google.auth.OAuth2(clientId, clientSecret);
+  gmailOAuthClient.setCredentials({ refresh_token: refreshToken });
+  gmailOAuthClientRefreshToken = refreshToken;
   return gmailOAuthClient;
 }
 
@@ -463,8 +513,9 @@ async function deliverViaGmailApi(message, label) {
   const gmail = google.gmail({ version: 'v1', auth });
 
   logger.info(`Dispatching ${label} to ${message.to} via Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
+  const sender = getEnv('GMAIL_SENDER_EMAIL');
   const raw = buildRawMimeMessage({
-    from: process.env.GMAIL_SENDER_EMAIL ? `"Procucev Enterprise" <${process.env.GMAIL_SENDER_EMAIL}>` : fromAddress(),
+    from: sender ? `"Procucev Enterprise" <${sender}>` : fromAddress(),
     to: message.to,
     subject: message.subject,
     html: message.html,
@@ -475,47 +526,35 @@ async function deliverViaGmailApi(message, label) {
   return { sent: true, messageId: res.data.id };
 }
 
-/**
- * True when a dedicated vendor-mailbox Gmail identity is configured.
- *
- * Reuses the same OAuth2 "app" (GMAIL_CLIENT_ID/SECRET — one Google Cloud
- * client can authorize any number of Google accounts) with its own refresh
- * token, minted the same way as the buyer one (see
- * scripts/get-gmail-refresh-token.js), signed in as the dedicated vendor
- * mailbox instead of the buyer account. This is the real fix for vendor
- * mail always appearing to come from the buyer's Gmail account: raw SMTP
- * (the original VENDOR_SMTP_* design) can never work on Cloudflare Workers
- * at all (confirmed live — its TLS layer doesn't implement
- * rejectUnauthorized), so a second identity has to go through the Gmail
- * API too, not through SMTP with different credentials.
- */
 function isVendorGmailApiConfigured() {
-  return Boolean(process.env.GMAIL_CLIENT_ID) && Boolean(process.env.GMAIL_CLIENT_SECRET) && Boolean(process.env.VENDOR_GMAIL_REFRESH_TOKEN);
+  return Boolean(getEnv('GMAIL_CLIENT_ID')) && Boolean(getEnv('GMAIL_CLIENT_SECRET')) && Boolean(getEnv('VENDOR_GMAIL_REFRESH_TOKEN'));
 }
 
 let vendorGmailOAuthClient;
 let vendorGmailOAuthClientRefreshToken;
 
-/** Same staleness problem and fix as getGmailOAuthClient() above. */
 function getVendorGmailOAuthClient() {
-  if (vendorGmailOAuthClient && vendorGmailOAuthClientRefreshToken === process.env.VENDOR_GMAIL_REFRESH_TOKEN) {
+  const refreshToken = getEnv('VENDOR_GMAIL_REFRESH_TOKEN');
+  if (vendorGmailOAuthClient && vendorGmailOAuthClientRefreshToken === refreshToken) {
     return vendorGmailOAuthClient;
   }
   if (!isVendorGmailApiConfigured()) return undefined;
-  vendorGmailOAuthClient = new google.auth.OAuth2(process.env.GMAIL_CLIENT_ID, process.env.GMAIL_CLIENT_SECRET);
-  vendorGmailOAuthClient.setCredentials({ refresh_token: process.env.VENDOR_GMAIL_REFRESH_TOKEN });
-  vendorGmailOAuthClientRefreshToken = process.env.VENDOR_GMAIL_REFRESH_TOKEN;
+  const clientId = getEnv('GMAIL_CLIENT_ID');
+  const clientSecret = getEnv('GMAIL_CLIENT_SECRET');
+  vendorGmailOAuthClient = new google.auth.OAuth2(clientId, clientSecret);
+  vendorGmailOAuthClient.setCredentials({ refresh_token: refreshToken });
+  vendorGmailOAuthClientRefreshToken = refreshToken;
   return vendorGmailOAuthClient;
 }
 
-/** Same as deliverViaGmailApi, but signed in as the dedicated vendor mailbox. */
 async function deliverViaVendorGmailApi(message, label) {
   const auth = getVendorGmailOAuthClient();
   const gmail = google.gmail({ version: 'v1', auth });
 
   logger.info(`Dispatching ${label} to ${message.to} via vendor Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
+  const sender = getEnv('VENDOR_GMAIL_SENDER_EMAIL');
   const raw = buildRawMimeMessage({
-    from: process.env.VENDOR_GMAIL_SENDER_EMAIL ? `"Procucev Enterprise" <${process.env.VENDOR_GMAIL_SENDER_EMAIL}>` : vendorFromAddress(),
+    from: sender ? `"Procucev Enterprise" <${sender}>` : vendorFromAddress(),
     to: message.to,
     subject: message.subject,
     html: message.html,
@@ -597,6 +636,9 @@ async function deliver(message, label) {
       return await deliverViaGmailApi(message, label);
     } catch (err) {
       lastError = err;
+      if (err?.message?.includes('invalid_grant') || err?.response?.data?.error === 'invalid_grant') {
+        gmailApiDisabled = true;
+      }
       logger.warn(
         `deliverViaGmailApi failed for ${label} — falling back to secondary transport`,
         { errorMessage: err?.message, to: message.to },
@@ -623,14 +665,28 @@ async function deliver(message, label) {
     if (lastError) {
       throw lastError;
     }
+    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
+      try {
+        return await deliverViaMailChannels(message, label);
+      } catch (mcErr) {
+        logger.warn(`MailChannels send failed for ${label}`, { errorMessage: mcErr?.message }, 'MAILER_SERVICE');
+      }
+    }
     logger.warn(`SMTP not configured (SMTP_USER/SMTP_PASSWORD unset) — ${label} not sent`, { to: message.to }, 'MAILER_SERVICE');
     return { sent: false, reason: 'SMTP not configured' };
   }
 
-  logger.info(`Dispatching ${label} to ${message.to}`, { subject: message.subject }, 'MAILER_SERVICE');
-  const info = await activeTransporter.sendMail(message);
-  logger.info(`${label} sent successfully to ${message.to}`, { messageId: info.messageId }, 'MAILER_SERVICE');
-  return { sent: true, messageId: info.messageId };
+  try {
+    logger.info(`Dispatching ${label} to ${message.to}`, { subject: message.subject }, 'MAILER_SERVICE');
+    const info = await activeTransporter.sendMail(message);
+    logger.info(`${label} sent successfully to ${message.to}`, { messageId: info.messageId }, 'MAILER_SERVICE');
+    return { sent: true, messageId: info.messageId };
+  } catch (smtpErr) {
+    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
+      return await deliverViaMailChannels(message, label);
+    }
+    throw smtpErr;
+  }
 }
 
 /** Shared frame so every Procucev email reads consistently. No invented data. */
@@ -670,17 +726,30 @@ function row(label, value) {
   return `<tr><td style="padding: 6px 10px; font-weight: bold; width: 40%;">${label}</td><td style="padding: 6px 10px;">${value}</td></tr>`;
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── OTP ──────────────────────────────────────────────────────────────────────
 
-function buildOtpEmail(to, code, expiresInSeconds) {
+function buildOtpEmail(to, code, expiresInSeconds, context = {}) {
   const minutes = Math.max(1, Math.round((expiresInSeconds || 600) / 60));
+  const isReg = typeof context === 'object' && context?.isRegistration;
+  const headline = isReg ? 'Account Registration Verification' : 'Secure Sign-In Verification';
+  const subject = isReg ? 'Your Procucev Enterprise Account Verification Code' : 'Your Procucev Enterprise verification code';
   return {
     from: fromAddress(),
     to,
-    subject: 'Your Procucev Enterprise verification code',
+    subject,
+    text: `Your Procucev Enterprise verification code is: ${code}\n\nThis code expires in ${minutes} minute${minutes === 1 ? '' : 's'}.\nIf you did not request this, you can safely ignore this email.`,
     html: wrapEmail(
       'PROCUCEV ENTERPRISE',
-      'Secure Sign-In Verification',
+      headline,
       `<p>Your one-time verification code is:</p>
        <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; text-align: center; margin: 20px 0; color: #0284c7;">${code}</p>
        <p style="font-size: 13px; color: #64748b; margin: 0;">This code expires in ${minutes} minute${minutes === 1 ? '' : 's'}. If you did not request this, you can safely ignore this email.</p>`
@@ -688,8 +757,8 @@ function buildOtpEmail(to, code, expiresInSeconds) {
   };
 }
 
-async function sendOtpEmail(to, code, expiresInSeconds) {
-  return deliver(buildOtpEmail(to, code, expiresInSeconds), 'OTP email');
+async function sendOtpEmail(to, code, expiresInSeconds, context = {}) {
+  return deliver(buildOtpEmail(to, code, expiresInSeconds, context), 'OTP email');
 }
 
 // ── New RFQ → matched vendors (buyer raised an enquiry in their category) ─────
@@ -744,23 +813,26 @@ function buildRfqInviteEmail(to, context = {}) {
 
   const gatewayEmail = vendorGatewayAddress();
   const buyerCc = cc || buyerEmail || undefined;
+  const requiresPortal = items.length > 10;
 
   const inner = `
     <p>${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}</p>
-    <p>${isReminder ? 'This is a reminder to submit your quotation for' : `${rfq.buyerAccountName ? `<strong>${rfq.buyerAccountName}</strong> has` : 'A buyer has'} raised a request for quotation your organisation is matched to.`}</p>
+    <p>Greetings from <strong>Procucev!</strong></p>
+    <p>QUA by <strong>Procucev</strong> is a trusted AI B2B marketplace connecting genuine buyers and quality sellers across India.</p>
+    <p>${isReminder ? 'This is a reminder to submit your quotation for the following verified business enquiry matching your category.' : `We have a new verified business enquiry from ${rfq.buyerAccountName ? `<strong>${rfq.buyerAccountName}</strong>` : 'a corporate buyer'} that matches your category. Please review the details below:`}</p>
     <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: #f8fafc;">
       ${row('RFQ Number', rfq.rfqNumber)}
       ${row('Requirement', rfq.title)}
       ${row('Category', category)}
       ${row('Target delivery', rfq.targetDeliveryDate || rfq.deadline)}
-      ${row('Delivery location', rfq.deliveryLocation)}
+      ${row('Delivery location / Pincode', rfq.deliveryPincode ? `${rfq.deliveryLocation || ''} (${rfq.deliveryPincode})` : rfq.deliveryLocation)}
       ${budgetFormatted ? row('Budget', budgetFormatted) : ''}
     </table>
     ${
       itemRows
         ? `<table style="width: 100%; border-collapse: collapse; margin-bottom: 16px;">
              <thead><tr style="background: #f1f5f9; text-align: left;">
-               <th style="padding: 8px 10px; border: 1px solid #cbd5e1; font-size: 12px; color: #475569;">Item Description</th>
+               <th style="padding: 8px 10px; border: 1px solid #cbd5e1; font-size: 12px; color: #475569;">Sl No / Description</th>
                <th style="padding: 8px 10px; border: 1px solid #cbd5e1; text-align: center; font-size: 12px; color: #475569;">Quantity</th>
                <th style="padding: 8px 10px; border: 1px solid #cbd5e1; font-size: 12px; color: #475569;">Delivery Location</th>
              </tr></thead>
@@ -778,7 +850,11 @@ function buildRfqInviteEmail(to, context = {}) {
       }
       <h4 style="margin: 0 0 10px 0; color: #1e40af; font-size: 15px; font-weight: 700;">How to Submit Your Quotation</h4>
       <p style="margin: 0 0 10px 0; font-size: 13px; color: #1e293b; line-height: 1.5;">
-        You can submit your bid either by <strong>replying directly to this email at <a href="mailto:${gatewayEmail}" style="color: #0284c7; font-weight: bold;">${gatewayEmail}</a></strong> (keep the subject line intact with RFQ number <strong>#${rfq.rfqNumber}</strong>${buyerCc ? ` and keep buyer CC'd: <strong>${buyerCc}</strong>` : ''}), or online via the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Quotation Portal</a>.
+        ${
+          requiresPortal
+            ? `This RFQ has ${items.length} line items. <strong>Email bids are not accepted for RFQs with more than 10 items.</strong> Submit your bid through the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Vendor Portal</a>: download the RFQ Excel file, enter a unit price for each item, then upload the completed workbook and supporting documents.`
+            : `You can submit your bid either by <strong>replying directly to this email at <a href="mailto:${gatewayEmail}" style="color: #0284c7; font-weight: bold;">${gatewayEmail}</a></strong> (keep the subject line intact with RFQ number <strong>#${rfq.rfqNumber}</strong>${buyerCc ? ` and keep buyer CC'd: <strong>${buyerCc}</strong>` : ''}), or online via the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Quotation Portal</a>. Attach your quotation and any supporting documents when submitting by email.`
+        }
       </p>
 
       <p style="margin: 12px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Mandatory Quotation Information Required:</p>
@@ -790,17 +866,37 @@ function buildRfqInviteEmail(to, context = {}) {
         <li><strong>Remarks</strong> — Any inclusions, exclusions, or terms.</li>
       </ul>
 
-      <p style="margin: 14px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Email Reply Format (Copy, Fill & Send):</p>
-      <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #1e293b; white-space: pre-wrap; line-height: 1.4;">${sampleReplyFormat}</div>
-      <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;"><em>Our automated AI Email Gateway will parse your reply and immediately reflect your bid in Enterprise QUA Vendor Comparison.</em></p>
-      ${items.length > 1 ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>For multi-item RFQs, please quote unit price per item in your reply.</em></p>' : ''}
+      ${
+        requiresPortal
+          ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>Make sure every RFQ line item is priced in the downloaded workbook. Include supporting documents with your portal submission.</em></p>'
+          : `<p style="margin: 14px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Email Reply Format (Copy, Fill & Send):</p>
+             <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #1e293b; white-space: pre-wrap; line-height: 1.4;">${sampleReplyFormat}</div>
+             <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;"><em>Our automated AI Email Gateway will parse your reply and immediately reflect your bid in Enterprise QUA Vendor Comparison.</em></p>
+             ${items.length > 1 ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>For multi-item RFQs, please quote unit price per item in your reply.</em></p>' : ''}`
+      }
     </div>
+
+    <div style="margin: 16px 0; padding: 12px 16px; background: #fdf4ff; border: 1px solid #f0abfc; border-radius: 8px; font-size: 12px; color: #701a75;">
+      💬 <strong>WhatsApp Real-time Enquiry Alerts:</strong> Just say Hi to <strong>7090170801</strong> to receive new enquiries matching your categories as soon as they come in.
+    </div>
+
+    <p style="font-size: 13px; color: #334155; line-height: 1.5;">
+      Please submit your offer on time to increase your chances of getting the order and connecting directly with the B2B client.<br/>
+      To receive more RFQs, please update your relevant product categories in the QUA portal. Correct categories help you receive more verified business opportunities.
+    </p>
+
     <div style="text-align: center; margin: 24px 0;">
-      <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="background: #0284c7; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px; margin-bottom: 10px;">Submit Quotation in 1-Click</a>
+      <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="background: #0284c7; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px; margin-bottom: 10px;">${requiresPortal ? 'Open Portal to Download Excel & Submit Bid' : 'Submit Quotation in 1-Click'}</a>
       <br />
       <a href="${vendorSignInUrl()}" style="color: #0284c7; text-decoration: underline; font-weight: 600; font-size: 13px;">Open in Vendor Web Portal</a>
     </div>
-    <p style="font-size: 13px; color: #64748b; text-align: center;">Sign in to your Procucev vendor account to review the full enquiry and submit a quotation.</p>
+    <p style="font-size: 12px; color: #64748b; text-align: center;">
+      <em>This is a system generated RFQ invitation. You can also check RFQs regularly on <a href="https://www.procucev.com" style="color: #0284c7;">www.procucev.com</a></em>
+    </p>
+    <p style="font-size: 13px; color: #334155; margin-top: 16px;">
+      <strong>Best Regards,</strong><br/>
+      <strong>Team Procucev</strong>
+    </p>
   `;
 
   return {
@@ -995,9 +1091,13 @@ async function sendVendorCreditsExhaustedEmail(toOrParams, maybeContext) {
 
 function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
   const isEmailSource = rfq.source === 'email' || rfq.source === 'email_gateway' || rfq.source === 'inbound_email';
+  const isV0 =
+    rfq.sourcingMode === 'mode_0' ||
+    rfq.sourcingMode === 'v0' ||
+    rfq.sourcingMode === 'version_0';
   const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
   const createdAtMs = rfq.createdAt ? new Date(rfq.createdAt).getTime() : 0;
-  const isWithin48h = !isEmailSource && ((createdAtMs > 0 && Date.now() - createdAtMs < FORTY_EIGHT_HOURS_MS) || Boolean(rfq.quotesHidden));
+  const isWithin48h = !isEmailSource && !isV0 && ((createdAtMs > 0 && Date.now() - createdAtMs < FORTY_EIGHT_HOURS_MS) || Boolean(rfq.quotesHidden));
   const isClosed = rfq.status === 'Closed';
   const isSealed = isWithin48h && !isClosed;
 
@@ -1154,6 +1254,104 @@ function buildRfqFinalComparisonEmail(toOrParams, maybeContext) {
 
 async function sendRfqFinalComparisonEmail(toOrParams, maybeContext) {
   return deliver(buildRfqFinalComparisonEmail(toOrParams, maybeContext), 'RFQ final comparison email');
+}
+
+// ── RFQ Auto-Closure Immediate Acknowledgement email → owning buyer ─────────
+
+function buildRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext) {
+  const { to, context } = normalizeToAndContext(toOrParams, maybeContext);
+  const { rfq = {}, quotesCount = 0, recipientName } = context;
+  const rfqNumber = rfq.rfqNumber || 'RFQ';
+  const rfqTitle = rfq.title || 'Procurement Requisition';
+  const subject = `All Invited Vendors Quoted – RFQ #${rfqNumber} Automatically Closed`;
+
+  const inner = `
+    <p>${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}</p>
+    <p>Good news! All invited vendors have successfully submitted valid quotations for RFQ <strong>#${rfqNumber}</strong> (<em>${rfqTitle}</em>) before the deadline.</p>
+    
+    <div style="background: #f0fdf4; border: 1px solid #86efac; color: #166534; padding: 14px; border-radius: 6px; margin: 16px 0;">
+      <strong>✓ 100% Vendor Participation Achieved — RFQ Closed Automatically</strong><br/>
+      Total <strong>${quotesCount}</strong> valid quote(s) have been received. In accordance with autonomous procurement workflow rules, this RFQ has been closed immediately to preserve bidding integrity.
+    </div>
+
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin: 16px 0;">
+      <table style="width: 100%; border-collapse: collapse;">
+        ${row('RFQ Number', rfqNumber)}
+        ${row('Requirement', rfqTitle)}
+        ${row('Category', rfq.category || '-')}
+        ${row('Delivery Location', rfq.deliveryLocation || '-')}
+        ${row('Total Bids Received', `${quotesCount} vendor(s)`)}
+        ${row('Status', 'Closed & Sealed')}
+      </table>
+    </div>
+
+    <p style="color: #334155; font-size: 13px;">
+      ⏳ <strong>Comparison Notification:</strong> Your comprehensive quotation comparison matrix and SMS summary are being compiled and will be delivered to your inbox and mobile in <strong>5 minutes</strong>.
+    </p>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${getPublicFrontendUrl()}/buyer/rfq-details?rfq=${encodeURIComponent(rfqNumber)}" style="background: #16a34a; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px;">View RFQ Status in Portal</a>
+    </div>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject,
+    html: wrapEmail('PROCUCEV ENTERPRISE', 'RFQ Auto-Closure Notice', inner),
+  };
+}
+
+async function sendRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext) {
+  return deliver(buildRfqAutoClosureAcknowledgementEmail(toOrParams, maybeContext), 'RFQ auto-closure acknowledgement email');
+}
+
+// ── Complex RFQ (>10 items) Portal Redirection Email → vendor ───────────────
+
+function buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
+  const { to, context } = normalizeToAndContext(toOrParams, maybeContext);
+  const { rfq = {}, vendorName, itemCount = 0 } = context;
+  const rfqNumber = rfq.rfqNumber || 'RFQ';
+  const rfqTitle = rfq.title || 'Procurement Requisition';
+  const base = getPublicFrontendUrl();
+  const portalUrl = `${base}/vendor/quotation-form?opportunity=${encodeURIComponent(rfqNumber)}`;
+  const subject = `Portal Bidding Required for RFQ #${rfqNumber} (${itemCount} Items)`;
+
+  const inner = `
+    <p>${vendorName ? `Dear <strong>${vendorName}</strong>,` : 'Hello,'}</p>
+    <p>We received your email quotation submission for RFQ <strong>#${rfqNumber}</strong> (<em>${rfqTitle}</em>).</p>
+    
+    <div style="background: #eff6ff; border: 1px solid #93c5fd; color: #1e40af; padding: 14px; border-radius: 6px; margin: 16px 0;">
+      <strong>Notice: Complex RFQ Sourcing Requirement (${itemCount} Line Items)</strong><br/>
+      For procurement requisitions with more than 10 line items, bids must be submitted directly through the Procucev Vendor Portal to ensure precise item-wise pricing, tax computation, and specification compliance.
+    </div>
+
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 6px; padding: 14px; margin: 16px 0;">
+      <h4 style="margin: 0 0 8px 0; color: #0f172a; font-size: 13px;">Simple Steps to Submit Your Bid:</h4>
+      <ol style="margin: 0; padding-left: 20px; color: #334155; font-size: 13px; line-height: 1.6;">
+        <li>Log in to the <strong>Procucev Vendor Portal</strong> using the button below.</li>
+        <li>Download the pre-filled <strong>RFQ Excel Spreadsheet</strong> with all ${itemCount} items.</li>
+        <li>Enter your item-wise unit rates, taxes, and lead times in the Excel sheet.</li>
+        <li>Upload the priced Excel file and attach any supporting compliance/catalogue documents.</li>
+      </ol>
+    </div>
+
+    <div style="text-align: center; margin: 24px 0;">
+      <a href="${portalUrl}" style="background: #2563eb; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px;">Open Vendor Portal & Submit Bid</a>
+    </div>
+    <p style="font-size: 12px; color: #64748b; text-align: center;">If you have any questions, please reply directly or access the clarification desk on the portal.</p>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject,
+    html: wrapEmail('PROCUCEV ENTERPRISE', 'Portal Bidding Required', inner),
+  };
+}
+
+async function sendComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
+  return deliver(buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext), 'Complex RFQ portal redirect email');
 }
 
 // ── Vendor Issue / Query reply notification → vendor (with buyer CC) ─────────
@@ -1385,6 +1583,8 @@ function buildVendorCategoryMappingEmail({
   minorCategories = [],
   customSubject,
   customMessage,
+  tempPassword,
+  contactPhone,
 }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
   const minorHtml = categoryList(minorCategories);
@@ -1398,6 +1598,9 @@ function buildVendorCategoryMappingEmail({
     <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: #f8fafc;">
       ${row('Buyer', buyer)}
       ${row('Your vendor code', vendorCode)}
+      ${row('Registered Email', to)}
+      ${contactPhone ? row('Mobile Number', escapeHtml(contactPhone)) : ''}
+      ${tempPassword ? row('Temporary Password', tempPassword) : ''}
       ${row('Primary category', majorCategory)}
     </table>
     ${
@@ -1409,7 +1612,7 @@ function buildVendorCategoryMappingEmail({
     <p style="margin: 20px 0;">
       <a href="${vendorSignInUrl()}" style="background: #0284c7; color: #ffffff; padding: 12px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Sign in to Procucev</a>
     </p>
-    <p style="font-size: 13px; color: #64748b; margin: 0;">Sign in with this email address; a one-time verification code will be sent to it.</p>
+    <p style="font-size: 13px; color: #64748b; margin: 0;">Sign in with this email address and your password or verification OTP.</p>
   `;
 
   const subject = (customSubject && customSubject.trim() !== '')
@@ -1431,7 +1634,7 @@ function buildVendorCategoryMappingEmail({
  * something wrong: the buyer simply had no purchasing history to categorise them
  * from. Nothing about the buyer's spend or other suppliers is disclosed.
  */
-function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName, vendorCode, customSubject, customMessage }) {
+function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName, vendorCode, customSubject, customMessage, tempPassword, contactPhone }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
 
   const defaultMessage = `
@@ -1446,12 +1649,15 @@ function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName,
     <table style="width: 100%; border-collapse: collapse; margin: 16px 0; background: #f8fafc;">
       ${row('Buyer', buyer)}
       ${row('Your vendor code', vendorCode)}
+      ${row('Registered Email', to)}
+      ${contactPhone ? row('Mobile Number', escapeHtml(contactPhone)) : ''}
+      ${tempPassword ? row('Temporary Password', tempPassword) : ''}
       ${row('Action required', 'Select your supply categories')}
     </table>
     <p style="margin: 20px 0;">
       <a href="${vendorSignInUrl()}" style="background: #0284c7; color: #ffffff; padding: 12px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Complete your category mapping</a>
     </p>
-    <p style="font-size: 13px; color: #64748b; margin: 0;">Sign in with this email address; a one-time verification code will be sent to it. Until your categories are mapped, you will not be matched to enquiries.</p>
+    <p style="font-size: 13px; color: #64748b; margin: 0;">Sign in with this email address and your password or verification OTP. Until your categories are mapped, you will not be matched to enquiries.</p>
   `;
 
   const subject = (customSubject && customSubject.trim() !== '')
@@ -1469,15 +1675,16 @@ function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName,
 /** Template C — a plain onboarding notice, with no category claim either way. */
 function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, vendorCode, tempPassword, contactPhone }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
+  const signInUrl = escapeHtml(vendorSignInUrl());
 
   const inner = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
       <p style="font-size: 16px; color: #1e293b; margin-bottom: 20px;">
-        ${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}
+        ${recipientName ? `Dear <strong>${escapeHtml(recipientName)}</strong>,` : 'Hello,'}
       </p>
       
       <p style="font-size: 15px; color: #334155; margin-bottom: 20px; line-height: 1.6;">
-        <strong>${buyer}</strong> has registered your organisation on <strong>Procucev Enterprise</strong>, the platform they use to run sourcing enquiries and manage supplier relationships.
+        <strong>${escapeHtml(buyer)}</strong> has registered your organisation on <strong>Procucev Enterprise</strong>, the platform they use to run sourcing enquiries and manage supplier relationships.
       </p>
       
       <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 12px; padding: 24px; margin: 24px 0;">
@@ -1485,36 +1692,40 @@ function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, 
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Email Address</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${to}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(to)}</td>
           </tr>
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Temporary Password</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; background: #fff; padding: 8px 12px; border-radius: 4px; border: 1px solid #cbd5e1;">${tempPassword || 'Set during first login'}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; background: #fff; padding: 8px 12px; border-radius: 4px; border: 1px solid #cbd5e1;">${escapeHtml(tempPassword || 'Set during first login')}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Login URL</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${signInUrl}</td>
           </tr>
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Vendor Code</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${vendorCode}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(vendorCode)}</td>
           </tr>
           ${contactPhone ? `
           <tr>
-            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Contact Number</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${contactPhone}</td>
+            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Mobile Number</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(contactPhone)}</td>
           </tr>
           ` : ''}
         </table>
       </div>
       
       <p style="font-size: 15px; color: #334155; margin-bottom: 20px; line-height: 1.6;">
-        Please sign in to review your profile, confirm your supply categories, and start receiving sourcing enquiries from <strong>${buyer}</strong>.
+        Sign in at the URL above using the email address and temporary password provided. On your first login, you must change the temporary password before the vendor dashboard or any other protected page becomes available.
       </p>
       
       <p style="margin: 28px 0;">
-        <a href="${vendorSignInUrl()}" style="background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3);">Sign in to Procucev Portal</a>
+        <a href="${signInUrl}" style="background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3);">Sign in to Procucev Portal</a>
       </p>
       
       <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; margin: 24px 0; border-radius: 4px;">
         <p style="font-size: 13px; color: #92400e; margin: 0; line-height: 1.5;">
-          <strong>🔐 Security Notice:</strong> For your security, please change your temporary password after your first login. Your password should be at least 8 characters with a mix of letters, numbers, and special characters.
+          <strong>Security Notice:</strong> Your temporary password is for first-time access only. You will be redirected to the Change Password screen after signing in and must choose a new password before continuing. Your password should be at least 8 characters.
         </p>
       </div>
       
@@ -1747,6 +1958,10 @@ module.exports = {
   sendQuoteFailureEmail,
   buildRfqFinalComparisonEmail,
   sendRfqFinalComparisonEmail,
+  buildRfqAutoClosureAcknowledgementEmail,
+  sendRfqAutoClosureAcknowledgementEmail,
+  buildComplexRfqPortalRedirectEmail,
+  sendComplexRfqPortalRedirectEmail,
   buildVendorIssueAcknowledgementEmail,
   sendVendorIssueAcknowledgementEmail,
   buildVendorCategoryMismatchEmail,

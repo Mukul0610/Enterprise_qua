@@ -21,6 +21,7 @@ import {
   BUYER_SUBSCRIPTION_TO_SOURCING_MODE,
   resolveBuyerSourcingMode,
   entitledSourcingModes,
+  normalizePoDate,
 } from '@/lib/constants';
 
 
@@ -299,5 +300,49 @@ describe('entitledSourcingModes', () => {
   it('defaults to the most restrictive tier when the plan is unresolved (null/undefined), not to allowing everything', () => {
     expect(entitledSourcingModes(null)).toEqual(['mode_0', 'mode_1']);
     expect(entitledSourcingModes(undefined)).toEqual(['mode_0', 'mode_1']);
+  });
+});
+
+describe('normalizePoDate', () => {
+  it('returns empty string for null, undefined, or empty values', () => {
+    expect(normalizePoDate(null)).toBe('');
+    expect(normalizePoDate(undefined)).toBe('');
+    expect(normalizePoDate('')).toBe('');
+    expect(normalizePoDate('   ')).toBe('');
+  });
+
+  it('handles Date instances correctly', () => {
+    expect(normalizePoDate(new Date('2025-12-04T00:00:00Z'))).toBe('2025-12-04');
+    expect(normalizePoDate(new Date('invalid'))).toBe('');
+  });
+
+  it('converts Excel date serial numbers and decimal strings to ISO dates', () => {
+    expect(normalizePoDate(45995)).toBe('2025-12-04');
+    expect(normalizePoDate(45995.00011574074)).toBe('2025-12-04');
+    expect(normalizePoDate('45995.00011574074')).toBe('2025-12-04');
+    expect(normalizePoDate('45995')).toBe('2025-12-04');
+    expect(normalizePoDate(25569)).toBe('1970-01-01');
+    expect(normalizePoDate(0)).toBe('');
+  });
+
+  it('preserves and normalizes ISO format dates', () => {
+    expect(normalizePoDate('2025-12-04')).toBe('2025-12-04');
+    expect(normalizePoDate('2025/12/04')).toBe('2025-12-04');
+    expect(normalizePoDate('2025.12.04')).toBe('2025-12-04');
+  });
+
+  it('normalizes DD-MM-YYYY and DD/MM/YYYY dates', () => {
+    expect(normalizePoDate('12-04-2025')).toBe('2025-04-12');
+    expect(normalizePoDate('25-12-2025')).toBe('2025-12-25');
+    expect(normalizePoDate('05/12/2025')).toBe('2025-12-05');
+    expect(normalizePoDate('12/25/2025')).toBe('2025-12-25');
+  });
+
+  it('handles generic date strings via Date.parse', () => {
+    expect(normalizePoDate('Dec 4, 2025')).toBe('2025-12-04');
+  });
+
+  it('falls back to raw string when not parseable', () => {
+    expect(normalizePoDate('not-a-valid-date')).toBe('not-a-valid-date');
   });
 });

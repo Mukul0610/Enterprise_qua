@@ -44,6 +44,8 @@ export interface LineItemBid {
   id: string;
   description: string;
   quantity: number;
+  /** Unit of measure (e.g. "Nos", "Kg", "Rft") — the RFQ's own extracted unit, shown next to Qty in a bid comparison. */
+  unit?: string;
   unitPrice: number;
   leadTimeDays: number;
   uploadedDocument?: string;
@@ -80,15 +82,25 @@ export interface QuoteComparison {
   remarks: string;
   source?: 'email' | 'portal' | 'web_portal';
   submissionMethod?: 'email' | 'portal' | 'web_portal';
+  submittedAt?: string;
   taxes?: number;
   deliveryCharges?: number;
   deliveryDate?: string;
   lineItemQuotes?: LineItemQuote[];
+  attachments?: RFQQuoteAttachment[];
   scoreBreakdown?: {
     price: { score: number; weighted: number; maxWeight: number };
     leadTime: { score: number; weighted: number; maxWeight: number };
     warranty: { score: number; weighted: number; maxWeight: number };
   };
+}
+
+export interface RFQQuoteAttachment {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  uploadedAt: string;
 }
 
 export type FollowUpChannel = 'call' | 'whatsapp' | 'sms';
@@ -167,7 +179,7 @@ export interface RFQFollowUpBreakdown {
   autoChasingEnabled: boolean;
 }
 
-export type RFQSource = 'email_gateway' | 'web_portal' | 'email_upload' | 'manual_entry';
+export type RFQSource = 'email_gateway' | 'web_portal' | 'email_upload' | 'manual_entry' | 'ai_extraction';
 
 // ==============================================================================
 // MANUAL RFQ ENTRY
@@ -394,13 +406,7 @@ export interface RFQCreatePayload {
   extractedEntities: ExtractedEntity[];
   attachments: RFQAttachment[];
   inquiries?: RFQInquiry[];
-  assignedVendors?: Array<{
-    id?: string;
-    name: string;
-    email?: string | null;
-    contactPerson?: string | null;
-    phone?: string | null;
-  }>;
+  assignedVendors?: RFQAssignedVendor[];
 }
 
 /**
@@ -471,7 +477,7 @@ export interface RFQItem {
   title: string;
   category: string;
   sourcingMode: SourcingMode;
-  status: 'Parsing' | 'In Evaluation' | 'AI Recommended' | 'PO Generated' | 'Quotes Pending' | 'Closed' | 'Expired';
+  status: 'Parsing' | 'In Evaluation' | 'AI Recommended' | 'PO Generated' | 'Quotes Pending' | 'Quotes Received' | 'Closed' | 'Expired';
   quotesCount: number;
   targetDeliveryDate: string;
   /**
@@ -524,6 +530,8 @@ export interface RFQItem {
    * category-manager/all-rfqs.tsx's "Invite Vendors" action.
    */
   assignedVendors?: RFQAssignedVendor[];
+  /** Count of Procucev network vendors associated with this RFQ version */
+  procucevVendorCount?: number;
   inquiries?: RFQInquiry[];
   quotesHidden?: boolean;
   quotesHiddenUntil?: string;
@@ -557,11 +565,12 @@ export interface RFQInquiry {
 
 /** One entry on RFQItem.assignedVendors — a vendor invited to this RFQ. */
 export interface RFQAssignedVendor {
-  id: string;
+  id?: string;
   name: string;
   email?: string | null;
   contactPerson?: string | null;
   phone?: string | null;
+  city?: string | null;
 }
 
 /** A candidate vendor for RFQ invitation — a VendorEntry plus invite state. */
@@ -625,6 +634,8 @@ export interface VendorOpportunity {
   majorCategory: string;
   /** From the leading line item's real minorCategory — empty when none was classified. */
   minorCategory: string;
+  /** The buyer account ID that owns this RFQ, used for buyer-specific vendor access verification. */
+  buyerAccountId?: string | null;
 }
 
 export interface AuditLogEntry {
@@ -880,7 +891,7 @@ export interface VendorEntry {
 
   // Database Availability & Onboarding Credentials
   isExistingInDatabase?: boolean;
-  onboardingEmailStatus?: 'sent' | 'pending' | 'delivered';
+  onboardingEmailStatus?: 'sent' | 'pending' | 'delivered' | 'failed' | 'account_exists';
   onboardingEmailDispatchedAt?: string;
   tempPassword?: string;
   firstLoginCompleted?: boolean;
@@ -889,6 +900,8 @@ export interface VendorEntry {
   remindersSentCount?: number;
   addedByBuyerCompany?: string;
   addedByBuyerName?: string;
+  buyerId?: string;
+  buyerAccountId?: string;
   profileCompletionStatus?: 'pending' | 'completed';
 
   // Dual-Stream Category Mapping & Reconciliation (Client-Mapped vs Vendor-Selected)
@@ -975,6 +988,8 @@ export interface VendorUploadRowResult {
   errors?: string[];
   reason?: string;
   missingEmail?: boolean;
+  onboardingEmailStatus?: VendorEntry['onboardingEmailStatus'];
+  onboardingError?: string;
 }
 
 /** Aggregate response from one bulk-import chunk request. */
@@ -987,6 +1002,7 @@ export interface VendorUploadImportResponse {
   missingEmail: number;
   duplicates: number;
   failed: number;
+  onboardingFailed?: number;
   results: VendorUploadRowResult[];
 }
 
@@ -1076,6 +1092,30 @@ export interface HistoricalPurchaseVendorRecord {
   secondSetSecondaryMajors?: string[]; // 2nd Set: Secondary Major Categories
   isExistingInDatabase?: boolean;
   tempPassword?: string;
+}
+
+export interface IngestionFailedEmail {
+  vendorId?: string;
+  vendorName: string;
+  email: string;
+  template: string;
+  reason: string;
+}
+
+export interface IngestionSummary {
+  importedCount: number;
+  totalProcessed: number;
+  mappedCount: number;
+  mappedEmailsSent: number;
+  unmappedCount: number;
+  unmappedEmailsSent: number;
+  failedEmailCount: number;
+  failedEmails: IngestionFailedEmail[];
+  skippedCount?: number;
+  skipped?: Array<{ row: number; reason: string }>;
+  period?: string;
+  totalVendors?: number;
+  overallStatus: 'COMPLETED' | 'COMPLETED_WITH_FAILURES' | 'FAILED';
 }
 
 // ==============================================================================
@@ -1750,6 +1790,7 @@ export interface UserSession {
   orgId: string;
   orgName: string;
   mobile?: string;
+  passwordChangeRequired?: boolean;
   authMethod?: 'PASSWORD' | 'EMAIL_OTP' | 'TEMP_PASSWORD' | 'INSTANT_DEMO';
 }
 
@@ -1795,6 +1836,7 @@ export type RFQExtractionReason =
   | 'DOCUMENT_TOO_LARGE'
   | 'UNSUPPORTED_TYPE'
   | 'AI_FAILED'
+  | 'QUOTA_EXCEEDED'
   | 'NO_ITEMS_FOUND'
   | 'NETWORK';
 
@@ -1951,6 +1993,7 @@ export interface AuthResponse {
   demoEmailCode?: string;
   demoMobileCode?: string;
   expiresInSeconds?: number;
+  passwordChangeRequired?: boolean;
 }
 
 export interface LoginCredentials {

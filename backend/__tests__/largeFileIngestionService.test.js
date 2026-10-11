@@ -230,6 +230,23 @@ describe('largeFileIngestionService unit tests', () => {
       expect(blank.poNumber).toBeNull();
       expect(blank.poDate).toBeNull();
     });
+
+    it('normalizes Excel date serial decimals and various date formats in PO dump rows', () => {
+      const headers = ['PO Number', 'PO Date', 'Vendor Name', 'Line Item Description', 'Quantity', 'Spend'];
+      const headerMap = largeFileIngestionService.extractHeaderIndices(headers, 'PO_DUMP');
+
+      // Excel decimal serial (e.g. 45995.00011574074)
+      const mappedDecimal = largeFileIngestionService.mapRowValues(['PO-100', '45995.00011574074', 'Supplier X', 'Laptop', '1', '50000'], headerMap, 'PO_DUMP', 0);
+      expect(mappedDecimal.poDate).toBe('2025-12-04');
+
+      // Integer serial
+      const mappedSerial = largeFileIngestionService.mapRowValues(['PO-101', '45995', 'Supplier X', 'Laptop', '1', '50000'], headerMap, 'PO_DUMP', 1);
+      expect(mappedSerial.poDate).toBe('2025-12-04');
+
+      // DD-MM-YYYY format
+      const mappedDmy = largeFileIngestionService.mapRowValues(['PO-102', '12-04-2025', 'Supplier X', 'Laptop', '1', '50000'], headerMap, 'PO_DUMP', 2);
+      expect(mappedDmy.poDate).toBe('2025-04-12');
+    });
   });
 
   describe('processVendorMasterBatch & processPoDumpBatch direct execution', () => {

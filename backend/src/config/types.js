@@ -20,6 +20,7 @@
  * @property {boolean} chasingActive
  * @property {Array<Object>} quotes
  * @property {Array<Object>} lineItems
+ * @property {number} [procucevVendorCount]
  */
 
 /**

@@ -26,7 +26,7 @@
     "SMS_GATEWAY_PASS": "TzlzyMcFEZRF",
     "SMS_GATEWAY_SENDER": "PROCUC",
     "SMS_GATEWAY_SMSGID": "1102294821",
-    "SMS_GATEWAY_RFQ_SMSGID": "1777179100456823380",
+    "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
     "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
     "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
   },
@@ -82,7 +82,7 @@
         "SMS_GATEWAY_PASS": "TzlzyMcFEZRF",
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
-        "SMS_GATEWAY_RFQ_SMSGID": "1777179100456823380",
+        "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
         "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
       },
       "d1_databases": [
@@ -117,7 +117,7 @@
         "SMS_GATEWAY_PASS": "TzlzyMcFEZRF",
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
-        "SMS_GATEWAY_RFQ_SMSGID": "1777179100456823380",
+        "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
         "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
       },
       "d1_databases": [
@@ -152,7 +152,7 @@
         "SMS_GATEWAY_PASS": "TzlzyMcFEZRF",
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
-        "SMS_GATEWAY_RFQ_SMSGID": "1777179100456823380",
+        "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
         "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
       },
       "d1_databases": [

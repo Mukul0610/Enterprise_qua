@@ -24,6 +24,7 @@
 
 const crypto = require('crypto');
 const pool = require('./pool');
+const { getD1Binding, getD1HttpClient, batchD1 } = require('./d1Bridge');
 const {
   VENDOR_INGESTION_SESSION_STATUS,
   VENDOR_INGESTION_AI_STATUS,
@@ -551,6 +552,47 @@ const VENDOR_MASTER_MAX_ROWS_PER_INSERT = 50;
 async function bulkUpsertVendorMasterRecords(sessionId, organizationId, rows = []) {
   if (!pool.hasStorage() || !sessionId || !organizationId || rows.length === 0) return [];
 
+  const d1 = getD1Binding() || getD1HttpClient();
+  if (d1) {
+    const statements = rows.map((row) => ({
+      text: `insert into vendor_master_records
+       (id, session_id, organization_id, source_row_number, vendor_code, company_name,
+        normalized_name, contact_person, email, phone, address, gstin, rating, raw)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     on conflict (session_id, vendor_code) do update
+       set company_name = excluded.company_name,
+           normalized_name = excluded.normalized_name,
+           contact_person = excluded.contact_person,
+           email = excluded.email,
+           phone = excluded.phone,
+           address = excluded.address,
+           gstin = excluded.gstin,
+           rating = excluded.rating,
+           source_row_number = excluded.source_row_number,
+           raw = excluded.raw,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     returning *`,
+      params: [
+        newId('vmr'),
+        sessionId,
+        organizationId,
+        row.sourceRowNumber === undefined ? null : row.sourceRowNumber,
+        nullable(row.vendorCode),
+        text(row.companyName),
+        normalizeVendorName(row.companyName),
+        nullable(row.contactPerson),
+        nullable(row.email) ? String(row.email).trim().toLowerCase() : null,
+        nullable(row.phone),
+        nullable(row.address),
+        nullable(row.gstin || row.gstNumber) ? String(row.gstin || row.gstNumber).trim().toUpperCase() : null,
+        numeric(row.rating),
+        JSON.stringify(row.raw || row),
+      ],
+    }));
+    const results = await batchD1(d1, statements);
+    return results.flatMap((result) => (result.rows || []).map(mapRowToVendorMaster));
+  }
+
   if (rows.length > VENDOR_MASTER_MAX_ROWS_PER_INSERT) {
     const stored = [];
     for (let i = 0; i < rows.length; i += VENDOR_MASTER_MAX_ROWS_PER_INSERT) {
@@ -575,7 +617,7 @@ async function bulkUpsertVendorMasterRecords(sessionId, organizationId, rows = [
       nullable(row.email) ? String(row.email).trim().toLowerCase() : null,
       nullable(row.phone),
       nullable(row.address),
-      nullable(row.gstin) ? String(row.gstin).trim().toUpperCase() : null,
+      nullable(row.gstin || row.gstNumber) ? String(row.gstin || row.gstNumber).trim().toUpperCase() : null,
       numeric(row.rating),
       JSON.stringify(row.raw || row)
     );
@@ -698,6 +740,43 @@ const PO_LINE_ITEMS_MAX_ROWS_PER_INSERT = 40;
 async function bulkInsertPoLineItems(sessionId, organizationId, rows = []) {
   if (!pool.hasStorage() || !sessionId || !organizationId || rows.length === 0) return 0;
 
+  const d1 = getD1Binding() || getD1HttpClient();
+  if (d1) {
+    const statements = rows.map((row) => ({
+      text: `insert into po_line_items
+       (id, session_id, organization_id, source_row_number, po_number, po_date,
+        vendor_code, vendor_name, normalized_vendor_name, vendor_gstin, item_description,
+        specification, quantity, uom, spend, currency, department, material_code,
+        existing_category, existing_subcategory, in_horizon)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
+      params: [
+        newId('poli'),
+        sessionId,
+        organizationId,
+        row.sourceRowNumber === undefined ? null : row.sourceRowNumber,
+        nullable(row.poNumber),
+        nullable(row.poDate),
+        nullable(row.vendorCode),
+        nullable(row.vendorName),
+        normalizeVendorName(row.vendorName) || null,
+        nullable(row.vendorGstin || row.gstNumber) ? String(row.vendorGstin || row.gstNumber).trim().toUpperCase() : null,
+        nullable(row.itemDescription),
+        nullable(row.specification),
+        numeric(row.quantity),
+        nullable(row.uom),
+        numeric(row.spend),
+        nullable(row.currency),
+        nullable(row.department),
+        nullable(row.materialCode),
+        nullable(row.existingCategory),
+        nullable(row.existingSubcategory),
+        row.inHorizon !== false ? 1 : 0,
+      ],
+    }));
+    const results = await batchD1(d1, statements);
+    return results.reduce((acc, res) => acc + (res.rowCount !== undefined ? res.rowCount : (res.rows ? res.rows.length : 1)), 0);
+  }
+
   if (rows.length > PO_LINE_ITEMS_MAX_ROWS_PER_INSERT) {
     let inserted = 0;
     for (let i = 0; i < rows.length; i += PO_LINE_ITEMS_MAX_ROWS_PER_INSERT) {
@@ -720,7 +799,7 @@ async function bulkInsertPoLineItems(sessionId, organizationId, rows = []) {
       nullable(row.vendorCode),
       nullable(row.vendorName),
       normalizeVendorName(row.vendorName) || null,
-      nullable(row.vendorGstin) ? String(row.vendorGstin).trim().toUpperCase() : null,
+      nullable(row.vendorGstin || row.gstNumber) ? String(row.vendorGstin || row.gstNumber).trim().toUpperCase() : null,
       nullable(row.itemDescription),
       nullable(row.specification),
       numeric(row.quantity),
@@ -745,8 +824,7 @@ async function bulkInsertPoLineItems(sessionId, organizationId, rows = []) {
         item_description, specification, quantity, uom, spend, currency, department,
         material_code, existing_category, existing_subcategory, in_horizon)
      values ${placeholders.join(', ')}`,
-    values,
-    { d1: true }
+    values
   );
   return result.rowCount || 0;
 }
@@ -1168,6 +1246,58 @@ const MAPPING_SEED_MAX_ROWS_PER_INSERT = 50;
 
 async function seedCategoryMappings(sessionId, organizationId, profiles = []) {
   if (!pool.hasStorage() || !sessionId || !organizationId || profiles.length === 0) return [];
+
+  const d1 = getD1Binding() || getD1HttpClient();
+  if (d1) {
+    const statements = profiles.map((profile) => {
+      const hasHistory = profile.hasPoHistory === true;
+      return {
+        text: `insert into vendor_category_mappings
+       (id, session_id, organization_id, vendor_record_id, vendor_code, company_name, email,
+        po_count, total_spend, has_po_history, status, processing_status, raw)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     on conflict (session_id, vendor_record_id) do update
+       set vendor_code = excluded.vendor_code,
+           company_name = excluded.company_name,
+           email = excluded.email,
+           po_count = excluded.po_count,
+           total_spend = excluded.total_spend,
+           has_po_history = excluded.has_po_history,
+           raw = excluded.raw,
+           status = case
+             when not excluded.has_po_history then '${VENDOR_MAPPING_STATUS.SELF_MAP_REQUIRED}'
+             when vendor_category_mappings.status = '${VENDOR_MAPPING_STATUS.SELF_MAP_REQUIRED}'
+               then '${VENDOR_MAPPING_STATUS.PENDING_REVIEW}'
+             else vendor_category_mappings.status
+           end,
+           processing_status = case
+             when not excluded.has_po_history then '${VENDOR_AI_PROCESSING_STATUS.COMPLETED}'
+             when vendor_category_mappings.processing_status = '${VENDOR_AI_PROCESSING_STATUS.COMPLETED}'
+               then vendor_category_mappings.processing_status
+             else '${VENDOR_AI_PROCESSING_STATUS.QUEUED}'
+           end,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+     returning *`,
+        params: [
+          newId('vcm'),
+          sessionId,
+          organizationId,
+          profile.vendorRecordId,
+          nullable(profile.vendorCode),
+          text(profile.companyName),
+          nullable(profile.email) ? String(profile.email).trim().toLowerCase() : null,
+          counter(profile.poCount),
+          counter(profile.totalSpend),
+          hasHistory ? 1 : 0,
+          hasHistory ? VENDOR_MAPPING_STATUS.PENDING_REVIEW : VENDOR_MAPPING_STATUS.SELF_MAP_REQUIRED,
+          hasHistory ? VENDOR_AI_PROCESSING_STATUS.QUEUED : VENDOR_AI_PROCESSING_STATUS.COMPLETED,
+          JSON.stringify({ departments: profile.departments || [], existingCategories: profile.existingCategories || [] }),
+        ],
+      };
+    });
+    const results = await batchD1(d1, statements);
+    return results.flatMap((result) => (result.rows || []).map(mapRowToMapping));
+  }
 
   if (profiles.length > MAPPING_SEED_MAX_ROWS_PER_INSERT) {
     const stored = [];

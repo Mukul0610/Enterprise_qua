@@ -82,3 +82,7 @@ Thumbs.db
 # without touching the shared Azure identity DB) — never meant to be shared.
 backend/scripts/local_identity_schema.sql
 backend/scripts/local_identity_seed.sql
+
+# Git worktrees
+.worktrees/
+

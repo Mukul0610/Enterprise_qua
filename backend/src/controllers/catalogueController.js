@@ -38,6 +38,18 @@ function addProduct(req, res, next) {
     if (!vendorId) {
       return res.status(400).json({ success: false, error: 'Create your vendor profile before adding catalogue items.' });
     }
+    const vendorProducts = storeService.getVendorCatalogue(vendorId);
+    if (vendorProducts.length >= 100) {
+      return res.status(409).json({ success: false, error: 'Catalogue capacity is limited to 100 products per vendor.' });
+    }
+    if (vendorProducts.some((product) => String(product.sku || '').trim().toLowerCase() === String(sku).trim().toLowerCase())) {
+      return res.status(409).json({ success: false, error: `SKU "${sku}" already exists in this catalogue.` });
+    }
+    if (!Number.isFinite(Number(unitPrice)) || Number(unitPrice) <= 0 ||
+        (leadTimeDays !== undefined && (!Number.isInteger(Number(leadTimeDays)) || Number(leadTimeDays) <= 0)) ||
+        (moq !== undefined && (!Number.isInteger(Number(moq)) || Number(moq) <= 0))) {
+      return res.status(400).json({ success: false, error: 'unitPrice must be positive; provided leadTimeDays and moq values must be positive whole numbers.' });
+    }
     logger.info(`Adding item to catalogue: ${name} (${sku})`, { name, sku, unitPrice, category, vendorId }, 'CATALOGUE_CONTROLLER');
     const created = storeService.addProductToCatalogue({ name, sku, unitPrice, category, leadTimeDays, moq, specs }, vendorId, req.user.email);
     res.status(201).json({ success: true, data: created });

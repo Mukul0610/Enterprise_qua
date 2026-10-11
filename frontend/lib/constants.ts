@@ -748,6 +748,102 @@ export function formatIndianDate(value?: string): string {
 }
 
 /**
+ * Normalizes any date value (Excel numeric serial, Date instance, ISO string, DD-MM-YYYY, etc.)
+ * into a clean standard ISO date string (YYYY-MM-DD).
+ * Prevents Excel date serial numbers (e.g. 45995.00011574074) from appearing as decimal numbers in the UI.
+ */
+export function normalizePoDate(value: unknown): string {
+  if (value === null || value === undefined || value === '' || value === 0 || value === '0') return '';
+
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return '';
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // If numeric (e.g. 45995 or 45995.00011574074 from Excel date serial)
+  if (typeof value === 'number') {
+    if (value >= 1 && value <= 100000) {
+      const utcDays = Math.floor(value - 25569);
+      const d = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(d.getTime())) {
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    }
+    return '';
+  }
+
+  const str = String(value).trim();
+  if (!str) return '';
+
+  // Numeric string check (e.g. "45995.00011574074" or "45995")
+  const num = Number(str);
+  if (!isNaN(num) && isFinite(num) && !str.includes('-') && !str.includes('/') && !str.includes(':')) {
+    if (num >= 1 && num <= 100000) {
+      const utcDays = Math.floor(num - 25569);
+      const d = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(d.getTime())) {
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    }
+    return '';
+  }
+
+  // Already ISO format YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+
+  // YYYY/MM/DD or YYYY.MM.DD
+  const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = String(Number(ymdMatch[2])).padStart(2, '0');
+    const d = String(Number(ymdMatch[3])).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmyMatch) {
+    const p1 = Number(dmyMatch[1]);
+    const p2 = Number(dmyMatch[2]);
+    const y = dmyMatch[3];
+    let day = p1;
+    let month = p2;
+    if (p1 > 12 && p2 <= 12) {
+      day = p1;
+      month = p2;
+    } else if (p2 > 12 && p1 <= 12) {
+      day = p2;
+      month = p1;
+    }
+    return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // Generic Date.parse fallback
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed)) {
+    const d = new Date(parsed);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  return str;
+}
+
+
+/**
  * Human-readable file size, e.g. 1536 -> "1.5 KB".
  *
  * Uses 1024-based units because that is what the browser and the server both

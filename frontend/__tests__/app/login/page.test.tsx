@@ -153,6 +153,31 @@ describe('LoginPage', () => {
       expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.buyer);
     });
 
+    it('routes first-login vendors to password setup before opening the dashboard', async () => {
+      const firstLoginVendor = {
+        ...BUYER_SESSION,
+        role: 'vendor' as const,
+        passwordChangeRequired: true,
+      };
+      (authClient.loginWithPassword as jest.Mock).mockResolvedValue({
+        success: true,
+        user: firstLoginVendor,
+        token: 'jwt',
+      });
+
+      render(<LoginPage />);
+      typeInto(/Registered Email ID/i, 'vendor@supplier.com');
+      typeInto(/Registered Mobile Number/i, LOGIN_MOBILE);
+      typeInto(/^Password$/i, 'TempPass@123');
+      fireEvent.click(submitButton(/Sign In/i));
+
+      await waitFor(() => {
+        expect(mockReplace).toHaveBeenCalledWith('/vendor-first-login');
+      });
+      expect(setCurrentUserSession).toHaveBeenCalledWith(firstLoginVendor);
+      expect(mockReplace).not.toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
+    });
+
     it('routes an admin account to the admin workspace automatically based on credentials', async () => {
       (authClient.loginWithPassword as jest.Mock).mockResolvedValue({
         success: true,
@@ -491,6 +516,7 @@ describe('LoginPage', () => {
         name: 'Rajesh Kumar',
         role: 'vendor' as const,
         vendorId: 'vnd-1',
+        passwordChangeRequired: true,
       };
       (authClient.requestOtp as jest.Mock).mockResolvedValue({
         success: true,
@@ -532,7 +558,8 @@ describe('LoginPage', () => {
           })
         );
       });
-      expect(mockReplace).toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
+      expect(mockReplace).toHaveBeenCalledWith('/vendor-first-login');
+      expect(mockReplace).not.toHaveBeenCalledWith(ROLE_LANDING_ROUTE.vendor);
     });
 
     it('propagates the registered GSTIN and plant location to the new buyer record', async () => {
@@ -843,10 +870,15 @@ describe('LoginPage', () => {
       });
     });
 
-    it('handles requestOtp failure during initial registration submit', async () => {
+    it('completes dual OTP verification and account creation for buyer', async () => {
       (authClient.requestOtp as jest.Mock).mockResolvedValue({
-        success: false,
-        error: 'Registration OTP service temporarily unavailable',
+        success: true,
+        demoEmailCode: '123456',
+        demoMobileCode: '654321',
+      });
+      (authClient.register as jest.Mock).mockResolvedValue({
+        success: true,
+        user: { ...BUYER_SESSION, role: 'buyer' },
       });
 
       render(<LoginPage />);
@@ -855,15 +887,58 @@ describe('LoginPage', () => {
       submitForm(/Create Account/i);
 
       await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Verify & Activate Account/i })).toBeInTheDocument();
+      });
+
+      const emailOtpInput = screen.getByPlaceholderText(/6-digit Email OTP/i);
+      const mobileOtpInput = screen.getByPlaceholderText(/6-digit Mobile OTP/i);
+      fireEvent.change(emailOtpInput, { target: { value: '123456' } });
+      fireEvent.change(mobileOtpInput, { target: { value: '654321' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Verify & Activate Account/i }));
+
+      await waitFor(() => {
+        expect(authClient.register).toHaveBeenCalled();
+        expect(addBuyerAccount).toHaveBeenCalled();
+        expect(setIsLoggedIn).toHaveBeenCalledWith(true);
+      });
+    });
+
+    it('handles registration failure during dual OTP completion', async () => {
+      (authClient.requestOtp as jest.Mock).mockResolvedValue({
+        success: true,
+        demoEmailCode: '123456',
+        demoMobileCode: '654321',
+      });
+      (authClient.register as jest.Mock).mockResolvedValue({
+        success: false,
+        error: 'Invalid or expired OTP code',
+      });
+
+      render(<LoginPage />);
+      openRegister();
+      fillValidForm();
+      submitForm(/Create Account/i);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /Verify & Activate Account/i })).toBeInTheDocument();
+      });
+
+      const emailOtpInput = screen.getByPlaceholderText(/6-digit Email OTP/i);
+      const mobileOtpInput = screen.getByPlaceholderText(/6-digit Mobile OTP/i);
+      fireEvent.change(emailOtpInput, { target: { value: '123456' } });
+      fireEvent.change(mobileOtpInput, { target: { value: '654321' } });
+
+      fireEvent.click(screen.getByRole('button', { name: /Verify & Activate Account/i }));
+
+      await waitFor(() => {
         expect(showToast).toHaveBeenCalledWith(
           AUTH.registrationFailedTitle,
-          'Registration OTP service temporarily unavailable',
+          'Invalid or expired OTP code',
           'warning'
         );
       });
     });
   });
 });
-
-
 

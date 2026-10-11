@@ -6,8 +6,6 @@ import { AlertCircle, Loader2, RefreshCw } from 'lucide-react';
 import { fetchRFQById } from '@/lib/rfqClient';
 import { UI_STRINGS } from '@/lib/uiStrings';
 import RFQDetails from '@/app/buyer/rfq-details';
-import { RFQDeleteDialog, RFQEditModal } from '@/app/buyer/RFQEditModal';
-import { useApp } from '@/lib/store';
 import type { RFQItem } from '@/lib/types';
 
 const DETAILS = UI_STRINGS.rfqDetails;
@@ -60,10 +58,7 @@ function BuyerRFQDetailsView() {
   const searchParams = useSearchParams();
   const rfqNumber = searchParams.get(RFQ_PARAM);
 
-  const { updateRFQ, deleteRFQ } = useApp();
   const [state, setState] = useState<LoadState>({ status: 'idle' });
-  const [isEditing, setIsEditing] = useState(false);
-  const [isDeleting, setIsDeleting] = useState(false);
 
   const load = useCallback(async (identifier: string) => {
     setState({ status: 'loading' });
@@ -89,7 +84,7 @@ function BuyerRFQDetailsView() {
     void load(rfqNumber);
   }, [rfqNumber, load]);
 
-  const onBack = () => router.push('/buyer/rfq-summary');
+  const onBack = () => router.push('/buyer/dashboard');
 
   if (!rfqNumber) {
     return (
@@ -143,40 +138,12 @@ function BuyerRFQDetailsView() {
 
   const { rfq } = state;
 
-  /**
-   * Adopt the saved record into this page's own state.
-   *
-   * The page fetched the RFQ itself rather than reading it from the store, so the
-   * store update alone would leave this screen showing the pre-edit terms until a
-   * reload.
-   */
-  const handleSave = async (identifier: string, changes: Parameters<typeof updateRFQ>[1]) => {
-    const saved = await updateRFQ(identifier, changes);
-    setState({ status: 'loaded', rfq: saved });
-    return saved;
-  };
-
-  const handleDelete = async (identifier: string) => {
-    await deleteRFQ(identifier);
-    onBack();
-  };
-
   return (
-    <>
-      <RFQDetails
-        rfq={rfq}
-        onBack={onBack}
-        onEdit={() => setIsEditing(true)}
-        onDelete={() => setIsDeleting(true)}
-        onUpdate={(updatedRfq) => setState({ status: 'loaded', rfq: updatedRfq })}
-      />
-      <RFQEditModal rfq={isEditing ? rfq : null} onClose={() => setIsEditing(false)} onSave={handleSave} />
-      <RFQDeleteDialog
-        rfq={isDeleting ? rfq : null}
-        onClose={() => setIsDeleting(false)}
-        onConfirm={handleDelete}
-      />
-    </>
+    <RFQDetails
+      rfq={rfq}
+      onBack={onBack}
+      onUpdate={(updatedRfq) => setState({ status: 'loaded', rfq: updatedRfq })}
+    />
   );
 }
 

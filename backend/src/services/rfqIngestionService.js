@@ -394,6 +394,13 @@ function normalizeLineItems(rawItems, options = {}) {
     // rather than surfaced as a blank line for the buyer to clean up.
     if (!itemName) return;
 
+    if (options.requireValidQuantity) {
+      const qNum = Number(raw.quantity);
+      if (raw.quantity === null || raw.quantity === undefined || raw.quantity === '' || !Number.isFinite(qNum) || qNum <= 0) {
+        return;
+      }
+    }
+
     const normalized = {
       id: raw.id || `ent-ingested-${Date.now()}-${index}`,
       itemName,
@@ -456,6 +463,7 @@ function deriveTitle(entities) {
  * @param {string} [payload.source] where the rows came from
  * @param {string} [payload.sourceFileName]
  * @param {string} [payload.sourceEmail]
+ * @param {boolean} [payload.requireValidQuantity] enforce valid positive quantities
  */
 async function buildRFQDraft(payload = {}) {
   // Loaded once here rather than per line item, so classification below stays
@@ -464,6 +472,7 @@ async function buildRFQDraft(payload = {}) {
 
   const { entities, duplicatesRemoved, lineValues } = normalizeLineItems(payload.lineItems, {
     category: payload.category,
+    requireValidQuantity: Boolean(payload.requireValidQuantity),
   });
 
   // A declared major category (e.g. the email's "Category: Civil Works") is the
@@ -506,7 +515,9 @@ async function buildRFQDraft(payload = {}) {
   const draft = {
     title,
     category: declaredMajor || dominantMajor,
-    targetDeliveryDate: entities.length > 0 ? entities[0].targetDate : defaultTargetDate(),
+    targetDeliveryDate:
+      payload.targetDeliveryDate ||
+      (entities.length > 0 && entities[0].targetDate ? entities[0].targetDate : defaultTargetDate()),
     // Null rather than a placeholder figure: the wizard shows an empty budget
     // field so the buyer supplies the number the document did not state.
     estimatedBudget,

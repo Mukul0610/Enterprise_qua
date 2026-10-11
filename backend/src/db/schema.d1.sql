@@ -625,3 +625,32 @@ CREATE TABLE IF NOT EXISTS chaser_queue (
 );
 CREATE INDEX IF NOT EXISTS idx_chaser_queue_status_fire_at ON chaser_queue (status, fire_at);
 CREATE INDEX IF NOT EXISTS idx_chaser_queue_rfq_number ON chaser_queue (rfq_number);
+
+-- =============================================================================
+-- VENDOR RFQ UNLOCKS & CREDIT TRANSACTIONS (V0 Free Starter & Entitlements)
+-- =============================================================================
+CREATE TABLE IF NOT EXISTS rfq_unlocks (
+  id TEXT PRIMARY KEY,
+  vendor_id TEXT NOT NULL,
+  rfq_id TEXT NOT NULL,
+  credit_charged INTEGER NOT NULL DEFAULT 1,
+  source TEXT DEFAULT 'free_credit',
+  unlocked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uq_rfq_unlocks_vendor_rfq UNIQUE (vendor_id, rfq_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rfq_unlocks_vendor ON rfq_unlocks (vendor_id);
+CREATE INDEX IF NOT EXISTS idx_rfq_unlocks_rfq ON rfq_unlocks (rfq_id);
+
+CREATE TABLE IF NOT EXISTS vendor_credit_transactions (
+  id TEXT PRIMARY KEY,
+  vendor_id TEXT NOT NULL,
+  rfq_id TEXT,
+  transaction_type TEXT NOT NULL,
+  amount INTEGER NOT NULL,
+  balance_after INTEGER NOT NULL,
+  idempotency_key TEXT UNIQUE,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_vendor_credit_transactions_vendor ON vendor_credit_transactions (vendor_id, created_at DESC);
+

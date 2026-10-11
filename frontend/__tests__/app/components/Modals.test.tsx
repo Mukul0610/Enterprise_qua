@@ -1158,4 +1158,168 @@ describe('Modals.tsx', () => {
       expect(mockOnClose).toHaveBeenCalled();
     });
   });
+
+  describe('ActivePipelineModal null-safety & extended search', () => {
+    const mockOnClose = jest.fn();
+    const mockRfqs: RFQItem[] = [
+      {
+        id: 'rfq-1',
+        rfqNumber: 'RFQ-2026-001',
+        title: 'Hydraulic Seals',
+        category: 'Mechanical',
+        status: 'In Evaluation',
+        source: 'email_gateway',
+        sourcingMode: 'cb_open',
+        quotesCount: 3,
+        assignedVendors: [{ id: 'v1', name: 'Vendor Alpha', contactPerson: 'John', email: 'john@alpha.com', score: 90 }],
+        extractedEntities: [{ id: 'ent-1', itemName: 'High pressure seal', technicalSpecs: 'Specs A', quantity: 10, unit: 'Nos', category: 'Mechanical', majorCategory: 'Mechanical', minorCategory: 'Seals', confidence: 0.95, targetDate: '2026-09-15' }],
+        lineItems: [],
+        createdAt: '2026-09-01',
+        targetDeliveryDate: '2026-09-15',
+      },
+      {
+        id: 'rfq-2',
+        rfqNumber: 'RFQ-2026-002',
+        title: 'Servo Motors',
+        category: 'Electrical',
+        status: 'AI Recommended',
+        source: 'manual_entry',
+        sourcingMode: 'sole_source',
+        quotesCount: 1,
+        assignedVendors: [],
+        extractedEntities: [],
+        lineItems: [{ description: 'AC Servo Motor' } as any],
+        createdAt: '2026-09-02',
+      } as any,
+    ];
+
+    it('renders and filters by search input safely with nullish fields', () => {
+      const onDeepDive = jest.fn();
+      const onMatrix = jest.fn();
+      render(
+        <ActivePipelineModal
+          isOpen={true}
+          onClose={mockOnClose}
+          rfqs={mockRfqs}
+          onOpenDeepDive={onDeepDive}
+          onNavigateToMatrix={onMatrix}
+        />
+      );
+
+      expect(screen.getByText('Active Procurement Pipeline')).toBeInTheDocument();
+      expect(screen.getByText('RFQ-2026-001')).toBeInTheDocument();
+      expect(screen.getByText('RFQ-2026-002')).toBeInTheDocument();
+
+      const searchInput = screen.getByPlaceholderText('Search by RFQ number, title, category, or status...');
+      fireEvent.change(searchInput, { target: { value: 'Hydraulic' } });
+      expect(screen.getByText('RFQ-2026-001')).toBeInTheDocument();
+      expect(screen.queryByText('RFQ-2026-002')).not.toBeInTheDocument();
+
+      // Test searching by vendor and line item
+      fireEvent.change(searchInput, { target: { value: 'Alpha' } });
+      expect(screen.getByText('RFQ-2026-001')).toBeInTheDocument();
+
+      // Test reset filters button
+      const resetBtn = screen.getByText('Reset Filters');
+      fireEvent.click(resetBtn);
+      expect(screen.getByText('RFQ-2026-002')).toBeInTheDocument();
+    });
+  });
+
+  describe('IntakeSourcesModal null-safety & extended search', () => {
+    const mockOnClose = jest.fn();
+    const mockRfqs: RFQItem[] = [
+      {
+        id: 'rfq-1',
+        rfqNumber: 'RFQ-2026-001',
+        title: 'Email Order RFQ',
+        category: 'Pneumatics',
+        status: 'Quotes Received',
+        source: 'email_gateway',
+        sourceEmail: 'orders@supplier.com',
+        sourceFileName: 'order.pdf',
+        quotes: [],
+        createdAt: '2026-09-01',
+      } as any,
+      {
+        id: 'rfq-2',
+        rfqNumber: 'RFQ-2026-002',
+        title: 'Portal Ingest RFQ',
+        category: 'Electronics',
+        status: 'AI Recommended',
+        source: 'web_portal',
+        quotes: [],
+        createdAt: '2026-09-02',
+      } as any,
+    ];
+
+    it('renders tabs and filters safely by search input', () => {
+      render(
+        <IntakeSourcesModal
+          isOpen={true}
+          onClose={mockOnClose}
+          rfqs={mockRfqs}
+          onOpenDeepDive={jest.fn()}
+        />
+      );
+
+      expect(screen.getByText('Requisitions by Intake Source')).toBeInTheDocument();
+      expect(screen.getByText('RFQ-2026-001')).toBeInTheDocument();
+
+      const searchInput = screen.getByPlaceholderText('Filter by origin or title...');
+      fireEvent.change(searchInput, { target: { value: 'orders@supplier.com' } });
+      expect(screen.getByText('RFQ-2026-001')).toBeInTheDocument();
+      expect(screen.queryByText('RFQ-2026-002')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('SupplierQuotesModal null-safety & extended search', () => {
+    const mockOnClose = jest.fn();
+    const mockRfqs: RFQItem[] = [
+      {
+        id: 'rfq-1',
+        rfqNumber: 'RFQ-2026-001',
+        title: 'Valves',
+        category: 'Mechanical',
+        status: 'In Evaluation',
+        quotes: [
+          {
+            vendorId: 'v1',
+            vendorName: 'Apex Hydraulics',
+            vendorCategory: 'Client List',
+            unitPrice: 1200,
+            totalPrice: 12000,
+            leadTimeDays: 7,
+            complianceStatus: 'Fully Compliant',
+            aiMatchScore: 94,
+          } as any,
+        ],
+        createdAt: '2026-09-01',
+      } as any,
+    ];
+
+    it('renders supplier quotes and handles search filtering without throwing errors', () => {
+      const onMatrix = jest.fn();
+      const onDeepDive = jest.fn();
+      render(
+        <SupplierQuotesModal
+          isOpen={true}
+          onClose={mockOnClose}
+          rfqs={mockRfqs}
+          onNavigateToMatrix={onMatrix}
+          onOpenDeepDive={onDeepDive}
+        />
+      );
+
+      expect(screen.getByText('Supplier Quotes & Evaluation Matrix')).toBeInTheDocument();
+      expect(screen.getByText('Apex Hydraulics')).toBeInTheDocument();
+
+      const searchInput = screen.getByPlaceholderText('Search by vendor name, item title, or RFQ...');
+      fireEvent.change(searchInput, { target: { value: 'Apex' } });
+      expect(screen.getByText('Apex Hydraulics')).toBeInTheDocument();
+
+      fireEvent.change(searchInput, { target: { value: 'Nonexistent' } });
+      expect(screen.getByText('No supplier quotes found')).toBeInTheDocument();
+    });
+  });
 });

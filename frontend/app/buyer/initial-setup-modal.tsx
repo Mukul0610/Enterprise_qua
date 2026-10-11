@@ -1,16 +1,17 @@
 'use client';
 
 import React, { useState, useRef } from 'react';
-import { useRouter } from 'next/navigation';
 import * as XLSX from 'xlsx';
 import { useApp } from '@/lib/store';
-import { formatCurrency } from '@/lib/constants';
-import { fetchDispatchTemplates, type DispatchTemplate } from '@/lib/buyerProfileClient';
+import { formatCurrency, normalizePoDate } from '@/lib/constants';
+import { fetchDispatchTemplates, saveDispatchTemplate, type DispatchTemplate } from '@/lib/buyerProfileClient';
 import {
   VendorMasterUploadRecord,
   PurchaseOrderLineItemRecord,
   HistoricalPurchaseVendorRecord,
+  IngestionSummary,
 } from '@/lib/types';
+import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import {
   UploadCloud,
   FileSpreadsheet,
@@ -27,6 +28,7 @@ import {
   Clock,
   Download,
   AlertCircle,
+  AlertTriangle,
   Tag,
   Zap,
   X,
@@ -197,44 +199,120 @@ export function IngestionProgressCard({
   );
 }
 
+// Splits a raw email cell ("a@x.com; b@x.com, A@X.com") into unique addresses.
+// De-duplicates case-insensitively so each email is shown only once.
+const getUniqueEmails = (raw?: string | null): string[] => {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  return raw
+    .split(/[;,\s/|]+/)
+    .map((e) => e.trim())
+    .filter((e) => e.includes('@'))
+    .filter((e) => {
+      const key = e.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
 export default function InitialSetupModal() {
-  const router = useRouter();
   const {
     initialSetupModalOpen,
     setInitialSetupModalOpen,
     historicalPurchaseDataPeriod,
     setHistoricalPurchaseDataPeriod,
     processHistoricalPurchaseData,
+    lastIngestionSummary,
+    setInitialSetupCompleted,
     activeBuyerAccount,
     buyerVendors,
     showToast,
   } = useApp();
 
+  const [completionSummary, setCompletionSummary] = useState<IngestionSummary | null>(null);
+  const [isRetryingFailedEmails, setIsRetryingFailedEmails] = useState(false);
+
   const [step, setStep] = useState<1 | 2 | 3 | 4 | 5>(1);
-  // The buyer's own saved custom wording for Template A/B (vendor-email-templates
-  // page) — fetched once Step 5 is reached, so this preview shows exactly what
-  // storeService.processHistoricalPurchaseData will actually send, not just the
-  // hardcoded placeholder copy. Undefined/null fields fall back to that copy.
+  // The buyer's own saved wording for Template A/B — fetched once Step 5 is reached,
+  // so this preview shows exactly what storeService.processHistoricalPurchaseData will
+  // actually send, not just the hardcoded placeholder copy.
   const [savedTemplateA, setSavedTemplateA] = useState<DispatchTemplate | null>(null);
   const [savedTemplateB, setSavedTemplateB] = useState<DispatchTemplate | null>(null);
   React.useEffect(() => {
     if (step !== 5) return;
     let cancelled = false;
     (async () => {
-      const result = await fetchDispatchTemplates();
-      if (cancelled || !result.success) return;
-      setSavedTemplateA(result.data?.category_mapped || null);
-      setSavedTemplateB(result.data?.self_map_required || null);
+      try {
+        const result = await fetchDispatchTemplates();
+        if (cancelled || !result || !result.success) return;
+        setSavedTemplateA(result.data?.category_mapped || null);
+        setSavedTemplateB(result.data?.self_map_required || null);
+      } catch {
+        // Silently fallback to default templates if endpoint is unavailable
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [step]);
+
+  const [editingTemplateModal, setEditingTemplateModal] = useState<'A' | 'B' | null>(null);
+  const [tempSubject, setTempSubject] = useState('');
+  const [tempMessage, setTempMessage] = useState('');
+  const [isSavingTemplate, setIsSavingTemplate] = useState(false);
+
+  const openTemplateModal = (type: 'A' | 'B') => {
+    if (type === 'A') {
+      setTempSubject(savedTemplateA?.subject || `${activeBuyerAccount?.organizationName || 'Larsen & Toubro'} has mapped your supply categories`);
+      setTempMessage(savedTemplateA?.message || '• 1st Set: Engineering Spares - Mechanical\n• 2nd Set: Pumps, Valves, Hoses, Machinery Parts');
+    } else {
+      setTempSubject(savedTemplateB?.subject || 'Complete Your Category Mapping to Receive Enquiries');
+      setTempMessage(savedTemplateB?.message || "Buyer didn't map any categories for you, so please map yourself in order to receive enquiries.");
+    }
+    setEditingTemplateModal(type);
+  };
+
+  const handleSaveTemplate = async () => {
+    if (!editingTemplateModal) return;
+    setIsSavingTemplate(true);
+    try {
+      const templateKey = editingTemplateModal === 'A' ? 'category_mapped' : 'self_map_required';
+      const res = await saveDispatchTemplate(templateKey, {
+        subject: tempSubject,
+        message: tempMessage,
+      });
+      if (res.success) {
+        if (editingTemplateModal === 'A') {
+          setSavedTemplateA({ subject: tempSubject, message: tempMessage });
+        } else {
+          setSavedTemplateB({ subject: tempSubject, message: tempMessage });
+        }
+        showToast('Template Updated', `Template ${editingTemplateModal} has been saved.`, 'success');
+        setEditingTemplateModal(null);
+      } else {
+        showToast('Save Failed', res.error || 'Could not update template', 'warning');
+      }
+    } catch (err: any) {
+      showToast('Save Error', err.message || 'Could not update template', 'warning');
+    } finally {
+      setIsSavingTemplate(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (lastIngestionSummary) {
+      setCompletionSummary(lastIngestionSummary);
+    }
+  }, [lastIngestionSummary]);
   const [selectedPeriod, setSelectedPeriod] = useState<'1_year' | '2_years' | '3_years'>(historicalPurchaseDataPeriod || '2_years');
 
   // Active Session & Ingestion Job States
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [vendorJob, setVendorJob] = useState<IngestionJobState | null>(null);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [vendorUploadError, setVendorUploadError] = useState<string | null>(null);
+  const [poUploadError, setPoUploadError] = useState<string | null>(null);
   const [poJob, setPoJob] = useState<IngestionJobState | null>(null);
 
   // Separate Upload States & File Handlers
@@ -261,6 +339,71 @@ export default function InitialSetupModal() {
   const [isConfirmingIngestion, setIsConfirmingIngestion] = useState(false);
   const [activeReviewTab, setActiveReviewTab] = useState<'all' | 'mapped' | 'unmapped'>('all');
   const [apiJoinedVendors, setApiJoinedVendors] = useState<HistoricalPurchaseVendorRecord[] | null>(null);
+
+  // Validate a vendor row for required fields
+  const getVendorRowErrors = (v: VendorMasterUploadRecord): string[] => {
+    const errs: string[] = [];
+    if (!v.companyName || v.companyName.trim() === '') {
+      errs.push('Company Name is required');
+    }
+    if (!v.email || v.email.trim() === '') {
+      errs.push('Email is required');
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim())) {
+      errs.push('Invalid email format');
+    }
+    if (!v.phone || v.phone.trim() === '') {
+      errs.push('Mobile / Phone is required');
+    }
+    return errs;
+  };
+
+  const invalidVendors = storedVendors.filter((v) => getVendorRowErrors(v).length > 0);
+
+  const navigateToStep = (targetStep: 1 | 2 | 3 | 4 | 5): boolean => {
+    // Backward navigation to Step 1 or 2 is always allowed
+    if (targetStep <= 2) {
+      setStep(targetStep);
+      return true;
+    }
+
+    // If ingestion was completed, allow viewing Step 5 summary
+    if (targetStep === 5 && (completionSummary || lastIngestionSummary)) {
+      setStep(5);
+      return true;
+    }
+
+    // Moving forward to Step 3, 4, 5 requires at least 1 vendor in Vendor Master
+    if (storedVendors.length === 0) {
+      const msg = 'Vendor Master is required. Please upload your Vendor Master spreadsheet or add vendor records before proceeding.';
+      setVendorUploadError(msg);
+      showToast('Vendor Master Required', msg, 'warning');
+      setStep(2);
+      return false;
+    }
+
+    // Moving forward to Step 3, 4, 5 requires all Vendor Master rows to pass required-field validation
+    if (invalidVendors.length > 0) {
+      const msg = `Cannot proceed: ${invalidVendors.length} vendor record(s) contain missing or invalid required fields (Company Name, Email, or Mobile). Please click 'Edit Data' to fix them before continuing.`;
+      setVendorUploadError(msg);
+      showToast('Validation Error in Vendor Master', msg, 'warning');
+      setStep(2);
+      return false;
+    }
+
+    // Moving forward to Step 4 or 5 requires PO Dump data
+    if (targetStep >= 4 && poLineItems.length === 0) {
+      const msg = 'Historical PO Dump is required. Please upload your PO purchase dump spreadsheet before running AI Category Cross-Match.';
+      setPoUploadError(msg);
+      showToast('PO Dump Required', msg, 'warning');
+      setStep(3);
+      return false;
+    }
+
+    setVendorUploadError(null);
+    setPoUploadError(null);
+    setStep(targetStep);
+    return true;
+  };
 
   const authFetchHeaders = (): Record<string, string> => {
     const token =
@@ -449,28 +592,68 @@ export default function InitialSetupModal() {
           const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
           if (!rawJson || rawJson.length === 0) {
-            showToast('Empty File', 'The uploaded file has no readable data rows.', 'warning');
+            const errMsg = 'The uploaded Vendor Master file has no readable data rows.';
+            setVendorUploadError(errMsg);
+            showToast('Empty File', errMsg, 'warning');
             setIsParsingVendor(false);
             setVendorJob(null);
             return;
           }
 
+          const headerKeys = Object.keys(rawJson[0]);
+          const hasCompanyName = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['companyname', 'company', 'vendorname', 'vendor', 'suppliername', 'supplier', 'name', 'organization'].some(
+              (c) => clean === c || (clean.includes(c) && !clean.includes('code') && !clean.includes('mail') && !clean.includes('phone') && !clean.includes('contact'))
+            );
+          });
+          const hasEmail = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['email', 'emailid', 'emailaddress', 'mail', 'corporateemail', 'companyemail', 'vendoremail'].some((c) => clean.includes(c));
+          });
+          const hasPhone = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['phone', 'mobile', 'contactnumber', 'phonenumber', 'telephone', 'mobileno', 'contactno', 'cell', 'whatsapp'].some((c) => clean.includes(c));
+          });
+          const hasVendorCode = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['vendorcode', 'suppliercode', 'vendorid', 'supplierid', 'vcode', 'vendorno', 'vndcode'].some((c) => clean.includes(c));
+          });
+
+          if (!hasCompanyName && !hasEmail && !hasPhone && !hasVendorCode) {
+            const foundHeaders = headerKeys.filter(Boolean).slice(0, 6).join(', ') || 'None';
+            const errMsg = `Sheet headers do not match Vendor Master required fields. Expected: Company Name, Email ID, Mobile No. (Found: [${foundHeaders}]). Please download and use the official Vendor Master template.`;
+            setVendorUploadError(errMsg);
+            showToast('Invalid Sheet Headers', errMsg, 'warning');
+            setIsParsingVendor(false);
+            setVendorJob(null);
+            if (vendorFileInputRef.current) vendorFileInputRef.current.value = '';
+            return;
+          }
+
           const parsedVendors: VendorMasterUploadRecord[] = rawJson.map((row, idx) => {
             const keys = Object.keys(row);
-            const getVal = (possibleKeys: string[]): string => {
+            const getVal = (possibleKeys: string[], excludeSubstrings: string[] = []): string => {
+              // Pass 1: Exact matches (after stripping non-alphanumeric)
               for (const pk of possibleKeys) {
                 const pkClean = pk.toLowerCase().replace(/[^a-z0-9]/g, '');
-                const matchedKey = keys.find((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, '') === pkClean);
+                const matchedKey = keys.find((k) => {
+                  const kClean = k.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
+                  if (excludeSubstrings.some((ex) => kClean.includes(ex.toLowerCase().replace(/[^a-z0-9]/g, '')))) return false;
+                  return kClean === pkClean;
+                });
                 if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
                   return String(row[matchedKey]).trim();
                 }
               }
+              // Pass 2: Fuzzy matches (only for keys with 4+ alphanumeric chars to avoid short false matches like 'id' or 'code')
               for (const pk of possibleKeys) {
                 const pkClean = pk.toLowerCase().replace(/[^a-z0-9]/g, '');
-                if (!pkClean) continue;
+                if (!pkClean || pkClean.length < 4) continue;
                 const matchedKey = keys.find((k) => {
                   const kClean = k.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-                  return kClean.includes(pkClean) || pkClean.includes(kClean);
+                  if (excludeSubstrings.some((ex) => kClean.includes(ex.toLowerCase().replace(/[^a-z0-9]/g, '')))) return false;
+                  return kClean.includes(pkClean);
                 });
                 if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
                   return String(row[matchedKey]).trim();
@@ -479,13 +662,21 @@ export default function InitialSetupModal() {
               return '';
             };
 
-            const vendorCode = getVal(['vendorcode', 'vendor code', 'code', 'vendor id', 'supplier code', 'id']) || `VND-${1000 + idx + 1}`;
-            const companyName = getVal(['companyname', 'company name', 'vendor name', 'supplier', 'name', 'vendor', 'supplier name']) || `Supplier ${idx + 1}`;
-            const contactPerson = getVal(['contactperson', 'contact person', 'contact', 'person', 'representative', 'contact person name']) || 'Operations Lead';
-            const email = getVal(['email', 'email id', 'email_id', 'mail', 'corporate email']) || `contact@${companyName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'vendor'}.com`;
-            const phone = getVal(['phone', 'mobile', 'contact number', 'phone number', 'telephone', 'mobile number']) || '+91 98000 00000';
-            const address = getVal(['address', 'location', 'city', 'plant location', 'street', 'office address']) || 'Industrial Zone, India';
-            const gstNumber = getVal(['gstnumber', 'gstin', 'gst', 'gst number', 'tax id', 'gst no']) || '27AAACA0000A1Z0';
+            let rawVendorCode = getVal(
+              ['vendorcode', 'vendor code', 'vendor_code', 'suppliercode', 'supplier code', 'vendor id', 'supplier id', 'vcode', 'vnd code', 'vendorno', 'vendor no', 'vendor number', 'supplier number', 'vendor identifier'],
+              ['email', 'mail', 'phone', 'contact', 'gst']
+            );
+            // If the resolved vendorCode is an email address, discard it so it doesn't take email as vendor code
+            if (rawVendorCode && (rawVendorCode.includes('@') || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(rawVendorCode))) {
+              rawVendorCode = '';
+            }
+            const vendorCode = rawVendorCode || `VND-${1000 + idx + 1}`;
+            const companyName = getVal(['companyname', 'company name', 'vendor name', 'supplier name', 'supplier', 'company', 'organization', 'vendor', 'name'], ['email', 'mail', 'phone', 'contactperson', 'code']);
+            const contactPerson = getVal(['contactperson', 'contact person', 'contact person name', 'representative', 'person name', 'contact name', 'person', 'poc'], ['email', 'mail', 'phone', 'mobile']);
+            const email = getVal(['email', 'email id', 'email_id', 'emailid', 'email address', 'emailaddress', 'mail', 'corporate email', 'company email', 'vendor email']);
+            const phone = getVal(['phone', 'mobile', 'contact number', 'phone number', 'telephone', 'mobile number', 'contact no', 'phone no', 'mobile no', 'cell', 'whatsapp'], ['email', 'mail', 'person', 'contactperson']);
+            const address = getVal(['address', 'location', 'city', 'plant location', 'street', 'office address', 'plant', 'state', 'pincode', 'pin code']);
+            const gstNumber = getVal(['gstnumber', 'gstin', 'gst', 'gst number', 'tax id', 'gst no', 'taxid', 'tax number', 'gstin number']);
             const ratingRaw = getVal(['vendorratingscore', 'rating', 'score', 'vendor rating', 'rating 0 100', 'performance score', 'vendor rating score', 'rating optional', 'rating 0-100', 'rating0100']);
             let vendorRatingScore: number | undefined = undefined;
             if (ratingRaw && !isNaN(Number(ratingRaw))) {
@@ -508,7 +699,19 @@ export default function InitialSetupModal() {
               gstNumber,
               vendorRatingScore,
             };
-          });
+          }).filter((v) => Boolean(v.companyName?.trim() || v.email?.trim() || v.phone?.trim() || v.gstNumber?.trim() || v.contactPerson?.trim()));
+
+          if (parsedVendors.length === 0 || !parsedVendors.some((v) => v.companyName || v.email || v.phone)) {
+            const errMsg = 'The uploaded Vendor Master file has no recognizable supplier rows with Company Name or contact details. Please verify your file.';
+            setVendorUploadError(errMsg);
+            showToast('Invalid Vendor File', errMsg, 'warning');
+            setIsParsingVendor(false);
+            setVendorJob(null);
+            if (vendorFileInputRef.current) vendorFileInputRef.current.value = '';
+            return;
+          }
+
+          setVendorUploadError(null);
 
           setStoredVendors(parsedVendors);
           setVendorMasterUploaded(true);
@@ -690,44 +893,82 @@ export default function InitialSetupModal() {
       reader.onload = async (e) => {
         try {
           const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
+          const workbook = XLSX.read(data, { type: 'array', cellDates: true });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
 
           if (!rawJson || rawJson.length === 0) {
-            showToast('Empty PO File', 'The uploaded PO dump has no readable rows.', 'warning');
+            const errMsg = 'The uploaded PO dump file has no readable data rows.';
+            setPoUploadError(errMsg);
+            showToast('Empty PO File', errMsg, 'warning');
             setIsParsingPo(false);
             setPoJob(null);
             return;
           }
 
+          const headerKeys = Object.keys(rawJson[0]);
+          const hasPoNumber = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['ponumber', 'po', 'pono', 'orderid', 'ordernumber', 'orderno', 'purchaseorder'].some((c) => clean === c || clean.includes(c));
+          });
+          const hasVendor = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['vendorname', 'vendoridentifier', 'vendor', 'suppliername', 'supplier', 'companyname', 'vendorcode', 'vendorid'].some((c) => clean === c || clean.includes(c));
+          });
+          const hasItem = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['lineitemdescription', 'lineitem', 'itemdescription', 'description', 'itemname', 'productdescription', 'productname', 'materialdescription', 'material', 'servicedescription', 'service', 'item'].some((c) => clean === c || clean.includes(c));
+          });
+          const hasSpendOrQty = headerKeys.some((k) => {
+            const clean = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return ['quantity', 'qty', 'spend', 'totalspend', 'totalspendinr', 'totalamount', 'totalamountinr', 'totalinr', 'unitprice', 'price', 'rate', 'amount', 'totalvalue', 'poamount', 'total'].some((c) => clean === c || clean.includes(c));
+          });
+
+          if (!hasPoNumber && !hasVendor && !hasItem && !hasSpendOrQty) {
+            const foundHeaders = headerKeys.filter(Boolean).slice(0, 6).join(', ') || 'None';
+            const errMsg = `Sheet headers do not match PO Purchase Dump required fields. Expected: PO Number, Vendor Name, Item Description, Quantity / Spend. (Found: [${foundHeaders}]). Please download and use the provided PO Dump Excel template.`;
+            setPoUploadError(errMsg);
+            showToast('Invalid PO Sheet Headers', errMsg, 'warning');
+            setIsParsingPo(false);
+            setPoJob(null);
+            if (poFileInputRef.current) poFileInputRef.current.value = '';
+            return;
+          }
+
           const parsedPOs: PurchaseOrderLineItemRecord[] = rawJson.map((row, idx) => {
             const keys = Object.keys(row);
-            const getVal = (possibleKeys: string[]): string => {
+            const getRawVal = (possibleKeys: string[], excludeSubstrings: string[] = []): unknown => {
               for (const pk of possibleKeys) {
                 const pkClean = pk.toLowerCase().replace(/[^a-z0-9]/g, '');
                 const matchedKey = keys.find((k) => k.toLowerCase().trim().replace(/[^a-z0-9]/g, '') === pkClean);
                 if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
-                  return String(row[matchedKey]).trim();
+                  return row[matchedKey];
                 }
               }
               for (const pk of possibleKeys) {
                 const pkClean = pk.toLowerCase().replace(/[^a-z0-9]/g, '');
-                if (!pkClean) continue;
+                if (!pkClean || pkClean.length < 3) continue;
                 const matchedKey = keys.find((k) => {
                   const kClean = k.toLowerCase().trim().replace(/[^a-z0-9]/g, '');
-                  return kClean.includes(pkClean) || pkClean.includes(kClean);
+                  if (excludeSubstrings.some((ex) => kClean.includes(ex.toLowerCase().replace(/[^a-z0-9]/g, '')))) return false;
+                  return kClean.includes(pkClean);
                 });
                 if (matchedKey && row[matchedKey] !== undefined && row[matchedKey] !== '') {
-                  return String(row[matchedKey]).trim();
+                  return row[matchedKey];
                 }
               }
-              return '';
+              return undefined;
+            };
+
+            const getVal = (possibleKeys: string[], excludeSubstrings: string[] = []): string => {
+              const raw = getRawVal(possibleKeys, excludeSubstrings);
+              return raw !== undefined && raw !== null ? String(raw).trim() : '';
             };
 
             const poNumber = getVal(['ponumber', 'po number', 'po #', 'po no', 'pono', 'order id', 'order number', 'order no']) || `PO-2025-${(1000 + idx).toString()}`;
-            const poDate = getVal(['podate', 'po date', 'date', 'order date', 'creation date']) || '2025-06-15';
+            const rawPoDate = getRawVal(['podate', 'po date', 'date', 'order date', 'creation date']);
+            const poDate = normalizePoDate(rawPoDate) || '2025-06-15';
             const vendorIdentifier = getVal(['vendor name', 'vendor identifier', 'vendor', 'supplier name', 'supplier', 'company name', 'vendor code', 'vendor id']) || 'Apex Supplies Ltd.';
             const itemName = getVal(['line item description', 'line item', 'item description', 'description', 'item name', 'product description', 'product name', 'material description', 'material', 'service description', 'service', 'item']) || 'Industrial Mechanical Spares';
             const specs = getVal(['specs', 'specification', 'technical specs', 'specifications', 'details', 'item specs', 'grade']);
@@ -775,8 +1016,21 @@ export default function InitialSetupModal() {
               spend: totalSpend,
               department,
             };
-          });
+          })
+            .filter((p) => Boolean(p.vendorIdentifier?.trim() || p.vendorName?.trim() || p.itemName?.trim() || p.itemDescription?.trim() || p.department?.trim()))
+            .sort((a, b) => new Date(b.poDate || 0).getTime() - new Date(a.poDate || 0).getTime());
 
+          if (parsedPOs.length === 0) {
+            const errMsg = 'The uploaded PO dump file contains no recognizable purchase order records. Please verify your file.';
+            setPoUploadError(errMsg);
+            showToast('Invalid PO File', errMsg, 'warning');
+            setIsParsingPo(false);
+            setPoJob(null);
+            if (poFileInputRef.current) poFileInputRef.current.value = '';
+            return;
+          }
+
+          setPoUploadError(null);
           setPoLineItems(parsedPOs);
           setPoDataUploaded(true);
 
@@ -849,7 +1103,9 @@ export default function InitialSetupModal() {
           showToast('PO Dump Uploaded', `Successfully parsed & loaded ${parsedPOs.length.toLocaleString('en-IN')} PO line items from ${file.name}.`, 'success');
         } catch (err: any) {
           console.error('PO Dump Parse Error:', err);
-          showToast('Parsing Error', `Could not parse PO file: ${err.message || 'Unknown format'}`, 'warning');
+          const errMsg = `Could not parse PO file: ${err.message || 'Unknown format'}`;
+          setPoUploadError(errMsg);
+          showToast('Parsing Error', errMsg, 'warning');
           setPoJob(null);
         } finally {
           setIsParsingPo(false);
@@ -857,7 +1113,9 @@ export default function InitialSetupModal() {
       };
 
       reader.onerror = () => {
-        showToast('File Read Error', 'Failed to read file from disk.', 'warning');
+        const errMsg = 'Failed to read file from disk.';
+        setPoUploadError(errMsg);
+        showToast('File Read Error', errMsg, 'warning');
         setIsParsingPo(false);
         setPoJob(null);
       };
@@ -871,6 +1129,7 @@ export default function InitialSetupModal() {
     setApiJoinedVendors(null);
     setVendorMasterUploaded(false);
     setVendorFileName('');
+    setVendorUploadError(null);
     setIsEditingVendorTable(false);
     if (vendorFileInputRef.current) {
       vendorFileInputRef.current.value = '';
@@ -883,6 +1142,7 @@ export default function InitialSetupModal() {
     setApiJoinedVendors(null);
     setPoFileName(`PO_Purchase_Dump_${selectedPeriod}.xlsx`);
     setPoDataUploaded(false);
+    setPoUploadError(null);
     if (poFileInputRef.current) {
       poFileInputRef.current.value = '';
     }
@@ -1089,25 +1349,109 @@ export default function InitialSetupModal() {
   };
   const handleDownloadVendorMasterCsv = handleDownloadVendorMasterExcel;
 
-  // Download Sample PO Data CSV
-  const handleDownloadPoDataCsv = () => {
-    const csv =
-      'PO Number,PO Date,Vendor Name / Code,Item Name & Description,Quantity,Unit,Unit Price,Total Spend,Department\n' +
-      'PO-2025-00891,2025-04-12,Apex Supplies Ltd.,Centrifugal Water Pump 500 GPM (15 HP Motor),12,Units,12500,150000,Mechanical\n' +
-      'PO-2025-01156,2025-08-04,Kiran Valve Industries,Flanged Gate Valve 4-inch Class 150,24,Units,3800,91200,Piping\n' +
-      'PO-2025-01431,2025-10-10,TechnoForce Engineering Ltd,LV Switchgear Modular Panels with Drawout MCCB,3,Panels,85000,255000,Electrical\n' +
-      'PO-2025-01740,2025-12-05,Everest Steel & Infra Structures,Fe500D TMT High-Yield Reinforcement Bars,120,Tons,620,744000,Civil\n';
+  // Download Sample PO Data Excel (.xlsx)
+  const handleDownloadPoDataExcel = () => {
+    const samplePoRows = [
+      {
+        'PO Number': 'PO-2025-00891',
+        'PO Date': '2025-04-12',
+        'Vendor Name': 'Apex Supplies Ltd.',
+        'Item Description': 'Centrifugal Water Pump 500 GPM (15 HP Motor)',
+        'Specifications': '15 HP Motor, 500 GPM, Cast Iron, Class 150',
+        Quantity: 12,
+        Unit: 'Units',
+        'Unit Price (INR)': 12500,
+        'Total Spend (INR)': 150000,
+        Department: 'Mechanical',
+      },
+      {
+        'PO Number': 'PO-2025-01156',
+        'PO Date': '2025-08-04',
+        'Vendor Name': 'Kiran Valve Industries',
+        'Item Description': 'Flanged Gate Valve 4-inch Class 150',
+        'Specifications': 'Forged Steel, ASTM A105, Flanged RF',
+        Quantity: 24,
+        Unit: 'Units',
+        'Unit Price (INR)': 3800,
+        'Total Spend (INR)': 91200,
+        Department: 'Piping',
+      },
+      {
+        'PO Number': 'PO-2025-01431',
+        'PO Date': '2025-10-10',
+        'Vendor Name': 'Nova Electrical Spares',
+        'Item Description': 'LV Switchgear Modular Panels with Drawout MCCB',
+        'Specifications': '415V, 3-Phase 50Hz, 800A Busbar Rating',
+        Quantity: 3,
+        Unit: 'Panels',
+        'Unit Price (INR)': 85000,
+        'Total Spend (INR)': 255000,
+        Department: 'Electrical',
+      },
+      {
+        'PO Number': 'PO-2025-01740',
+        'PO Date': '2025-12-05',
+        'Vendor Name': 'Everest Steel & Infra Structures',
+        'Item Description': 'Fe500D TMT High-Yield Reinforcement Bars',
+        'Specifications': 'IS 1786 Grade Fe500D, 16mm Diameter',
+        Quantity: 120,
+        Unit: 'Tons',
+        'Unit Price (INR)': 6200,
+        'Total Spend (INR)': 744000,
+        Department: 'Civil',
+      },
+      {
+        'PO Number': 'PO-2025-02015',
+        'PO Date': '2026-01-20',
+        'Vendor Name': 'Vortex Hydraulic Systems',
+        'Item Description': 'Hydraulic Power Pack Unit 200 Bar with Gear Pump',
+        'Specifications': '200 Bar Working Pressure, 40L Reservoir',
+        Quantity: 2,
+        Unit: 'Units',
+        'Unit Price (INR)': 110000,
+        'Total Spend (INR)': 220000,
+        Department: 'Mechanical',
+      },
+    ];
 
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const worksheet = XLSX.utils.json_to_sheet(samplePoRows);
+    const workbook: XLSX.WorkBook = {
+      Sheets: { 'PO Purchase Dump': worksheet },
+      SheetNames: ['PO Purchase Dump'],
+    };
+    const buffer = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `Procucev_Template_2_PO_Purchase_Dump_${selectedPeriod}.csv`;
+    link.download = `Procucev_Template_2_PO_Purchase_Dump_${selectedPeriod}.xlsx`;
     link.click();
-    showToast('Template Downloaded', 'Sample PO Pre-Purchase Order Dump CSV downloaded.', 'success');
+    showToast('Template Downloaded', 'Sample PO Pre-Purchase Order Dump Excel template downloaded.', 'success');
   };
+  const handleDownloadPoDataCsv = handleDownloadPoDataExcel;
 
   const handleSimulatePOJoin = () => {
+    if (storedVendors.length === 0) {
+      const msg = 'Vendor Master is required. Please upload your Vendor Master spreadsheet before running AI Category Cross-Match.';
+      setVendorUploadError(msg);
+      showToast('Vendor Master Required', msg, 'warning');
+      setStep(2);
+      return;
+    }
+    if (invalidVendors.length > 0) {
+      const msg = `Cannot proceed: ${invalidVendors.length} vendor record(s) contain missing or invalid required fields (Company Name, Email, or Mobile). Please fix them before continuing.`;
+      setVendorUploadError(msg);
+      showToast('Validation Error in Vendor Master', msg, 'warning');
+      setStep(2);
+      return;
+    }
+    if (poLineItems.length === 0) {
+      const msg = 'Historical PO Dump is required. Please upload your PO purchase dump spreadsheet before running AI Category Cross-Match.';
+      setPoUploadError(msg);
+      showToast('PO Dump Required', msg, 'warning');
+      return;
+    }
+
     setIsProcessingPOJoin(true);
     let apiData: HistoricalPurchaseVendorRecord[] | null = null;
 
@@ -1147,9 +1491,62 @@ export default function InitialSetupModal() {
 
   const handleConfirmFinalIngestion = async () => {
     if (isConfirmingIngestion) return;
+    setSubmissionError(null);
     setIsConfirmingIngestion(true);
-    await processHistoricalPurchaseData(selectedPeriod, joinedVendors);
-    setIsConfirmingIngestion(false);
+    try {
+      if (joinedVendors.length === 0) {
+        const msg = 'No vendor records found to ingest. Please upload a valid Vendor Master file first.';
+        setSubmissionError(msg);
+        showToast('Ingestion Error', msg, 'warning');
+        return;
+      }
+      const imported = await processHistoricalPurchaseData(selectedPeriod, joinedVendors);
+      if (imported === 0 && !lastIngestionSummary && joinedVendors.length > 0) {
+        const msg = 'Failed to ingest historical purchase data. Please check your network connection and server status, then try again.';
+        setSubmissionError(msg);
+        showToast('Ingestion Failed', msg, 'warning');
+        return;
+      }
+      setInitialSetupModalOpen(false);
+      showToast(
+        'Setup Complete',
+        `Dual-file vendor master and PO data ingested successfully for ${selectedPeriod === '1_year' ? '1 Year' : selectedPeriod === '2_years' ? '2 Years' : '3 Years'} (${joinedVendors.length} suppliers processed).`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Ingestion confirmation error:', err);
+      const msg = err?.message || 'An unexpected error occurred during ingestion. Please try again.';
+      setSubmissionError(msg);
+      showToast('Ingestion Error', msg, 'warning');
+    } finally {
+      setIsConfirmingIngestion(false);
+    }
+  };
+
+  const handleRetryFailedEmails = async () => {
+    if (isRetryingFailedEmails) return;
+    setIsRetryingFailedEmails(true);
+    try {
+      await processHistoricalPurchaseData(selectedPeriod, joinedVendors);
+      showToast(
+        'Retrying Dispatches',
+        'Re-attempting emails for failed vendors. Already sent emails were preserved.',
+        'info'
+      );
+    } catch (err) {
+      console.error('Retry error:', err);
+      showToast('Retry Failed', 'Could not complete retry dispatch.', 'warning');
+    } finally {
+      setIsRetryingFailedEmails(false);
+    }
+  };
+
+  const handleCompleteAndClose = () => {
+    if (setInitialSetupCompleted) {
+      setInitialSetupCompleted(true);
+    }
+    setInitialSetupModalOpen(false);
+    setCompletionSummary(null);
   };
 
   return (
@@ -1201,7 +1598,7 @@ export default function InitialSetupModal() {
             <button
               key={s.num}
               type="button"
-              onClick={() => setStep(s.num as any)}
+              onClick={() => navigateToStep(s.num as any)}
               className={`p-2 rounded-xl border transition-all ${
                 step === s.num
                   ? 'bg-indigo-600 text-white border-indigo-600 shadow-md shadow-indigo-600/20'
@@ -1222,6 +1619,25 @@ export default function InitialSetupModal() {
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider">
                 Step 1: Choose Historical Purchase Period
               </h3>
+            </div>
+
+            {/* Vendor Master Template & Required Columns Banner */}
+            <div className="p-3.5 rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-gradient-to-r from-indigo-50/70 via-purple-50/30 to-blue-50/70 dark:from-indigo-950/40 dark:via-purple-950/20 dark:to-blue-950/40 flex items-center justify-between gap-3 shadow-xs flex-wrap sm:flex-nowrap">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="badge badge-indigo font-bold text-[10px] shrink-0">Required Columns</span>
+                <span className="text-xs text-slate-700 dark:text-gray-300 font-medium">
+                  Vendor Code, Company Name, Contact Person, Mobile, Email, GSTIN &amp; Location
+                </span>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleDownloadVendorMasterExcel}
+                  className="btn btn-secondary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
+                >
+                  <Download size={13} /> Download Vendor Master Template
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -1280,7 +1696,7 @@ export default function InitialSetupModal() {
             <div className="flex justify-end pt-4 border-t border-slate-100 dark:border-gray-800">
               <button
                 type="button"
-                onClick={() => setStep(2)}
+                onClick={() => navigateToStep(2)}
                 className="btn btn-primary font-bold text-xs py-2.5 px-5 flex items-center gap-1.5"
               >
                 Continue to File 1: Vendor Master <ArrowRight size={14} />
@@ -1308,35 +1724,65 @@ export default function InitialSetupModal() {
               <h3 className="text-sm font-black text-slate-900 dark:text-white uppercase tracking-wider">
                 Step 2: Upload File 1 — Vendor Master
               </h3>
-            </div>
-
-            {/* Single-line Simplified Vendor Master Info & Download Banner */}
-            <div className="p-3.5 rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-gradient-to-r from-indigo-50/70 via-purple-50/30 to-blue-50/70 dark:from-indigo-950/40 dark:via-purple-950/20 dark:to-blue-950/40 flex items-center justify-between gap-3 shadow-xs">
-              <div className="flex items-center gap-2 min-w-0">
-                <span className="badge badge-indigo font-bold text-[10px] shrink-0">Required Columns</span>
-                <span className="text-xs text-slate-700 dark:text-gray-300 font-medium truncate">
-                  Vendor Code, Company Name, Contact Person, Mobile, Email, GSTIN &amp; Location
-                </span>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
+              {storedVendors.length > 0 && (
                 <button
                   type="button"
-                  onClick={handleDownloadVendorMasterExcel}
-                  className="btn btn-secondary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
+                  onClick={clearVendorMasterData}
+                  className="text-[11px] text-rose-600 hover:text-rose-700 dark:text-rose-400 underline font-medium"
                 >
-                  <Download size={13} /> Download Excel Template
+                  Clear Selection
                 </button>
-                {storedVendors.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={clearVendorMasterData}
-                    className="text-[11px] text-rose-600 hover:text-rose-700 dark:text-rose-400 underline font-medium"
-                  >
-                    Clear Selection
-                  </button>
-                )}
-              </div>
+              )}
             </div>
+
+            {/* Error Banner if Vendor Upload has issues */}
+            {vendorUploadError && (
+              <div
+                data-testid="vendor-upload-error-banner"
+                className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2.5 shadow-xs animate-shake"
+              >
+                <AlertCircle className="text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" size={16} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-rose-900 dark:text-rose-100">Vendor Master Upload / Validation Error</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed">{vendorUploadError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setVendorUploadError(null)}
+                  className="text-rose-500 hover:text-rose-700 dark:text-rose-400 p-0.5"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            {/* Validation Warning Banner if some stored vendors are missing required fields */}
+            {storedVendors.length > 0 && invalidVendors.length > 0 && (
+              <div
+                data-testid="vendor-validation-warning-banner"
+                className="p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-800 text-amber-900 dark:text-amber-200 text-xs flex items-start gap-2.5 shadow-xs"
+              >
+                <AlertTriangle className="text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" size={16} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-amber-900 dark:text-amber-100">
+                    {invalidVendors.length} Supplier Record{invalidVendors.length > 1 ? 's' : ''} Missing Required Fields
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed">
+                    Required fields: <strong>Company Name</strong>, <strong>Email Address</strong>, and <strong>Mobile / Phone</strong>.
+                    You cannot move to the next step until all vendor records have valid required information.
+                  </p>
+                  {!isEditingVendorTable && (
+                    <button
+                      type="button"
+                      onClick={() => setIsEditingVendorTable(true)}
+                      className="btn btn-secondary btn-xs font-bold text-[10px] mt-2 border-amber-300 dark:border-amber-700 text-amber-800 dark:text-amber-200 hover:bg-amber-100 dark:hover:bg-amber-900/50 flex items-center gap-1"
+                    >
+                      <Pencil size={11} /> Edit and Fix Incomplete Records
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Progress Card when upload is active or completed */}
             {vendorJob && (
@@ -1490,10 +1936,10 @@ export default function InitialSetupModal() {
                       <thead className="bg-indigo-50/70 dark:bg-gray-800 text-[10px] uppercase font-bold text-indigo-900 dark:text-gray-300 sticky top-0 z-10">
                         <tr>
                           <th className="p-2 w-28">Vendor Code</th>
-                          <th className="p-2 min-w-[140px]">Company Name</th>
+                          <th className="p-2 min-w-[140px]">Company Name *</th>
                           <th className="p-2 min-w-[120px]">Contact Person</th>
-                          <th className="p-2 min-w-[140px]">Email Address</th>
-                          <th className="p-2 min-w-[110px]">Phone</th>
+                          <th className="p-2 min-w-[140px]">Email Address *</th>
+                          <th className="p-2 min-w-[110px]">Phone *</th>
                           <th className="p-2 min-w-[120px]">GSTIN</th>
                           <th className="p-2 min-w-[140px]">Address / Location</th>
                           <th className="p-2 min-w-[110px]">Rating</th>
@@ -1501,104 +1947,142 @@ export default function InitialSetupModal() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-gray-800">
-                        {storedVendors.slice(0, vendorPreviewLimit).map((v) => (
-                          <tr key={v.id} className="hover:bg-indigo-50/30 dark:hover:bg-gray-800/50 group transition-colors">
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.vendorCode || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'vendorCode', e.target.value)}
-                                placeholder="VND-CODE"
-                                className="w-full font-mono text-[10px] font-bold px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.companyName || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'companyName', e.target.value)}
-                                placeholder="Company name"
-                                className="w-full font-bold text-xs px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-900 dark:text-white focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.contactPerson || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'contactPerson', e.target.value)}
-                                placeholder="Contact Name"
-                                className="w-full text-[10px] px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="email"
-                                value={v.email || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'email', e.target.value)}
-                                placeholder="email@domain.com"
-                                className="w-full font-mono text-[10px] font-semibold px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-indigo-600 dark:text-indigo-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.phone || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'phone', e.target.value)}
-                                placeholder="+91 Phone"
-                                className="w-full text-[10px] px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.gstNumber || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'gstNumber', e.target.value.toUpperCase())}
-                                placeholder="GSTIN"
-                                className="w-full font-mono text-[10px] font-bold px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-200 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <input
-                                type="text"
-                                value={v.address || ''}
-                                onChange={(e) => handleUpdateVendorField(v.id, 'address', e.target.value)}
-                                placeholder="City, State / Address"
-                                className="w-full text-[10px] px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
-                              />
-                            </td>
-                            <td className="p-1.5 align-top">
-                              <div className="flex items-center gap-1.5">
+                        {storedVendors.slice(0, vendorPreviewLimit).map((v) => {
+                          const rowErrors = getVendorRowErrors(v);
+                          const hasErrors = rowErrors.length > 0;
+                          const isNameInvalid = !v.companyName || v.companyName.trim() === '';
+                          const isEmailInvalid = !v.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim());
+                          const isPhoneInvalid = !v.phone || v.phone.trim() === '';
+
+                          return (
+                            <tr
+                              key={v.id}
+                              className={`transition-colors ${
+                                hasErrors
+                                  ? 'bg-rose-50/50 dark:bg-rose-950/20'
+                                  : 'hover:bg-indigo-50/30 dark:hover:bg-gray-800/50'
+                              } group`}
+                            >
+                              <td className="p-1.5 align-top">
                                 <input
-                                  type="number"
-                                  min="0"
-                                  max="100"
-                                  value={v.vendorRatingScore !== undefined ? v.vendorRatingScore : ''}
-                                  onChange={(e) => {
-                                    const raw = e.target.value.trim();
-                                    handleUpdateVendorField(
-                                      v.id,
-                                      'vendorRatingScore',
-                                      raw === '' ? undefined : Math.min(100, Math.max(0, Math.round(Number(raw))))
-                                    );
-                                  }}
-                                  placeholder="0-100"
-                                  className="w-16 text-center font-bold text-xs px-2 py-1 rounded bg-amber-50/80 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 placeholder:text-amber-400/60 focus:border-amber-500 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  type="text"
+                                  value={v.vendorCode || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'vendorCode', e.target.value)}
+                                  placeholder="VND-CODE"
+                                  className="w-full font-mono text-[10px] font-bold px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
                                 />
-                                <span className="text-[10px] text-slate-400 font-bold shrink-0">/100</span>
-                              </div>
-                            </td>
-                            <td className="p-1.5 align-top text-center">
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteVendorRow(v.id)}
-                                className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-all opacity-70 group-hover:opacity-100"
-                                title={`Delete ${v.companyName || 'Row'}`}
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="text"
+                                  value={v.companyName || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'companyName', e.target.value)}
+                                  placeholder="Company name"
+                                  className={`w-full font-bold text-xs px-1.5 py-1 rounded focus:outline-none transition-all ${
+                                    isNameInvalid
+                                      ? 'border border-rose-400 bg-rose-50/70 dark:bg-rose-950/40 text-rose-900 dark:text-rose-100 focus:border-rose-500'
+                                      : 'border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/80 text-slate-900 dark:text-white focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900'
+                                  }`}
+                                />
+                                {isNameInvalid && (
+                                  <span className="text-[9px] text-rose-600 dark:text-rose-400 font-bold block mt-0.5">Required</span>
+                                )}
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="text"
+                                  value={v.contactPerson || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'contactPerson', e.target.value)}
+                                  placeholder="Contact Name"
+                                  className="w-full text-[10px] px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-300 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
+                                />
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="email"
+                                  value={v.email || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'email', e.target.value)}
+                                  placeholder="email@domain.com"
+                                  className={`w-full font-mono text-[10px] font-semibold px-1.5 py-1 rounded focus:outline-none transition-all ${
+                                    isEmailInvalid
+                                      ? 'border border-rose-400 bg-rose-50/70 dark:bg-rose-950/40 text-rose-900 dark:text-rose-100 focus:border-rose-500'
+                                      : 'border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/80 text-indigo-600 dark:text-indigo-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900'
+                                  }`}
+                                />
+                                {isEmailInvalid && (
+                                  <span className="text-[9px] text-rose-600 dark:text-rose-400 font-bold block mt-0.5">
+                                    {v.email ? 'Invalid Email' : 'Required'}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="text"
+                                  value={v.phone || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'phone', e.target.value)}
+                                  placeholder="+91 Phone"
+                                  className={`w-full text-[10px] px-1.5 py-1 rounded focus:outline-none transition-all ${
+                                    isPhoneInvalid
+                                      ? 'border border-rose-400 bg-rose-50/70 dark:bg-rose-950/40 text-rose-900 dark:text-rose-100 focus:border-rose-500'
+                                      : 'border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800/80 text-slate-500 dark:text-gray-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900'
+                                  }`}
+                                />
+                                {isPhoneInvalid && (
+                                  <span className="text-[9px] text-rose-600 dark:text-rose-400 font-bold block mt-0.5">Required</span>
+                                )}
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="text"
+                                  value={v.gstNumber || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'gstNumber', e.target.value.toUpperCase())}
+                                  placeholder="GSTIN"
+                                  className="w-full font-mono text-[10px] font-bold px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-700 dark:text-gray-200 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
+                                />
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <input
+                                  type="text"
+                                  value={v.address || ''}
+                                  onChange={(e) => handleUpdateVendorField(v.id, 'address', e.target.value)}
+                                  placeholder="City, State / Address"
+                                  className="w-full text-[10px] px-1.5 py-1 rounded bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 text-slate-500 dark:text-gray-400 focus:border-indigo-500 focus:bg-white dark:focus:bg-gray-900 focus:outline-none transition-all"
+                                />
+                              </td>
+                              <td className="p-1.5 align-top">
+                                <div className="flex items-center gap-1.5">
+                                  <input
+                                    type="number"
+                                    min="0"
+                                    max="100"
+                                    value={v.vendorRatingScore !== undefined ? v.vendorRatingScore : ''}
+                                    onChange={(e) => {
+                                      const raw = e.target.value.trim();
+                                      handleUpdateVendorField(
+                                        v.id,
+                                        'vendorRatingScore',
+                                        raw === '' ? undefined : Math.min(100, Math.max(0, Math.round(Number(raw))))
+                                      );
+                                    }}
+                                    placeholder="0-100"
+                                    className="w-16 text-center font-bold text-xs px-2 py-1 rounded bg-amber-50/80 dark:bg-amber-950/50 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-400 placeholder:text-amber-400/60 focus:border-amber-500 focus:outline-none transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                  />
+                                  <span className="text-[10px] text-slate-400 font-bold shrink-0">/100</span>
+                                </div>
+                              </td>
+                              <td className="p-1.5 align-top text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteVendorRow(v.id)}
+                                  className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/50 transition-all opacity-70 group-hover:opacity-100"
+                                  title={`Delete ${v.companyName || 'Row'}`}
+                                >
+                                  <Trash2 size={13} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1619,26 +2103,65 @@ export default function InitialSetupModal() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-100 dark:divide-gray-800">
-                        {storedVendors.slice(0, vendorPreviewLimit).map((v) => (
-                          <tr key={v.id} className="hover:bg-slate-50 dark:hover:bg-gray-800/40">
-                            <td className="p-2.5 font-mono text-[10px] text-slate-500">{v.vendorCode || 'VND-AUTO'}</td>
-                            <td className="p-2.5 font-bold text-slate-800 dark:text-white">{v.companyName || '—'}</td>
-                            <td className="p-2.5 text-slate-700 dark:text-gray-300 font-medium">{v.contactPerson || '—'}</td>
-                            <td className="p-2.5 font-mono text-indigo-600 dark:text-indigo-400 font-semibold">{v.email || '—'}</td>
-                            <td className="p-2.5 text-slate-600 dark:text-gray-400 font-mono text-[11px]">{v.phone || '—'}</td>
-                            <td className="p-2.5 font-mono text-[10px] text-slate-700 dark:text-gray-200 font-bold">{v.gstNumber || '—'}</td>
-                            <td className="p-2.5 text-slate-600 dark:text-gray-400 text-[11px] truncate max-w-[200px]">{v.address || '—'}</td>
-                            <td className="p-2.5 font-bold">
-                              {v.vendorRatingScore !== undefined && v.vendorRatingScore !== null ? (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
-                                  <Star size={11} className="fill-amber-400 text-amber-500" /> {v.vendorRatingScore}/100
-                                </span>
-                              ) : (
-                                <span className="text-slate-400 text-[10px]">Optional (N/A)</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                        {storedVendors.slice(0, vendorPreviewLimit).map((v) => {
+                          const rowErrors = getVendorRowErrors(v);
+                          const hasErrors = rowErrors.length > 0;
+                          const isNameInvalid = !v.companyName || v.companyName.trim() === '';
+                          const isEmailInvalid = !v.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim());
+                          const isPhoneInvalid = !v.phone || v.phone.trim() === '';
+
+                          return (
+                            <tr
+                              key={v.id}
+                              className={`transition-colors ${
+                                hasErrors
+                                  ? 'bg-rose-50/70 dark:bg-rose-950/30 border-l-4 border-l-rose-500'
+                                  : 'hover:bg-slate-50 dark:hover:bg-gray-800/40'
+                              }`}
+                            >
+                              <td className="p-2.5 font-mono text-[10px] text-slate-500">{v.vendorCode || 'VND-AUTO'}</td>
+                              <td className="p-2.5 font-bold text-slate-800 dark:text-white">
+                                {isNameInvalid ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-bold inline-flex items-center gap-1">
+                                    <AlertCircle size={11} /> Required
+                                  </span>
+                                ) : (
+                                  v.companyName
+                                )}
+                              </td>
+                              <td className="p-2.5 text-slate-700 dark:text-gray-300 font-medium">{v.contactPerson || '—'}</td>
+                              <td className="p-2.5 font-mono text-[11px]">
+                                {isEmailInvalid ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-bold inline-flex items-center gap-1">
+                                    <AlertCircle size={11} /> {v.email ? 'Invalid Email' : 'Email Required'}
+                                  </span>
+                                ) : (
+                                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">{v.email}</span>
+                                )}
+                              </td>
+                              <td className="p-2.5 font-mono text-[11px]">
+                                {isPhoneInvalid ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-bold inline-flex items-center gap-1">
+                                    <AlertCircle size={11} /> Mobile Required
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-600 dark:text-gray-400">{v.phone}</span>
+                                )}
+                              </td>
+                              <td className="p-2.5 font-mono text-[10px] text-slate-700 dark:text-gray-200 font-bold">{v.gstNumber || '—'}</td>
+                              <td className="p-2.5 text-slate-600 dark:text-gray-400 text-[11px] truncate max-w-[200px]">{v.address || '—'}</td>
+                              <td className="p-2.5 font-bold">
+                                {v.vendorRatingScore !== undefined && v.vendorRatingScore !== null ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-bold bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800">
+                                    <Star size={11} className="fill-amber-400 text-amber-500" /> {v.vendorRatingScore}/100
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-400 text-[10px]">Optional (N/A)</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -1702,22 +2225,12 @@ export default function InitialSetupModal() {
             )}
 
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-gray-800">
-              <button type="button" onClick={() => setStep(1)} className="btn btn-secondary btn-sm">
+              <button type="button" onClick={() => navigateToStep(1)} className="btn btn-secondary btn-sm">
                 Back to Period
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  if (storedVendors.length === 0) {
-                    showToast(
-                      'Vendor Master Required',
-                      'Please upload a Vendor Master file (.xlsx, .csv, .xls) before proceeding to the PO Dump.',
-                      'warning'
-                    );
-                    return;
-                  }
-                  setStep(3);
-                }}
+                onClick={() => navigateToStep(3)}
                 className="btn btn-primary font-bold text-xs py-2.5 px-5 flex items-center gap-1.5"
               >
                 Proceed to File 2: PO Dump <ArrowRight size={14} />
@@ -1763,10 +2276,10 @@ export default function InitialSetupModal() {
               <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={handleDownloadPoDataCsv}
+                  onClick={handleDownloadPoDataExcel}
                   className="btn btn-secondary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
                 >
-                  <Download size={13} /> Download CSV Template
+                  <Download size={13} /> Download PO Dump Template (.xlsx)
                 </button>
                 <button
                   type="button"
@@ -1777,6 +2290,27 @@ export default function InitialSetupModal() {
                 </button>
               </div>
             </div>
+
+            {/* Error Banner if PO Upload has issues */}
+            {poUploadError && (
+              <div
+                data-testid="po-upload-error-banner"
+                className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-300 dark:border-rose-800 text-rose-800 dark:text-rose-200 text-xs flex items-start gap-2.5 shadow-xs animate-shake"
+              >
+                <AlertCircle className="text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" size={16} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-bold text-rose-900 dark:text-rose-100">PO Dump Upload / Validation Error</p>
+                  <p className="mt-0.5 text-[11px] leading-relaxed">{poUploadError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPoUploadError(null)}
+                  className="text-rose-500 hover:text-rose-700 dark:text-rose-400 p-0.5"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
 
             {/* Progress Card when PO upload is active or completed */}
             {poJob && (
@@ -1905,7 +2439,7 @@ export default function InitialSetupModal() {
                     {poLineItems.slice(0, poPreviewLimit).map((p) => (
                       <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-gray-800/40">
                         <td className="p-2.5 font-mono text-[10px] text-slate-500">{p.poNumber}</td>
-                        <td className="p-2.5 font-mono text-[10px] text-slate-600 dark:text-gray-300">{p.poDate || '—'}</td>
+                        <td className="p-2.5 font-mono text-[10px] text-slate-600 dark:text-gray-300">{normalizePoDate(p.poDate) || p.poDate || '—'}</td>
                         <td className="p-2.5 font-bold text-slate-800 dark:text-white">{p.vendorIdentifier}</td>
                         <td className="p-2.5 font-semibold text-slate-800 dark:text-gray-200">{p.itemName}</td>
                         <td className="p-2.5 text-slate-400 text-[10px] max-w-[160px] truncate">{p.specs || '—'}</td>
@@ -1962,7 +2496,7 @@ export default function InitialSetupModal() {
             </div>
 
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-gray-800">
-              <button type="button" onClick={() => setStep(2)} className="btn btn-secondary btn-sm">
+              <button type="button" onClick={() => navigateToStep(2)} className="btn btn-secondary btn-sm">
                 Back to Vendor Master
               </button>
               <button
@@ -2039,7 +2573,7 @@ export default function InitialSetupModal() {
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <div>
+                      <div className="min-w-0">
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <h4 className="font-black text-slate-900 dark:text-white text-xs">{v.companyName}</h4>
                           {v.vendorCode && (
@@ -2048,8 +2582,8 @@ export default function InitialSetupModal() {
                             </span>
                           )}
                         </div>
-                        <span className="font-mono text-[10px] text-slate-500">{v.email} · {v.phone}</span>
                       </div>
+
 
                       {v.categoriesMappedByBuyer ? (
                         <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 shrink-0 flex items-center gap-0.5">
@@ -2061,6 +2595,25 @@ export default function InitialSetupModal() {
                         </span>
                       )}
                     </div>
+
+                    {(() => {
+                      const emails = getUniqueEmails(v.email);
+                      const phone = v.phone?.trim();
+                      if (emails.length === 0 && !phone) return null;
+                      return (
+                        <div className="flex flex-nowrap items-center gap-x-2 text-[10px] text-slate-500 font-mono min-w-0 max-w-full">
+                          {emails.length > 0 && (
+                            <span className="min-w-0 truncate" title={emails.join(', ')}>
+                              {emails.join(', ')}
+                            </span>
+                          )}
+                          {emails.length > 0 && phone && (
+                            <span className="shrink-0 text-slate-300 dark:text-gray-600" aria-hidden="true">·</span>
+                          )}
+                          {phone && <span className="shrink-0 whitespace-nowrap">{phone}</span>}
+                        </div>
+                      );
+                    })()}
 
                     {v.categoriesMappedByBuyer ? (
                       <>
@@ -2108,12 +2661,12 @@ export default function InitialSetupModal() {
             </div>
 
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-gray-800">
-              <button type="button" onClick={() => setStep(3)} className="btn btn-secondary btn-sm">
+              <button type="button" onClick={() => navigateToStep(3)} className="btn btn-secondary btn-sm">
                 Back to PO Dump
               </button>
               <button
                 type="button"
-                onClick={() => setStep(5)}
+                onClick={() => navigateToStep(5)}
                 className="btn btn-primary font-bold text-xs py-2.5 px-5 flex items-center gap-1.5"
               >
                 Review Email Dispatch & Finalize <ArrowRight size={14} />
@@ -2135,82 +2688,58 @@ export default function InitialSetupModal() {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-              {/* Template A Preview: PO-Mapped Suppliers */}
-              <div className="p-3.5 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-bold text-indigo-900 dark:text-indigo-200 text-[11px] flex items-center gap-1">
-                    <CheckCircle2 size={13} className="text-emerald-600" />
-                    Template A: Suppliers With Pre-Purchase Order History ({mappedVendors.length})
-                  </span>
-                  <div className="flex items-center gap-1.5 shrink-0">
+              {/* Template A Card: PO-Mapped Suppliers */}
+              <div className="p-3.5 rounded-2xl bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800/60 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-indigo-900 dark:text-indigo-200 text-[11px] flex items-center gap-1">
+                      <CheckCircle2 size={13} className="text-emerald-600" />
+                      Template A: Suppliers With Pre-Purchase Order History ({mappedVendors.length})
+                    </span>
                     {(savedTemplateA?.subject || savedTemplateA?.message) && (
-                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300">
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-300 shrink-0">
                         Customized
                       </span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => router.push('/buyer/vendor-email-templates')}
-                      className="text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
-                    >
-                      Edit Message
-                    </button>
                   </div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-white dark:bg-gray-900 border border-indigo-100 dark:border-indigo-900 text-[10px] space-y-1 font-mono text-slate-700 dark:text-gray-300">
-                  <p>
-                    <strong>Subject:</strong>{' '}
-                    {savedTemplateA?.subject ||
-                      `${activeBuyerAccount?.organizationName || 'Larsen & Toubro'} has mapped your supply categories`}
+                  <p className="text-[11px] text-indigo-900/80 dark:text-indigo-300/90 leading-snug">
+                    Dispatches mapped supply categories, login credentials, and verification link to correlated PO suppliers.
                   </p>
-                  {savedTemplateA?.message ? (
-                    <p className="text-slate-600 dark:text-gray-300">{savedTemplateA.message}</p>
-                  ) : (
-                    <p className="text-emerald-700 dark:text-emerald-400 font-bold">
-                      • 1st Set: Engineering Spares - Mechanical<br />
-                      • 2nd Set: Pumps, Valves, Hoses, Machinery Parts
-                    </p>
-                  )}
-                  <p className="text-slate-400">• Vendor code & categories table + Sign-in link always included</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => openTemplateModal('A')}
+                  className="btn btn-secondary btn-xs w-full font-bold text-indigo-700 dark:text-indigo-300 border border-indigo-300 dark:border-indigo-700 hover:bg-indigo-100 dark:hover:bg-indigo-900/40 inline-flex items-center justify-center gap-1.5 py-2"
+                >
+                  <Pencil size={11} /> View & Edit Template A
+                </button>
               </div>
 
-              {/* Template B Preview: Unmapped Suppliers */}
-              <div className="p-3.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 space-y-2">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="font-bold text-amber-900 dark:text-amber-200 text-[11px] flex items-center gap-1">
-                    <AlertCircle size={13} className="text-amber-600" />
-                    Template B: Suppliers With NO Pre-Purchase Orders ({unmappedVendors.length})
-                  </span>
-                  <div className="flex items-center gap-1.5 shrink-0">
+              {/* Template B Card: Unmapped Suppliers */}
+              <div className="p-3.5 rounded-2xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 flex flex-col justify-between space-y-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-bold text-amber-900 dark:text-amber-200 text-[11px] flex items-center gap-1">
+                      <AlertCircle size={13} className="text-amber-600" />
+                      Template B: Suppliers With NO Pre-Purchase Orders ({unmappedVendors.length})
+                    </span>
                     {(savedTemplateB?.subject || savedTemplateB?.message) && (
-                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300">
+                      <span className="px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-100 dark:bg-amber-900 text-amber-700 dark:text-amber-300 shrink-0">
                         Customized
                       </span>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => router.push('/buyer/vendor-email-templates')}
-                      className="text-[10px] font-semibold text-amber-700 dark:text-amber-400 hover:underline"
-                    >
-                      Edit Message
-                    </button>
                   </div>
-                </div>
-                <div className="p-2.5 rounded-xl bg-white dark:bg-gray-900 border border-amber-200 dark:border-amber-900 text-[10px] space-y-1 font-mono text-slate-700 dark:text-gray-300">
-                  <p>
-                    <strong>Subject:</strong>{' '}
-                    {savedTemplateB?.subject || 'Complete Your Category Mapping to Receive Enquiries'}
+                  <p className="text-[11px] text-amber-900/80 dark:text-amber-300/90 leading-snug">
+                    Dispatches self-mapping request notice, vendor code, login credentials, and category onboarding link.
                   </p>
-                  {savedTemplateB?.message ? (
-                    <p className="text-slate-600 dark:text-gray-300">{savedTemplateB.message}</p>
-                  ) : (
-                    <p className="text-amber-700 dark:text-amber-400 font-bold">
-                      • &quot;Buyer didn&apos;t map any categories for you, so please map yourself in order to receive enquiries.&quot;
-                    </p>
-                  )}
-                  <p className="text-slate-400">• Vendor code & categories table + Sign-in link always included</p>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => openTemplateModal('B')}
+                  className="btn btn-secondary btn-xs w-full font-bold text-amber-800 dark:text-amber-300 border border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/40 inline-flex items-center justify-center gap-1.5 py-2"
+                >
+                  <Pencil size={11} /> View & Edit Template B
+                </button>
               </div>
             </div>
 
@@ -2234,10 +2763,39 @@ export default function InitialSetupModal() {
               </div>
             </div>
 
+            {/* Submission Error Banner */}
+            {submissionError && (
+              <div
+                data-testid="step5-submission-error-banner"
+                className="p-4 rounded-2xl bg-rose-50/90 dark:bg-rose-950/50 border-2 border-rose-300 dark:border-rose-800/80 text-rose-900 dark:text-rose-200 flex items-start justify-between gap-3 animate-fade-in shadow-sm"
+              >
+                <div className="flex items-start gap-3">
+                  <AlertCircle size={20} className="text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                  <div className="space-y-1">
+                    <h5 className="font-bold text-xs uppercase tracking-wide text-rose-800 dark:text-rose-300">
+                      Ingestion &amp; Dispatch Error
+                    </h5>
+                    <p className="text-xs font-medium leading-relaxed">{submissionError}</p>
+                    <p className="text-[11px] text-rose-700/80 dark:text-rose-400/80">
+                      Please verify your file data, network, or server connection and retry.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSubmissionError(null)}
+                  className="p-1 text-rose-400 hover:text-rose-600 rounded-lg shrink-0"
+                  title="Dismiss error"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            )}
+
             <div className="flex items-center justify-between pt-4 border-t border-slate-100 dark:border-gray-800">
               <button
                 type="button"
-                onClick={() => setStep(4)}
+                onClick={() => navigateToStep(4)}
                 className="btn btn-secondary btn-sm"
                 disabled={isConfirmingIngestion}
               >
@@ -2255,7 +2813,94 @@ export default function InitialSetupModal() {
             </div>
           </div>
         )}
+
+        {/* Template Preview and Edit Modal Popup */}
+        {editingTemplateModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs animate-fade-in" onClick={() => setEditingTemplateModal(null)}>
+            <div
+              className="w-full max-w-xl p-5 bg-white dark:bg-gray-900 text-slate-900 dark:text-white rounded-2xl shadow-2xl border border-slate-200 dark:border-gray-800 animate-scale-in space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-100 dark:border-gray-800 pb-3">
+                <div className="flex items-center gap-2">
+                  <span className={`p-2 rounded-xl text-xs font-bold ${editingTemplateModal === 'A' ? 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-300' : 'bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300'}`}>
+                    Template {editingTemplateModal}
+                  </span>
+                  <div>
+                    <h4 className="font-black text-sm">
+                      {editingTemplateModal === 'A' ? 'Template A: Suppliers With Pre-PO History' : 'Template B: Suppliers With NO Pre-PO History'}
+                    </h4>
+                    <p className="text-xs text-slate-400">Preview and customize the onboarding email template</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setEditingTemplateModal(null)}
+                  className="text-slate-400 hover:text-slate-700 dark:hover:text-white p-1 rounded-lg"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              <div className="space-y-3 text-xs">
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-gray-300 block">Email Subject</label>
+                  <input
+                    type="text"
+                    value={tempSubject}
+                    onChange={(e) => setTempSubject(e.target.value)}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800 text-slate-800 dark:text-white font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    placeholder="Subject line..."
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="font-bold text-slate-700 dark:text-gray-300 block">Email Message Body / Key Points</label>
+                  <textarea
+                    value={tempMessage}
+                    onChange={(e) => setTempMessage(e.target.value)}
+                    rows={4}
+                    className="w-full px-3 py-2 text-xs rounded-lg border border-slate-200 dark:border-gray-700 bg-slate-50 dark:bg-gray-800 text-slate-800 dark:text-white font-medium resize-none leading-relaxed focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    placeholder="Custom email message..."
+                  />
+                </div>
+
+                {/* Formatted Preview Box */}
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-gray-800/60 border border-slate-200 dark:border-gray-700 space-y-2">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Formatted Preview (Live)</span>
+                  <div className="p-2.5 rounded-lg bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 text-[11px] space-y-1.5 font-mono text-slate-700 dark:text-gray-300">
+                    <p><strong>Subject:</strong> {tempSubject || '(Default Subject)'}</p>
+                    <p className="whitespace-pre-wrap">{tempMessage || '(Default Message)'}</p>
+                    <div className="p-2 bg-slate-50 dark:bg-gray-800 rounded text-[10px] space-y-0.5 text-slate-500">
+                      <div>• Buyer: {activeBuyerAccount?.organizationName || 'Larsen & Toubro'}</div>
+                      <div>• Vendor Code & Login Credentials included</div>
+                      <div>• Action Link: {editingTemplateModal === 'A' ? 'Sign in to review category mapping' : 'Complete category self-mapping'}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-gray-800">
+                <button
+                  type="button"
+                  onClick={() => setEditingTemplateModal(null)}
+                  className="btn btn-secondary btn-xs py-2 px-3 text-xs"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveTemplate}
+                  disabled={isSavingTemplate}
+                  className="btn btn-primary btn-xs py-2 px-4 text-xs font-bold flex items-center gap-1.5"
+                >
+                  {isSavingTemplate ? 'Saving...' : 'Save Template'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
-  }
+}

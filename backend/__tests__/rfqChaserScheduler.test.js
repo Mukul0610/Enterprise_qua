@@ -453,3 +453,75 @@ describe('_dispatchReminderEmail', () => {
     );
   });
 });
+
+// ── V0 (Free Starter Trial) Chaser Scheduling ──────────────────────────────
+describe('V0 Chaser Scheduling', () => {
+  const V0_RFQ = {
+    rfqNumber: 'RFQ-V0-001',
+    id: 'rfq-v0-001',
+    title: 'Precision Bearings Supply',
+    sourcingMode: 'mode_0',
+  };
+
+  test('registers only 1 timer handle in pendingTimers (SMS only, no Call/WhatsApp/Email follow-ups) for V0', () => {
+    scheduler.scheduleVendorChaser(V0_RFQ, VENDOR, {});
+    expect(scheduler.pendingTimers.get(V0_RFQ.rfqNumber)).toHaveLength(1);
+  });
+
+  test('fires SMS alert after 5 minutes for V0 and sends no follow-up chasers after 6h/12h/24h', async () => {
+    const smsSpy = jest.spyOn(smsService, 'sendRFQChaserSms').mockResolvedValue({ success: true, messageId: 'sms-v0' });
+    const waSpy = jest.spyOn(whatsAppService, 'sendRFQInvitationWhatsApp').mockResolvedValue({ success: true, messageId: 'wa-v0' });
+    const mailSpy = jest.spyOn(mailerService, 'sendRfqInviteEmail').mockResolvedValue({ sent: true });
+
+    const origEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+
+    scheduler.scheduleVendorChaser(V0_RFQ, VENDOR, {});
+
+    // Before 5 min — not yet called
+    jest.advanceTimersByTime(4 * 60 * 1000);
+    await Promise.resolve();
+    expect(smsSpy).not.toHaveBeenCalled();
+
+    // At 5 min — SMS is fired
+    jest.advanceTimersByTime(60 * 1000 + 100);
+    await Promise.resolve();
+    expect(smsSpy).toHaveBeenCalledWith(expect.objectContaining({
+      mobile: VENDOR.phone,
+      rfqNumber: V0_RFQ.rfqNumber,
+    }));
+
+    // Advance 6h, 12h, 24h — no follow-up chasers fired for V0
+    jest.advanceTimersByTime(25 * 60 * 60 * 1000);
+    await Promise.resolve();
+    expect(waSpy).not.toHaveBeenCalled();
+    expect(mailSpy).not.toHaveBeenCalled();
+
+    process.env.NODE_ENV = origEnv;
+  });
+
+  test('D1 persistence records only 1 SMS job for V0 RFQs', async () => {
+    const persistSpy = jest.spyOn(domainQueries, 'insertChaserJobInDB').mockResolvedValue(true);
+    const waitUntil = jest.fn();
+    const previousEnv = globalThis.__CF_ENV__;
+    const previousWaitUntil = globalThis.__CF_WAIT_UNTIL__;
+
+    try {
+      globalThis.__CF_ENV__ = { DB: {} };
+      globalThis.__CF_WAIT_UNTIL__ = waitUntil;
+
+      scheduler.scheduleVendorChaser(V0_RFQ, VENDOR, {});
+      expect(persistSpy).toHaveBeenCalledTimes(1);
+      expect(persistSpy).toHaveBeenCalledWith(expect.objectContaining({
+        channel: 'sms',
+        rfqNumber: V0_RFQ.rfqNumber,
+      }));
+    } finally {
+      if (previousEnv === undefined) delete globalThis.__CF_ENV__;
+      else globalThis.__CF_ENV__ = previousEnv;
+      if (previousWaitUntil === undefined) delete globalThis.__CF_WAIT_UNTIL__;
+      else globalThis.__CF_WAIT_UNTIL__ = previousWaitUntil;
+    }
+  });
+});
+

@@ -392,6 +392,23 @@ describe('RFQ ingestion service (AI line-item classification)', () => {
       const { entities } = ingestion.normalizeLineItems([{ itemName: 'Centrifugal Pump' }]);
       expect(entities[0].confidence).toBe(90);
     });
+
+    test('filters out invalid or non-positive quantities when requireValidQuantity is enabled', () => {
+      const mixedItems = [];
+      for (let i = 1; i <= 100; i++) {
+        mixedItems.push({ itemName: `Valid Item ${i}`, quantity: i, unit: 'Nos' });
+        mixedItems.push({ itemName: `Invalid Zero ${i}`, quantity: 0, unit: 'Nos' });
+        mixedItems.push({ itemName: `Invalid Negative ${i}`, quantity: -1, unit: 'Nos' });
+        mixedItems.push({ itemName: `Invalid Null ${i}`, quantity: null, unit: 'Nos' });
+        mixedItems.push({ itemName: `Invalid NaN ${i}`, quantity: 'abc', unit: 'Nos' });
+      }
+
+      // Total 500 items, only 100 have valid positive quantities
+      const { entities } = ingestion.normalizeLineItems(mixedItems, { requireValidQuantity: true });
+      expect(entities).toHaveLength(100);
+      expect(entities[0].itemName).toBe('Valid Item 1');
+      expect(entities[99].itemName).toBe('Valid Item 100');
+    });
   });
 
   describe('deriveTitle', () => {
@@ -539,6 +556,25 @@ describe('RFQ ingestion service (AI line-item classification)', () => {
     test('leaves the estimated budget null when the document had no pricing', async () => {
       const { draft } = await ingestion.buildRFQDraft({ lineItems: [{ itemName: 'Centrifugal Pump' }] });
       expect(draft.estimatedBudget).toBeNull();
+    });
+
+    test('processes all 100 valid items from a 200-item batch when requireValidQuantity is enabled', async () => {
+      const items = [];
+      for (let i = 1; i <= 100; i++) {
+        items.push({ itemName: `Procurement Valve ${i}`, quantity: i + 5, unit: 'Units' });
+        items.push({ itemName: `Omitted Line ${i}`, quantity: 0, unit: 'Units' });
+      }
+
+      const { draft, classification } = await ingestion.buildRFQDraft({
+        lineItems: items,
+        title: 'Bulk 100 Valves',
+        requireValidQuantity: true,
+      });
+
+      expect(classification.accepted).toBe(100);
+      expect(draft.extractedEntities).toHaveLength(100);
+      expect(draft.extractedEntities[0].itemName).toBe('Procurement Valve 1');
+      expect(draft.extractedEntities[99].itemName).toBe('Procurement Valve 100');
     });
   });
 });

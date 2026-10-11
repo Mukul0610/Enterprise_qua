@@ -75,6 +75,7 @@ process.env.R2_BUCKET = 'test-bucket';
 const { app } = require('../src/server');
 const { RFQ_ATTACHMENT_CONFIG } = require('../src/config/constants');
 const attachments = require('../src/services/rfqAttachmentService');
+const quoteAttachments = require('../src/services/quoteAttachmentService');
 const authService = require('../src/services/authService');
 const A_FUTURE_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
@@ -356,6 +357,26 @@ describe('RFQ attachment storage service', () => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+describe('vendor quote attachment storage', () => {
+  test('keeps bid documents in a separate prefix and binds them to their RFQ and vendor', async () => {
+    const saved = await quoteAttachments.saveQuoteAttachment(
+      {
+        fileName: 'bid.pdf',
+        mimeType: 'application/pdf',
+        content: pdfBody(),
+      },
+      { rfqId: 'rfq-123', vendorId: 'vendor-456' }
+    );
+
+    expect(saved.status).toBe(ATTACHMENT_STATUS.SAVED);
+    expect(fakeR2Store.has(`${RFQ_ATTACHMENT_CONFIG.STORAGE_DIR}-quotes/${saved.attachment.id}`)).toBe(true);
+    const loaded = await quoteAttachments.loadQuoteAttachment(saved.attachment.id);
+    expect(loaded.access).toEqual({ rfqId: 'rfq-123', vendorId: 'vendor-456' });
+    expect(loaded.content.toString()).toBe('%PDF-1.4 line item annexure');
+    expect(saved.attachment).not.toHaveProperty('vendorId');
+  });
+});
+
 describe('RFQ attachment HTTP routes', () => {
   describe('POST /api/rfqs/attachments', () => {
     test('stores a document and returns its metadata', async () => {
@@ -404,13 +425,13 @@ describe('RFQ attachment HTTP routes', () => {
         .send({
           fileName: 'huge.pdf',
           mimeType: 'application/pdf',
-          content: 'A'.repeat(RFQ_ATTACHMENT_CONFIG.MAX_BYTES * 2),
+          content: 'A'.repeat(Math.ceil((RFQ_ATTACHMENT_CONFIG.MAX_BYTES * 4) / 3) + 1024),
         });
 
       expect(res.statusCode).toBe(422);
       expect(res.body.reason).toBe(ATTACHMENT_STATUS.TOO_LARGE);
       expect(res.body.error).toMatch(/limit/i);
-    });
+    }, 40000);
 
     // A storage fault is ours, not the buyer's, so it is a 500 rather than a 422.
     test('returns 500 when storage fails', async () => {

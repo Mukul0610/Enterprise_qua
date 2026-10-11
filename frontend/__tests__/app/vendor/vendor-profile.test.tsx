@@ -112,7 +112,7 @@ describe('VendorProfilePage Comprehensive Suite', () => {
   test('Renders all sections, updates form inputs, and validates PAN / GST formats', async () => {
     const { unmount } = await renderWithProvider();
 
-    expect(screen.getByText(/Vendor Supplier Profile/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Vendor Supplier Profile/i })).not.toBeInTheDocument();
     expect(screen.getByText(/Section 1: Supplier Tax & Business Details/i)).toBeInTheDocument();
     expect(screen.getByText(/Works \/ Factory Address/i)).toBeInTheDocument();
     expect(screen.getByText(/Sales & RFQ Contact Person/i)).toBeInTheDocument();
@@ -434,7 +434,7 @@ describe('VendorProfilePage Comprehensive Suite', () => {
         <VendorProfileWithSession />
       </AppProvider>
     );
-    await waitFor(() => expect(screen.getByText(/Vendor Supplier Profile/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Section 1: Supplier Tax & Business Details/i)).toBeInTheDocument());
     unmount();
 
     // Network failure case
@@ -449,7 +449,7 @@ describe('VendorProfilePage Comprehensive Suite', () => {
         <VendorProfileWithSession />
       </AppProvider>
     );
-    await waitFor(() => expect(screen.getByText(/Vendor Supplier Profile/i)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Section 1: Supplier Tax & Business Details/i)).toBeInTheDocument());
   });
 
   test('surfaces a failure toast when creating a new vendor profile (POST) fails', async () => {

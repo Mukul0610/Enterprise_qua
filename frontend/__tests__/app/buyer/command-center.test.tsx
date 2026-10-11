@@ -499,4 +499,46 @@ describe('app/buyer/command-center.tsx', () => {
     expect(screen.getByText('Supplier Quotes & Evaluation Matrix')).toBeInTheDocument();
     expect(screen.getByText('Consolidated parametric view of supplier price quotations, lead times, compliance ratings, and AI match scores.')).toBeInTheDocument();
   });
+
+  it('routes quote actions from pipeline, intake, and supplier modals to the matrix', () => {
+    const originalQuotes = mockRfqs[0].quotes;
+    mockRfqs[0].quotes = [{
+      vendorId: 'vendor-1',
+      vendorName: 'Apex Supplies Ltd.',
+      vendorCategory: 'Client List',
+      unitPrice: 100,
+      totalPrice: 300,
+      leadTimeDays: 7,
+      aiMatchScore: 95,
+      warrantyYears: 1,
+      complianceStatus: 'Fully Compliant',
+      paymentTerms: '30 days',
+      remarks: '',
+    }];
+
+    try {
+      render(
+        <CommandCenter
+          onNavigateToWizard={mockNavigateToWizard}
+          onNavigateToMatrix={mockNavigateToMatrix}
+          onNavigateToSubscription={mockNavigateToSubscription}
+          onNavigateToDirectory={mockNavigateToDirectory}
+        />
+      );
+
+      fireEvent.click(screen.getByTitle('Click to view Active Pipeline details'));
+      fireEvent.click(screen.getAllByTitle('View Quotes')[0]);
+      expect(mockNavigateToMatrix).toHaveBeenCalledWith(mockRfqs[0]);
+
+      fireEvent.click(screen.getByTitle('Click to view Intake Sources breakdown'));
+      fireEvent.click(screen.getAllByTitle('View Quotes')[0]);
+      expect(mockNavigateToMatrix).toHaveBeenCalledWith(mockRfqs[0]);
+
+      fireEvent.click(screen.getByTitle('Click to view Supplier Quotes'));
+      fireEvent.click(screen.getAllByTitle('View Quotes')[0]);
+      expect(mockNavigateToMatrix).toHaveBeenCalledTimes(3);
+    } finally {
+      mockRfqs[0].quotes = originalQuotes;
+    }
+  });
 });

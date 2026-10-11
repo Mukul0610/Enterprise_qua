@@ -286,9 +286,16 @@ describe('Buyer RFQ Details (Screen 1.4)', () => {
       ['email_gateway', 'via Email Upload'],
       ['email_upload', 'Emailed Document'],
       ['manual_entry', 'Manual Entry'],
+      ['ai_extraction', 'AI Extraction'],
     ])('labels a %s intake as %s', (source, label) => {
       renderDetails(buildRFQ({ source: source as RFQItem['source'] }));
       expect(screen.getByText(label)).toBeInTheDocument();
+    });
+
+    it('labels an RFQ without explicit source but with aiSummary as AI Extraction', () => {
+      renderDetails(buildRFQ({ source: undefined, aiSummary: { headline: 'Test AI', scope: '', risks: [] } as any }));
+      const card = sectionFor(screen.getByText(DETAILS.submittedHeading));
+      expect(within(card).getByText(DETAILS.sourceAiExtraction || 'AI Extraction')).toBeInTheDocument();
     });
 
     it('shows the record id', () => {
@@ -298,8 +305,8 @@ describe('Buyer RFQ Details (Screen 1.4)', () => {
       expect(within(card).getByText('rfq-1')).toBeInTheDocument();
     });
 
-    it('marks a blank intake source as unset', () => {
-      renderDetails(buildRFQ({ source: undefined }));
+    it('marks a blank intake source as unset when no aiSummary exists', () => {
+      renderDetails(buildRFQ({ source: undefined, aiSummary: null }));
 
       const card = sectionFor(screen.getByText(DETAILS.submittedHeading));
       expect(within(card).getByText(DETAILS.unsetValue)).toBeInTheDocument();
@@ -307,6 +314,40 @@ describe('Buyer RFQ Details (Screen 1.4)', () => {
   });
 
   describe('commercial and delivery card', () => {
+    it('displays the saved target delivery date correctly instead of Not provided', () => {
+      renderDetails(buildRFQ({ targetDeliveryDate: '2026-11-20', budget: 100000 }));
+      const card = sectionFor(screen.getByText(DETAILS.commercialHeading));
+      expect(within(card).getByText(formatIndianDate('2026-11-20'))).toBeInTheDocument();
+    });
+
+    it('falls back to target_delivery_date or deadline if targetDeliveryDate is not set directly', () => {
+      renderDetails(buildRFQ({ targetDeliveryDate: '', ...({ target_delivery_date: '2026-12-15' } as any) }));
+      const card = sectionFor(screen.getByText(DETAILS.commercialHeading));
+      expect(within(card).getByText(formatIndianDate('2026-12-15'))).toBeInTheDocument();
+    });
+
+    it('falls back to line item targetDate if header targetDeliveryDate is unset', () => {
+      renderDetails(
+        buildRFQ({
+          targetDeliveryDate: '',
+          extractedEntities: [
+            entity({
+              id: 'item-1',
+              itemName: 'Pipe',
+              quantity: 5,
+              unit: 'nos',
+              majorCategory: 'Mechanical',
+              minorCategory: 'Pipes',
+              confidence: 95,
+              targetDate: '2026-10-30',
+            }),
+          ],
+        })
+      );
+      const card = sectionFor(screen.getByText(DETAILS.commercialHeading));
+      expect(within(card).getByText(formatIndianDate('2026-10-30'))).toBeInTheDocument();
+    });
+
     it('renders the delivery location and pincode', () => {
       renderDetails(buildRFQ());
 
@@ -921,14 +962,12 @@ function makeInquiry(overrides: any = {}): any {
         })
       );
 
-      // Procucev/internal vendors are shown in the buyer's chat list by name
-      // only (not fully hidden) — only their contact details are withheld.
       expect(screen.getByText('Vendor Inquiries & Clarifications')).toBeInTheDocument();
       expect(screen.getAllByText('Local Machine Shop').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('Global Turbines Ltd').length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Global Turbines Ltd')).not.toBeInTheDocument();
     });
 
-    it('filters Procucev vendors out of the Assigned & Invited Suppliers panel specifically (they still surface by name in chat)', () => {
+    it('filters Procucev vendors out of both buyer inquiry and assigned supplier sections', () => {
       renderDetails(
         buildRFQ({
           sourcingMode: 'mode_2',

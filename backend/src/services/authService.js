@@ -207,6 +207,7 @@ function generateSessionToken(user) {
       role: user.role,
       orgId: user.orgId,
       orgName: user.orgName,
+      passwordChangeRequired: user.resetPasswordRequired === true,
       iat: issuedAt,
       exp: expiresAt,
     })
@@ -330,6 +331,8 @@ function toPublicUser(user) {
     role: user.role,
     orgId: user.orgId,
     orgName: user.orgName,
+    mobile: user.mobile || '',
+    passwordChangeRequired: user.resetPasswordRequired === true,
   };
 }
 
@@ -455,6 +458,10 @@ async function changePassword({ userUuid, email, currentPassword, newPassword, i
     throw new Error(AUTH_MESSAGES.CHANGE_PASSWORD_WRITE_FAILED);
   }
 
+  if (user.role === 'vendor') {
+    storeService.updateVendor(user.email, { tempPassword: null });
+  }
+
   logger.audit(`Password changed for ${user.email}`, user.email, { role: user.role, ipAddress });
   storeService.addAuditLog({
     userEmail: user.email,
@@ -462,7 +469,14 @@ async function changePassword({ userUuid, email, currentPassword, newPassword, i
     ipAddress,
   });
 
-  return { success: true, message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS };
+  const updatedUser = { ...user, resetPasswordRequired: false };
+  const token = generateSessionToken(updatedUser);
+  return {
+    success: true,
+    message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
+    token,
+    user: toPublicUser(updatedUser),
+  };
 }
 
 /**
@@ -540,7 +554,7 @@ async function requestOtp(email, mobile, roleHint, ipAddress, isRegistration = f
   // Node/Render, where the process just keeps running regardless.
   {
     const otpEmailSend = mailerService
-      .sendOtpEmail(normalizedEmail, emailCode, OTP_EXPIRY_MS / 1000)
+      .sendOtpEmail(normalizedEmail, emailCode, OTP_EXPIRY_MS / 1000, { isRegistration: Boolean(isRegistration) })
       .catch((e) => logger.error('OTP email dispatch error', e, 'AUTH_SERVICE'));
     const otpSmsSend = smsService
       .sendOtpSms(submittedMobile, mobileCode, OTP_EXPIRY_MS / 1000)
@@ -569,7 +583,7 @@ async function requestOtp(email, mobile, roleHint, ipAddress, isRegistration = f
     // Only echoed back in tests or when SMTP isn't configured, so local/dev/test
     // runs without real email delivery can still complete the OTP flow; once
     // SMTP is live, the real code is never exposed in the API response.
-    ...(process.env.NODE_ENV === 'test' || !mailerService.isConfigured()
+    ...(process.env.NODE_ENV !== 'production' || !mailerService.isConfigured()
       ? { demoCode: emailCode, demoEmailCode: emailCode, demoMobileCode: mobileCode }
       : {}),
     expiresInSeconds: OTP_EXPIRY_MS / 1000,
@@ -733,13 +747,17 @@ async function registerUser(payload, ipAddress) {
     fullName: name,
     organizationName: orgName,
     companyName: orgName,
+    ...(isVendor ? { resetExisting: false, resetPasswordRequired: false } : {}),
   });
 
-  if (!result.created && !isVendor) {
+  if (!result.created) {
     throw new Error(AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS);
   }
 
-  const newUser = result.user;
+  const newUser = {
+    ...result.user,
+    ...(isVendor ? { resetPasswordRequired: false } : {}),
+  };
   const token = generateSessionToken(newUser);
   logger.audit(`New enterprise account registered: ${newUser.email} (${newUser.role})`, newUser.email, { ipAddress });
   storeService.addAuditLog({

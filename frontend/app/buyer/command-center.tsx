@@ -27,6 +27,7 @@ import {
   Smartphone,
   Mail,
   FileSpreadsheet,
+  X,
 } from 'lucide-react';
 
 interface CommandCenterProps {
@@ -62,6 +63,7 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
     vendorName: '',
   });
   const [rfqSourceFilter, setRfqSourceFilter] = useState<'all' | 'email_gateway' | 'web_portal' | 'manual_entry'>('all');
+  const [rfqSearchTerm, setRfqSearchTerm] = useState('');
   const [activePipelineModalOpen, setActivePipelineModalOpen] = useState(false);
   const [intakeSourcesModalOpen, setIntakeSourcesModalOpen] = useState(false);
   const [supplierQuotesModalOpen, setSupplierQuotesModalOpen] = useState(false);
@@ -82,9 +84,9 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
   const inEvaluationCount = rfqs.filter((r) => r.status === 'In Evaluation').length;
 
   // Intake Source Counts
-  const emailGatewayRFQs = rfqs.filter(r => r.source === 'email_gateway');
-  const webPortalRFQs = rfqs.filter(r => r.source === 'web_portal' || !r.source);
-  const manualRFQs = rfqs.filter(r => r.source === 'manual_entry');
+  const emailGatewayRFQs = rfqs.filter((r) => r.source === 'email_gateway' || r.source === 'email_upload');
+  const webPortalRFQs = rfqs.filter((r) => r.source === 'web_portal' || r.source === 'ai_extraction' || (!r.source && r.source !== 'manual_entry'));
+  const manualRFQs = rfqs.filter((r) => r.source === 'manual_entry');
 
   // Multi-channel totals calculation
   const totalCalls = rfqs.reduce((acc, r) => acc + (r.followUpData?.callStats.total || 0), 0);
@@ -95,7 +97,7 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
   const totalFollowupsToday = totalCalls + totalWhatsApp + totalSMS;
 
   const getSourceBadge = (source?: string, autoCirculated?: boolean) => {
-    if (source === 'email_gateway') {
+    if (source === 'email_gateway' || source === 'email_upload') {
       return (
         <span className="px-2 py-0.5 rounded-md text-[9px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 shrink-0">
           <span>via Email Upload</span>
@@ -117,10 +119,31 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
   };
 
   const filteredRFQs = rfqs.filter((rfq) => {
-    if (rfqSourceFilter === 'all') return true;
-    if (rfqSourceFilter === 'web_portal') return rfq.source === 'web_portal' || !rfq.source;
-    if (rfqSourceFilter === 'manual_entry') return rfq.source === 'manual_entry';
-    return rfq.source === rfqSourceFilter;
+    if (rfqSourceFilter === 'web_portal' && rfq.source !== 'web_portal' && rfq.source !== 'ai_extraction' && rfq.source && rfq.source === 'manual_entry') return false;
+    if (rfqSourceFilter === 'manual_entry' && rfq.source !== 'manual_entry') return false;
+    if (rfqSourceFilter === 'email_gateway' && rfq.source !== 'email_gateway' && rfq.source !== 'email_upload') return false;
+
+    if (!rfqSearchTerm) return true;
+    const term = rfqSearchTerm.trim().toLowerCase();
+    if (!term) return true;
+
+    const matchesLineItems = (rfq.extractedEntities || []).some(
+      (item) => ((item.itemName || '') + ' ' + (item.technicalSpecs || '') + ' ' + (item.category || '')).toLowerCase().includes(term)
+    );
+    const matchesVendors = (rfq.assignedVendors || []).some(
+      (v) => ((v.name || '') + ' ' + (v.contactPerson || '') + ' ' + (v.email || '')).toLowerCase().includes(term)
+    );
+
+    return (
+      (rfq.rfqNumber || '').toLowerCase().includes(term) ||
+      (rfq.title || '').toLowerCase().includes(term) ||
+      (rfq.category || '').toLowerCase().includes(term) ||
+      (rfq.status && rfq.status.toLowerCase().includes(term)) ||
+      (rfq.source && rfq.source.toLowerCase().includes(term)) ||
+      (rfq.sourcingMode && rfq.sourcingMode.toLowerCase().includes(term)) ||
+      matchesLineItems ||
+      matchesVendors
+    );
   });
 
   const getModeBadge = (modeId: string) => {
@@ -146,6 +169,8 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
         return <span className="badge badge-emerald">AI Recommended</span>;
       case 'In Evaluation':
         return <span className="badge badge-blue">In Evaluation</span>;
+      case 'Quotes Received':
+        return <span className="badge badge-blue">Quotes Received</span>;
       case 'PO Generated':
         return <span className="badge badge-purple">PO Generated</span>;
       case 'Parsing':
@@ -349,12 +374,33 @@ export default function CommandCenter({ onNavigateToWizard, onNavigateToMatrix, 
         <div className="lg:col-span-3 rounded-xl bg-white dark:bg-gray-900/80 border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden flex flex-col">
           {/* Table Header & Intake Source Filter Tabs */}
           <div className="px-3.5 py-2.5 border-b border-slate-100 dark:border-gray-800 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Layers size={15} className="text-indigo-600 dark:text-indigo-400" />
                 <h2 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-gray-200">Active Procurement Pipeline</h2>
               </div>
               <span className="text-[10px] font-mono text-slate-400 dark:text-gray-500">{filteredRFQs.length} shown</span>
+            </div>
+
+            {/* Search Input Bar */}
+            <div className="relative w-full">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                value={rfqSearchTerm}
+                onChange={(e) => setRfqSearchTerm(e.target.value)}
+                placeholder="Search pipeline by RFQ#, title, item, category, status, vendor..."
+                className="has-leading-icon w-full pr-7 py-1 text-[11px] rounded-lg border border-slate-200 dark:border-gray-700 bg-slate-50/70 dark:bg-gray-800/70 text-slate-800 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+              {rfqSearchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setRfqSearchTerm('')}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5"
+                >
+                  <X size={12} />
+                </button>
+              )}
             </div>
 
             {/* Source Filter Tabs */}

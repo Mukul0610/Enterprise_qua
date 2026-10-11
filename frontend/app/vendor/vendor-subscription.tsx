@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { SubscriptionPaymentModal } from '@/app/components/Modals';
 import { authClient } from '@/lib/authClient';
-import { Sparkles, ShieldCheck, Check, Zap, Layers, AlertCircle, RefreshCw, Download, Package, ArrowRight } from 'lucide-react';
+import { ShieldCheck, Check, Zap, Layers, AlertCircle, RefreshCw, Download, Package, ArrowRight } from 'lucide-react';
 
 export default function VendorSubscriptionCenter() {
   const {
@@ -192,17 +192,10 @@ export default function VendorSubscriptionCenter() {
 
   return (
     <div className="space-y-6 animate-fade-in pb-10">
-      {/* Title Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white flex items-center gap-2">
-            <Sparkles className="text-indigo-500" size={24} />
-            Vendor Subscription Plans & Quotas
-          </h1>
-          <p className="text-xs text-slate-500 dark:text-gray-400 mt-0.5">
-            Select your vendor tier: Premium (Client Uploaded), Connect (50 RFQs / 3 mo), or Select (Catalogue + 100 RFQs / 3 mo).
-          </p>
-        </div>
+      <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+        <p className="max-w-3xl text-xs leading-relaxed text-slate-500 dark:text-gray-400">
+          Compare vendor access tiers, quotation quotas, and catalogue features.
+        </p>
         <button
           onClick={handleResetQuota}
           className="btn btn-secondary btn-sm flex items-center gap-1 shrink-0 text-xs"

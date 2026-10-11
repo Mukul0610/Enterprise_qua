@@ -55,6 +55,7 @@ const {
   VENDOR_CONFIDENCE_BANDS,
   VENDOR_INGESTION_CONFIG,
   VENDOR_INGESTION_MESSAGES,
+  normalizePoDate,
 } = require('../config/constants');
 
 const LOG_CATEGORY = 'VENDOR_INGESTION_SERVICE';
@@ -586,9 +587,14 @@ async function confirmPoDump(sessionUser, sessionId, { rows, fileName, replaceEx
   }
   assertChunkSize(rows);
 
+  const normalizedRows = (Array.isArray(rows) ? rows : []).map((row) => ({
+    ...row,
+    poDate: normalizePoDate(row.poDate || row.date) || row.poDate,
+  }));
+
   // A line that identifies no vendor at all cannot be attributed to anyone, so
   // it is rejected rather than stored as permanently unmatched noise.
-  const { valid, invalid } = partitionRows(rows, VALIDATION_SCHEMAS.poLineItemRow, (row) => {
+  const { valid, invalid } = partitionRows(normalizedRows, VALIDATION_SCHEMAS.poLineItemRow, (row) => {
     const hasCode = String(row.vendorCode || '').trim() !== '';
     const hasName = String(row.vendorName || '').trim() !== '';
     if (!hasCode && !hasName) return 'Either a Vendor Code or a Vendor Name is required to attribute the line.';
@@ -1282,7 +1288,11 @@ async function getCategorySegmentation(sessionUser, sessionId) {
  * suppliers, because every read is organisation-scoped).
  */
 async function resolveDispatchRecipients(context, sessionId, { template, majorCategory, vendorRecordIds }) {
-  const mappings = await queries.findCategoryMappings(sessionId, context.organizationId);
+  const [mappings, vendorRecords] = await Promise.all([
+    queries.findCategoryMappings(sessionId, context.organizationId),
+    queries.findVendorMasterRecords(sessionId, context.organizationId).catch(() => []),
+  ]);
+  const vendorRecordMap = new Map((vendorRecords || []).map((r) => [r.id, r]));
   const requested = Array.isArray(vendorRecordIds) && vendorRecordIds.length > 0 ? new Set(vendorRecordIds) : null;
 
   const eligible = mappings.filter((mapping) => {
@@ -1303,17 +1313,23 @@ async function resolveDispatchRecipients(context, sessionId, { template, majorCa
     return true;
   });
 
-  return eligible.map((mapping) => ({
-    vendorRecordId: mapping.vendorRecordId,
-    mappingId: mapping.id,
-    companyName: mapping.companyName,
-    email: mapping.email,
-    vendorCode: mapping.vendorCode,
-    majorCategory: mapping.buyerMajorCategory || mapping.aiSuggestion.majorCategory,
-    minorCategories:
-      mapping.buyerMinorCategories.length > 0 ? mapping.buyerMinorCategories : mapping.aiSuggestion.minorCategories,
-    status: mapping.status,
-  }));
+  return eligible.map((mapping) => {
+    const vRec = vendorRecordMap.get(mapping.vendorRecordId);
+    return {
+      vendorRecordId: mapping.vendorRecordId,
+      mappingId: mapping.id,
+      companyName: mapping.companyName,
+      contactPerson: vRec?.contactPerson || '',
+      phone: vRec?.phone || '',
+      contactPhone: vRec?.phone || '',
+      email: mapping.email,
+      vendorCode: mapping.vendorCode,
+      majorCategory: mapping.buyerMajorCategory || mapping.aiSuggestion.majorCategory,
+      minorCategories:
+        mapping.buyerMinorCategories.length > 0 ? mapping.buyerMinorCategories : mapping.aiSuggestion.minorCategories,
+      status: mapping.status,
+    };
+  });
 }
 
 /**
@@ -1382,9 +1398,11 @@ async function previewDispatch(sessionUser, sessionId, payload) {
 function buildDispatchMessage(context, template, recipient) {
   const shared = {
     to: recipient.email,
-    recipientName: recipient.companyName,
+    recipientName: recipient.contactPerson || recipient.companyName,
     buyerOrganizationName: context.organizationName,
     vendorCode: recipient.vendorCode,
+    contactPhone: recipient.contactPhone || recipient.phone || '',
+    tempPassword: recipient.tempPassword || '',
   };
 
   if (template === VENDOR_DISPATCH_TEMPLATE.SELF_MAP_REQUIRED) {

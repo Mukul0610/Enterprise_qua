@@ -1,4 +1,5 @@
 import React from 'react';
+import * as XLSX from 'xlsx';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import ItemCatalogue from '@/app/vendor/item-catalogue';
 import { AppProvider, useApp } from '@/lib/store';
@@ -6,6 +7,18 @@ import { authClient } from '@/lib/authClient';
 
 function renderWithProvider(ui: React.ReactElement) {
   return render(<AppProvider>{ui}</AppProvider>);
+}
+
+function catalogueWorkbookFile(sku = 'SKU-IMPORT-1'): File {
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet([
+    ['Product Name', 'SKU', 'Category', 'Specifications', 'Unit Price', 'Lead Time Days', 'MOQ'],
+    ['Imported Pump', sku, 'Engineering Spares - Mechanical', '15 HP', 500, 7, 2],
+  ]), 'Catalogue');
+  const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }) as ArrayBuffer;
+  return new File([bytes], 'catalogue.xlsx', {
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  });
 }
 
 // item-catalogue.tsx now calls the real backend for add/edit/delete/bulk
@@ -238,13 +251,16 @@ describe('ItemCatalogue Comprehensive Suite', () => {
     }
   });
 
-  test('Bulk Import Simulation & Max 100 Limit Constraints (>90% and >70% capacity gradients)', async () => {
-    // 1. Normal bulk import simulation
+  test('Excel import uses uploaded workbook and enforces the client capacity limit', async () => {
     const { unmount } = renderWithProvider(<ItemCatalogue />);
-    const bulkImportBtn = screen.getByRole('button', { name: /Simulate Bulk Excel Import/i });
     await act(async () => {
-      fireEvent.click(bulkImportBtn);
+      fireEvent.change(screen.getByLabelText(/Upload catalogue Excel workbook/i), {
+        target: { files: [catalogueWorkbookFile()] },
+      });
     });
+    expect(await screen.findByText('Ready to import')).toBeInTheDocument();
+    await act(async () => fireEvent.click(screen.getByRole('button', { name: /Import Valid Rows/i })));
+    expect(await screen.findByText('SKU-IMPORT-1')).toBeInTheDocument();
     unmount();
 
     // 2. Test 95% capacity gradient bar (>90% red) and limit behavior
@@ -285,10 +301,6 @@ describe('ItemCatalogue Comprehensive Suite', () => {
     const { unmount: unmountFull } = renderWithProvider(
       <ItemCatalogueCustomWrapper customCatalogue={mockFullCatalogue} />
     );
-
-    // Attempt bulk import at limit
-    const fullBulkBtn = screen.getByRole('button', { name: /Simulate Bulk Excel Import/i });
-    fireEvent.click(fullBulkBtn);
 
     // Attempt adding single product at limit
     fireEvent.change(screen.getByPlaceholderText(/e.g. Centrifugal Water Pump/i), { target: { value: 'Extra Item' } });
@@ -359,7 +371,7 @@ describe('ItemCatalogue Comprehensive Suite', () => {
     expect(screen.getByText(/Product Catalogue Management/i)).toBeInTheDocument();
   });
 
-  test('shows failure toasts when add, delete, and bulk import all fail at the network level', async () => {
+  test('shows failure toasts when add and catalogue import fail at the network level', async () => {
     global.fetch = jest.fn(() => Promise.reject(new Error('offline'))) as any;
     renderWithProvider(<ItemCatalogue />);
 
@@ -376,10 +388,12 @@ describe('ItemCatalogue Comprehensive Suite', () => {
     // Product was not added since the network call failed
     expect(screen.queryByText('SKU-OFFLINE')).not.toBeInTheDocument();
 
-    // Bulk import -> catch branch
-    const bulkBtn = screen.getByRole('button', { name: /Simulate Bulk Excel Import/i });
+    fireEvent.change(screen.getByLabelText(/Upload catalogue Excel workbook/i), {
+      target: { files: [catalogueWorkbookFile('SKU-NETWORK-FAIL')] },
+    });
+    expect(await screen.findByText('Ready to import')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(bulkBtn);
+      fireEvent.click(screen.getByRole('button', { name: /Import Valid Rows/i }));
     });
   });
 
@@ -460,9 +474,13 @@ describe('ItemCatalogue Comprehensive Suite', () => {
     });
     expect(screen.getByText('SKU-EDIT-1')).toBeInTheDocument(); // still present
 
-    // Bulk import -> every item rejected server-side (created.length stays 0)
+    // Excel import -> server-side rejection is shown and no product is added.
+    fireEvent.change(screen.getByLabelText(/Upload catalogue Excel workbook/i), {
+      target: { files: [catalogueWorkbookFile('SKU-SERVER-REJECTED')] },
+    });
+    expect(await screen.findByText('Ready to import')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Simulate Bulk Excel Import/i }));
+      fireEvent.click(screen.getByRole('button', { name: /Import Valid Rows/i }));
     });
     expect(screen.getByText('SKU-EDIT-1')).toBeInTheDocument();
   });

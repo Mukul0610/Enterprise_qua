@@ -28,16 +28,12 @@ async function saveOtp(otpKey, code, expiresAt) {
       { d1: true }
     );
   } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      memoryOtpStore.set(otpKey, {
-        otpKey,
-        code,
-        attempts: 0,
-        expiresAt: new Date(expiresAt).getTime(),
-      });
-      return;
-    }
-    throw err;
+    memoryOtpStore.set(otpKey, {
+      otpKey,
+      code,
+      attempts: 0,
+      expiresAt: new Date(expiresAt).getTime(),
+    });
   }
 }
 
@@ -65,11 +61,8 @@ async function findOtp(otpKey) {
       expiresAt: new Date(row.expires_at).getTime(),
     };
   } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      const entry = memoryOtpStore.get(otpKey);
-      return entry ? { ...entry } : null;
-    }
-    throw err;
+    const entry = memoryOtpStore.get(otpKey);
+    return entry ? { ...entry } : null;
   }
 }
 
@@ -84,10 +77,7 @@ async function deleteOtp(otpKey) {
     memoryOtpStore.delete(otpKey);
     return (result.rowCount || 0) > 0;
   } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      return memoryOtpStore.delete(otpKey);
-    }
-    throw err;
+    return memoryOtpStore.delete(otpKey);
   }
 }
 
@@ -103,13 +93,10 @@ async function incrementOtpAttempts(otpKey) {
     );
     return result.rows[0] ? Number(result.rows[0].attempts) : 0;
   } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      const entry = memoryOtpStore.get(otpKey);
-      if (!entry) return 0;
-      entry.attempts = (entry.attempts || 0) + 1;
-      return entry.attempts;
-    }
-    throw err;
+    const entry = memoryOtpStore.get(otpKey);
+    if (!entry) return 0;
+    entry.attempts = (entry.attempts || 0) + 1;
+    return entry.attempts;
   }
 }
 
@@ -128,48 +115,31 @@ async function revokeToken(signature, expiresAt) {
       { d1: true }
     );
   } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      memoryRevokedTokens.add(signature);
-      return;
-    }
-    throw err;
+    memoryRevokedTokens.add(signature);
   }
 }
 
 /** Whether this token signature has been revoked. */
 async function isTokenRevoked(signature) {
-  try {
-    const rows = await pool.rows(
-      'select 1 from auth_revoked_tokens where signature = $1 limit 1',
-      [signature],
-      { d1: true }
-    );
-    return rows.length > 0;
-  } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      return memoryRevokedTokens.has(signature);
-    }
-    throw err;
-  }
+  if (memoryRevokedTokens.has(signature)) return true;
+  const rows = await pool.rows(
+    'select 1 from auth_revoked_tokens where signature = $1 limit 1',
+    [signature],
+    { d1: true }
+  );
+  return rows.length > 0;
 }
 
 /**
  * Drop expired OTPs and revoked-token records.
  */
 async function purgeExpiredAuthState() {
-  try {
-    const otps = await pool.query('delete from auth_otp_codes where expires_at < now()');
-    const tokens = await pool.query('delete from auth_revoked_tokens where expires_at < now()');
-    return {
-      otpsPurged: otps.rowCount || 0,
-      revokedTokensPurged: tokens.rowCount || 0,
-    };
-  } catch (err) {
-    if (err.message && err.message.includes('not configured')) {
-      return { otpsPurged: 0, revokedTokensPurged: 0 };
-    }
-    throw err;
-  }
+  const otps = await pool.query('delete from auth_otp_codes where expires_at < now()');
+  const tokens = await pool.query('delete from auth_revoked_tokens where expires_at < now()');
+  return {
+    otpsPurged: otps.rowCount || 0,
+    revokedTokensPurged: tokens.rowCount || 0,
+  };
 }
 
 module.exports = {

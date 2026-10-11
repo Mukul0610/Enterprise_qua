@@ -174,6 +174,19 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
         expect(bar).toHaveAttribute('aria-valuenow', '0');
       });
     });
+
+    it('renders all four mode cards in a responsive 4-column desktop grid', () => {
+      renderScreen([buildRFQ()]);
+      const heading = screen.getByText(RFQ.modeDistributionTitle);
+      const grid = heading.parentElement?.querySelector('.grid');
+      expect(grid).toBeInTheDocument();
+      expect(grid).toHaveClass('lg:grid-cols-4');
+      expect(grid).toHaveClass('sm:grid-cols-2');
+      expect(grid).toHaveClass('grid-cols-1');
+      SOURCING_MODES.forEach((mode) => {
+        expect(within(grid as HTMLElement).getByText(mode.code)).toBeInTheDocument();
+      });
+    });
   });
 
   describe('search & filters', () => {
@@ -260,6 +273,83 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
       expect(screen.getByText('RFQ-BBB')).toBeInTheDocument();
     });
 
+    it('always shows all three static source options regardless of portfolio content', () => {
+      // Even with an empty portfolio the dropdown must offer every option so
+      // buyers can predict what each channel will show when RFQs arrive.
+      renderScreen([]);
+      const select = screen.getByLabelText(RFQ.sourceFilterLabel);
+      const optionTexts = within(select).getAllByRole('option').map((o) => o.textContent);
+      expect(optionTexts).toContain(RFQ.allSources);
+      expect(optionTexts).toContain('AI RFQ Create');
+      expect(optionTexts).toContain('Email Gateway');
+      expect(optionTexts).toContain('Manual Entry');
+    });
+
+    it('filters RFQs created through AI RFQ Create (ai_extraction)', () => {
+      renderScreen([
+        buildRFQ({ id: 'a', rfqNumber: 'RFQ-AAA', source: 'web_portal' }),
+        buildRFQ({ id: 'b', rfqNumber: 'RFQ-BBB', source: 'ai_extraction' }),
+        buildRFQ({ id: 'c', rfqNumber: 'RFQ-CCC', source: 'manual_entry' }),
+      ]);
+      const select = screen.getByLabelText(RFQ.sourceFilterLabel);
+      fireEvent.change(select, { target: { value: 'ai_extraction' } });
+      expect(dataRows()).toHaveLength(1);
+      expect(screen.getByText('RFQ-BBB')).toBeInTheDocument();
+      expect(screen.queryByText('RFQ-AAA')).not.toBeInTheDocument();
+      expect(screen.queryByText('RFQ-CCC')).not.toBeInTheDocument();
+    });
+
+    it('selecting All Sources after a source filter restores every RFQ', () => {
+      renderScreen([
+        buildRFQ({ id: 'a', rfqNumber: 'RFQ-AAA', source: 'ai_extraction' }),
+        buildRFQ({ id: 'b', rfqNumber: 'RFQ-BBB', source: 'email_gateway' }),
+      ]);
+      const select = screen.getByLabelText(RFQ.sourceFilterLabel);
+      fireEvent.change(select, { target: { value: 'ai_extraction' } });
+      expect(dataRows()).toHaveLength(1);
+      // Reset to All Sources.
+      fireEvent.change(select, { target: { value: 'all' } });
+      expect(dataRows()).toHaveLength(2);
+    });
+
+    it('filters by Manual Entry source', () => {
+      renderScreen([
+        buildRFQ({ id: 'a', rfqNumber: 'RFQ-AAA', source: 'web_portal' }),
+        buildRFQ({ id: 'b', rfqNumber: 'RFQ-BBB', source: 'manual_entry' }),
+      ]);
+      fireEvent.change(screen.getByLabelText(RFQ.sourceFilterLabel), { target: { value: 'manual_entry' } });
+      expect(dataRows()).toHaveLength(1);
+      expect(screen.getByText('RFQ-BBB')).toBeInTheDocument();
+    });
+
+    it('source filter works in combination with search and status filter', () => {
+      renderScreen([
+        buildRFQ({ id: 'a', rfqNumber: 'RFQ-AAA', title: 'Pump Overhaul', status: 'Quotes Pending', source: 'ai_extraction' }),
+        buildRFQ({ id: 'b', rfqNumber: 'RFQ-BBB', title: 'Pump Overhaul', status: 'Quotes Pending', source: 'email_gateway' }),
+      ]);
+      // Apply source filter first.
+      fireEvent.change(screen.getByLabelText(RFQ.sourceFilterLabel), { target: { value: 'ai_extraction' } });
+      expect(dataRows()).toHaveLength(1);
+      // Then apply search – intersection should still work.
+      fireEvent.change(screen.getByLabelText(RFQ.searchLabel), { target: { value: 'pump' } });
+      expect(dataRows()).toHaveLength(1);
+      expect(screen.getByText('RFQ-AAA')).toBeInTheDocument();
+    });
+
+    it('source filter resets to page 1 when applied on a later page', () => {
+      const manyAi = Array.from({ length: 12 }, (_, i) =>
+        buildRFQ({ id: `ai-${i}`, rfqNumber: `RFQ-AI-${i}`, source: 'ai_extraction' })
+      );
+      renderScreen(manyAi);
+      // Navigate to page 2 then switch to email_gateway (no matches).
+      fireEvent.click(screen.getByRole('button', { name: RFQ.nextPageAria }));
+      expect(screen.getByText(formatString(RFQ.pageIndicator, { current: 2, total: 2 }))).toBeInTheDocument();
+      fireEvent.change(screen.getByLabelText(RFQ.sourceFilterLabel), { target: { value: 'email_gateway' } });
+      // No RFQs match; the no-match message must appear and pagination hides.
+      expect(screen.getByText(RFQ.noMatchesMessage)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: RFQ.nextPageAria })).not.toBeInTheDocument();
+    });
+
     // Legacy rows predate intake tracking and must still be reachable.
     it('treats an RFQ with no source as web portal', () => {
       renderScreen([buildRFQ({ source: undefined })]);
@@ -282,6 +372,7 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
       ['email_upload', RFQ.sourceEmailUpload],
       ['manual_entry', RFQ.sourceManualEntry],
       ['web_portal', RFQ.sourceWebPortal],
+      ['ai_extraction', RFQ.sourceAiExtraction],
     ])('labels the %s source as %s', (source, label) => {
       renderScreen([buildRFQ({ source })]);
       expect(screen.getByText(label)).toBeInTheDocument();

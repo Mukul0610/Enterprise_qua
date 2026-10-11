@@ -509,27 +509,28 @@ const RFQ_CATEGORY_CLASSIFICATION = {
 const GEMINI_CONFIG = {
   API_KEY: process.env.GEMINI_API_KEY || '',
   BASE_URL: process.env.GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta/models',
-  // Pinned to a specific GA model so extraction quality is reproducible.
-  PRIMARY_MODEL: process.env.GEMINI_PRIMARY_MODEL || 'gemini-3-flash-preview',
+  // Primary is the floating "latest Flash" alias so document extraction always
+  // runs on Google's newest Flash model — currently Gemini 3.8 Flash — which
+  // reads unusual layouts and scanned/multimodal documents more reliably than the
+  // older pinned model this used to default to (gemini-3.1-flash-lite). The alias
+  // also means a model retirement upgrades us automatically instead of 404'ing.
+  // Pin GEMINI_PRIMARY_MODEL in the environment if a reproducible exact version
+  // is ever required.
+  PRIMARY_MODEL: process.env.GEMINI_PRIMARY_MODEL || 'gemini-3.8-flash',
   // Tried in order when the primary model errors or is unavailable.
   //
-  // Ordered fastest-first, which is a deliberate departure from
-  // app.gemini.backup-models in the Java service.
+  // Ordered newest-and-fastest first: the newest pinned Flash models give the
+  // best extraction quality, and this endpoint answers a synchronous browser
+  // upload behind a proxy that cuts the request off at 30s, so a fallback must
+  // also finish in the seconds that remain once the primary has used most of the
+  // budget. The lite alias and lite model give a fast last resort.
   //
-  // That service extracts from inbound email in the background, so it can spend
-  // as long as it likes on progressively stronger models. This endpoint answers a
-  // synchronous browser upload behind a proxy that cuts the request off at 30s,
-  // so once the primary has used most of the budget the only useful fallback is
-  // one that can finish in the seconds that remain. Measured on the same
-  // document: gemini-3.6-flash 12.5s, gemini-3.5-flash-lite 1.8s, identical line
-  // items from both.
-  //
-  // The chain still ends on a floating alias. Google retires pinned models: when
-  // gemini-2.0-flash was withdrawn every entry in the old chain 404'd at once and
-  // extraction failed outright instead of degrading.
+  // The chain still includes floating aliases on purpose. Google retires pinned
+  // models: when gemini-2.0-flash was withdrawn every entry in the old chain
+  // 404'd at once and extraction failed outright instead of degrading.
   FALLBACK_MODELS: (
     process.env.GEMINI_FALLBACK_MODELS ||
-    'gemini-3.1-flash-lite,gemini-flash-latest,gemini-flash-lite-latest,gemini-3.6-flash,gemini-3.7-flash'
+    'gemini-3.6-flash,gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite,gemini-flash-latest'
   )
     .split(',')
     .map((m) => m.trim())
@@ -537,7 +538,7 @@ const GEMINI_CONFIG = {
   // The primary model measured 12.5s on a small PDF and timed out at 15s on a
   // real one, so it needs more than the Java service's 15s read timeout to have a
   // fair chance before the chain moves on.
-  REQUEST_TIMEOUT_MS: Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 45000),
+  REQUEST_TIMEOUT_MS: Number(process.env.GEMINI_REQUEST_TIMEOUT_MS || 30000),
   TOTAL_BUDGET_MS: Number(process.env.GEMINI_TOTAL_BUDGET_MS || 60000),
   // Below this much remaining budget a further attempt cannot finish, so the
   // chain stops rather than starting a request it will have to abandon.
@@ -816,6 +817,7 @@ const CHASER_DELAYS = {
 // Registered templates on sendmsg.in / TRAI DLT portal.
 //
 // Template Name      : RFQ_Notification_Seller_Service
+// Reference Number   : 11-2WNNMUNY6YY1
 // SMSGID             : 1777179076323440961
 // Approved Text      : RFQ Alert {#alp#}: You are invited to bid for {#alp#}. Submit quote : {#urg#} - Team Procucev.
 // Variables          : {#alp#}, {#alp#}, {#urg#} → rfqNumber, rfqTitle, bidUrl
@@ -831,6 +833,7 @@ const CHASER_DELAYS = {
 const SMS_DLT_TEMPLATES = {
   RFQ_CHASER: {
     NAME:     'RFQ_Notification_Seller_Service',
+    REFERENCE_NUMBER: '11-2WNNMUNY6YY1',
     SMSGID:   process.env.SMS_GATEWAY_RFQ_SMSGID || '1777179076323440961',
     CATEGORY: 'SERVICE_IMPLICIT',
     // Exact approved template text — static parts must match character-for-character.
@@ -1056,6 +1059,8 @@ const EXTRACTION_REASON_MESSAGES = {
     'This file type cannot be read by AI extraction. Upload a spreadsheet, PDF or image, or add the line items manually.',
   AI_FAILED:
     'AI extraction could not read this document. Add the line items manually to continue.',
+  QUOTA_EXCEEDED:
+    'AI extraction is temporarily unavailable because the Gemini API quota or rate limit was reached. Check the Google AI project quota or retry later; you can also add the line items manually to continue.',
   NO_ITEMS_FOUND:
     'No procurement line items could be identified in this document. Add the line items manually to continue.',
   // Shared with emailIngestionService's EMAIL_INGESTION_STATUS — a buyer
@@ -1461,7 +1466,103 @@ const VENDOR_INGESTION_MESSAGES = {
   SESSION_SAVE_FAILED: 'Could not save your ingestion progress. Please try again.',
 };
 
+/**
+ * Normalizes any date value (Excel numeric serial, Date instance, ISO string, DD-MM-YYYY, etc.)
+ * into a clean standard ISO date string (YYYY-MM-DD).
+ * Prevents Excel date serial numbers (e.g. 45995.00011574074) from being stored as decimals.
+ */
+function normalizePoDate(value) {
+  if (value === null || value === undefined || value === '' || value === 0 || value === '0') return '';
+
+  if (value instanceof Date) {
+    if (isNaN(value.getTime())) return '';
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // If numeric (e.g. 45995 or 45995.00011574074 from Excel date serial)
+  if (typeof value === 'number') {
+    if (value >= 1 && value <= 100000) {
+      const utcDays = Math.floor(value - 25569);
+      const d = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(d.getTime())) {
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    }
+    return '';
+  }
+
+  const str = String(value).trim();
+  if (!str) return '';
+
+  // Numeric string check (e.g. "45995.00011574074" or "45995")
+  const num = Number(str);
+  if (!isNaN(num) && isFinite(num) && !str.includes('-') && !str.includes('/') && !str.includes(':')) {
+    if (num >= 1 && num <= 100000) {
+      const utcDays = Math.floor(num - 25569);
+      const d = new Date(utcDays * 86400 * 1000);
+      if (!isNaN(d.getTime())) {
+        const y = d.getUTCFullYear();
+        const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+        const day = String(d.getUTCDate()).padStart(2, '0');
+        return `${y}-${m}-${day}`;
+      }
+    }
+    return '';
+  }
+
+  // Already ISO format YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+    return str;
+  }
+
+  // YYYY/MM/DD or YYYY.MM.DD
+  const ymdMatch = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (ymdMatch) {
+    const y = ymdMatch[1];
+    const m = String(Number(ymdMatch[2])).padStart(2, '0');
+    const d = String(Number(ymdMatch[3])).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+
+  // DD-MM-YYYY or MM-DD-YYYY or DD/MM/YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})/);
+  if (dmyMatch) {
+    const p1 = Number(dmyMatch[1]);
+    const p2 = Number(dmyMatch[2]);
+    const y = dmyMatch[3];
+    let day = p1;
+    let month = p2;
+    if (p1 > 12 && p2 <= 12) {
+      day = p1;
+      month = p2;
+    } else if (p2 > 12 && p1 <= 12) {
+      day = p2;
+      month = p1;
+    }
+    return `${y}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  // Generic Date.parse fallback
+  const parsed = Date.parse(str);
+  if (!isNaN(parsed)) {
+    const d = new Date(parsed);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+  }
+
+  return str;
+}
+
 module.exports = {
+  normalizePoDate,
   VENDOR_INGESTION_SESSION_STATUS,
   VENDOR_INGESTION_STEP,
   VENDOR_INGESTION_HORIZON,
@@ -1553,4 +1654,3 @@ module.exports = {
   CHASER_DELAYS,
   SMS_DLT_TEMPLATES,
 };
-

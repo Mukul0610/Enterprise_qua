@@ -3,6 +3,8 @@
  * Single source of truth for UI typography, headings, labels, actions, and template messages.
  */
 
+import type { RFQExtractionReason } from './types';
+
 export const UI_STRINGS = {
   appName: 'Procucev Enterprise',
   engineVersion: 'QUA AI 2.0',
@@ -67,6 +69,7 @@ export const UI_STRINGS = {
     confirm: 'Confirm',
     downloadTemplate: 'Download Excel Template',
     downloadExcelTemplate: 'Download Excel Template',
+    downloadVendorMasterTemplate: 'Download Vendor Master Template',
     downloadCsvTemplate: 'Download CSV Template',
     hideDetails: 'Hide Details',
     reviewRfqDetails: 'Review RFQ Details',
@@ -181,8 +184,8 @@ export const UI_STRINGS = {
         description: 'Every RFQ raised across all buyers',
       },
       opportunityFeed: {
-        label: 'Opportunity Feed',
-        description: 'Matched enquiries open for quoting',
+        label: 'Dashboard',
+        description: 'Your enquiries, quotes, and sourcing activity',
       },
       bidQuotes: {
         label: 'Bid Quotes',
@@ -344,6 +347,36 @@ export const UI_STRINGS = {
     fallbackHint: 'Add each line item below, assign its minor category, then continue to sourcing.',
     unreadableResponse:
       'The extraction service returned an unexpected response. Add the line items manually to continue.',
+
+    // Explicit recovery action shown on the failure banner so the buyer is not
+    // left to guess that the table below is the fallback.
+    manualEntryAction: 'Enter line items manually',
+    manualEntryStarted: 'Add your line items in the table below.',
+
+    /**
+     * Reason-specific guidance for a failed extraction. Keyed by RFQExtractionReason
+     * so the banner explains exactly why the document could not be read and what to
+     * do next, rather than one generic line. Every message ends by pointing at
+     * manual entry, which is the recovery path.
+     */
+    reasonMessages: {
+      NOT_CONFIGURED:
+        'AI extraction is not available on this environment. Enter the line items manually to continue.',
+      NO_CONTENT:
+        'No readable text was found in this file. If it is a scanned image, try a clearer scan, or enter the line items manually.',
+      DOCUMENT_TOO_LARGE:
+        'This document is too large for AI extraction. Upload a smaller file (or a single sheet), or enter the line items manually.',
+      UNSUPPORTED_TYPE:
+        'This file type cannot be read by AI extraction. Upload a spreadsheet (.xlsx/.csv), PDF or image, or enter the line items manually.',
+      AI_FAILED:
+        'The AI could not read this document — its layout may be unusual or the scan unclear. Try a spreadsheet or clearer PDF, or enter the line items manually.',
+      QUOTA_EXCEEDED:
+        'AI extraction reached the Gemini API quota or rate limit. Check the Google AI project quota or retry later, or enter the line items manually.',
+      NO_ITEMS_FOUND:
+        'No procurement line items could be identified in this document. Check that quantities are stated, or enter the line items manually.',
+      NETWORK:
+        'The extraction service could not be reached. Check your connection and retry, or enter the line items manually.',
+    } as Record<RFQExtractionReason, string>,
     /**
      * Shown for a transport failure rather than a model failure. A dev-proxy error
      * or a stopped API answers with HTML, and reporting `unreadableResponse` for
@@ -534,6 +567,7 @@ export const UI_STRINGS = {
     sourceEmailGateway: 'via Email Upload',
     sourceEmailUpload: 'Emailed Document',
     sourceManualEntry: 'Manual Entry',
+    sourceAiExtraction: 'AI Extraction',
     sourceFileLabel: 'Source Document',
     sourceEmailLabel: 'Source Email',
     createdLabel: 'Raised On',
@@ -639,7 +673,18 @@ export const UI_STRINGS = {
     sourceEmailGateway: 'via Email Upload',
     sourceEmailUpload: 'Email File Upload',
     sourceManualEntry: 'Manual Web Entry',
+    sourceAiExtraction: 'AI Extraction',
+    sourceAiRfqCreate: 'AI RFQ Create',
     sourceWebPortal: 'Web App Portal',
+
+    // Static ordered list of intake source filter options shown in the dropdown.
+    // The value matches the RFQSource stored on each RFQ; the label is what the
+    // buyer reads. The order is: AI RFQ Create → Email Gateway → Manual Entry.
+    intakeSourceFilterOptions: [
+      { value: 'ai_extraction', label: 'AI RFQ Create' },
+      { value: 'email_gateway', label: 'Email Gateway' },
+      { value: 'manual_entry', label: 'Manual Entry' },
+    ] as ReadonlyArray<{ value: string; label: string }>,
 
     // Table
     tableCaption: 'RFQ portfolio with sourcing mode, status, quote counts and delivery dates',
@@ -688,6 +733,11 @@ export const UI_STRINGS = {
     loadFailed: 'The RFQ list could not be loaded. Try again, and if it persists the API may be unavailable.',
     retryAction: 'Retry',
     countSummary: '{count} RFQs across {buyers} buyers',
+    resultCount: 'Showing {shown} of {total} RFQs',
+    filtersLabel: 'RFQ search and filters',
+    filtersApplied: 'Filters applied',
+    clearFilters: 'Clear filters',
+    clearSearch: 'Clear search',
     searchLabel: 'Search',
     searchPlaceholder: 'RFQ number, title, category or buyer…',
     statusFilterLabel: 'Status',
@@ -1455,6 +1505,40 @@ export const UI_STRINGS = {
       templateDownloadedTitle: 'Template downloaded',
     },
   },
+
+  initialSetupCompletion: {
+    title: 'Setup & Vendor Ingestion Summary',
+    subtitle: 'Dual-group vendor processing and onboarding email dispatch completed in a single coordinated action.',
+    statusHeading: 'Overall Ingestion Status',
+    statusCompleted: 'COMPLETED',
+    statusWithFailures: 'COMPLETED WITH WARNINGS',
+    statusFailed: 'FAILED',
+    totalProcessedLabel: 'Total Processed',
+    totalVendorsUnit: 'Vendors',
+    mappedSentLabel: 'Template A: Pre-PO Mapped',
+    unmappedSentLabel: 'Template B: Self-Map Required',
+    failedCountLabel: 'Failed Email Dispatches',
+    failedTableHeading: 'Failed Email Dispatches Requiring Attention',
+    thVendorName: 'Vendor Name',
+    thEmail: 'Email Address',
+    thTemplate: 'Template',
+    thReason: 'Failure Reason',
+    retryAction: 'Retry Failed Emails',
+    retryingAction: 'Retrying Dispatches…',
+    doneAction: 'Done & View Dashboard',
+    backToReviewAction: 'Back to Email Preview',
+    allSuccessNotice: 'All eligible mapped (Template A) and unmapped (Template B) vendor onboarding emails dispatched successfully.',
+    retryHint: 'Retrying will safely re-attempt only failed emails without duplicating successful dispatches.',
+    suppliersUnit: 'Suppliers',
+    emailsSentTemplate: '{sent} of {total} Emails Sent',
+  },
+
+  sourcingModeVersions: {
+    mode_0: 'V0 – Procucev Network Vendors',
+    mode_1: 'V1 – Internal Vendors',
+    mode_2: 'V2 – Internal + Procucev Vetted Vendors',
+    mode_3: 'V3 – Autonomous AI + 360 Qualification',
+  },
 };
 
 /**
@@ -1467,4 +1551,23 @@ export function formatString(template: string, values?: Record<string, string | 
   return template.replace(/\{(\w+)\}/g, (match, key) => {
     return values[key] !== undefined ? String(values[key]) : match;
   });
+}
+
+/**
+ * Resolve a failed-extraction reason to a user-friendly, actionable message.
+ *
+ * Falls back to the generic unreadable-response copy when the reason is absent
+ * or unrecognised, and prefers a specific server-supplied message when one was
+ * returned, so the banner is always clear about why the document could not be
+ * read and what to do next.
+ */
+export function extractionReasonMessage(
+  reason?: RFQExtractionReason,
+  serverMessage?: string
+): string {
+  if (serverMessage && serverMessage.trim()) return serverMessage;
+  if (reason && UI_STRINGS.rfqExtraction.reasonMessages[reason]) {
+    return UI_STRINGS.rfqExtraction.reasonMessages[reason];
+  }
+  return UI_STRINGS.rfqExtraction.unreadableResponse;
 }

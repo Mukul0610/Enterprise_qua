@@ -6,6 +6,7 @@ const authSessionQueries = require('../src/db/authSessionQueries');
 const dbPool = require('../src/db/pool');
 const identityQueries = require('../src/db/identityQueries');
 const mailerService = require('../src/services/mailerService');
+const storeService = require('../src/services/storeService');
 const {
   AUTH_MESSAGES,
   INDIAN_MOBILE_MESSAGE,
@@ -291,8 +292,23 @@ describe('Authentication against the account records (/api/auth)', () => {
         role: 'buyer',
         orgId: buyerRecord().orgId,
         orgName: 'Navin Chaudhary Enterprises',
+        mobile: '+919157154504',
+        passwordChangeRequired: false,
       });
       expect(authService.verifySessionToken(result.token).valid).toBe(true);
+    });
+
+    test('marks a provisioned vendor session as requiring a password change', async () => {
+      const vendor = buyerRecord({
+        role: 'vendor',
+        resetPasswordRequired: true,
+      });
+      jest.spyOn(identityQueries, 'findUserByEmailAndPhone').mockResolvedValue(vendor);
+
+      const result = await authService.authenticateWithPassword(EMAIL, PASSWORD, '::1', MOBILE);
+
+      expect(result.user.passwordChangeRequired).toBe(true);
+      expect(authService.verifySessionToken(result.token).user.passwordChangeRequired).toBe(true);
     });
 
     test('resolves the account by email + registered mobile, not email alone', async () => {
@@ -567,6 +583,47 @@ describe('Authentication against the account records (/api/auth)', () => {
       expect(result.success).toBe(true);
       expect(result.message).toBe(AUTH_MESSAGES.REGISTRATION_SUCCESS);
       expect(authService.verifySessionToken(result.token).valid).toBe(true);
+    });
+
+    test('self-registered vendor can use their chosen password without a forced change', async () => {
+      const insertSpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({
+        created: true,
+        user: {
+          id: 'new-vendor-uuid',
+          email: EMAIL,
+          name: 'Navin Chaudhary',
+          role: 'vendor',
+          orgId: 'new-vendor-org',
+          orgName: 'Navin Chaudhary Enterprises',
+        },
+      });
+
+      const result = await authService.registerUser({ ...payload, role: 'vendor' }, '::1');
+      const session = authService.verifySessionToken(result.token);
+
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resetExisting: false,
+          resetPasswordRequired: false,
+        })
+      );
+      expect(result.user.passwordChangeRequired).toBe(false);
+      expect(session.user.passwordChangeRequired).toBe(false);
+    });
+
+    test('self-registration does not sign in an existing vendor identity', async () => {
+      const insertSpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({
+        created: false,
+        reason: 'ALREADY_EXISTS',
+        user: { id: 'existing-vendor', email: EMAIL, role: 'vendor' },
+      });
+
+      await expect(authService.registerUser({ ...payload, role: 'vendor' }, '::1')).rejects.toThrow(
+        AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS
+      );
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ resetExisting: false, resetPasswordRequired: false })
+      );
     });
 
     test('reports a duplicate account rather than signing the caller in', async () => {
@@ -1158,15 +1215,33 @@ describe('Changing your own password', () => {
       });
 
     test('writes the new password against the primary key and reports success', async () => {
-      await expect(call()).resolves.toEqual({
-        success: true,
-        message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
-      });
+      const result = await call();
+      expect(result).toEqual(
+        expect.objectContaining({
+          success: true,
+          message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
+          token: expect.any(String),
+          user: expect.objectContaining({ passwordChangeRequired: false }),
+        })
+      );
+      expect(authService.verifySessionToken(result.token).user.passwordChangeRequired).toBe(false);
       expect(identityQueries.updateUserPasswordByUuid).toHaveBeenCalledWith(
         UUID,
         NEXT,
         'buyer@procucev.com'
       );
+    });
+
+    test('clears the stored vendor temporary password after a successful password change', async () => {
+      const email = 'first-login-vendor@procucev.com';
+      identityQueries.findUserByEmail.mockResolvedValue(
+        signedInBuyer({ role: 'vendor', email, id: UUID })
+      );
+      const updateVendorSpy = jest.spyOn(storeService, 'updateVendor');
+
+      await call({ email });
+
+      expect(updateVendorSpy).toHaveBeenCalledWith(email, { tempPassword: null });
     });
 
     test.each([
@@ -1250,6 +1325,8 @@ describe('Changing your own password', () => {
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
+        token: expect.any(String),
+        user: expect.objectContaining({ passwordChangeRequired: false }),
       });
     });
 
@@ -1314,10 +1391,12 @@ describe('Changing your own password', () => {
         .send({ currentPassword: CURRENT, newPassword: NEXT });
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({
+      expect(res.body).toEqual(expect.objectContaining({
         success: true,
         message: AUTH_MESSAGES.CHANGE_PASSWORD_SUCCESS,
-      });
+        token: expect.any(String),
+        user: expect.objectContaining({ passwordChangeRequired: false }),
+      }));
     });
 
     test('rejects a wrong current password with 400', async () => {

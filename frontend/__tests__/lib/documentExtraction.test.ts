@@ -140,6 +140,30 @@ describe('flattenWorkbook', () => {
     expect(text).toBe('SHEET: Sheet1\n |  | Pump | 4');
     sparse.mockRestore();
   });
+
+  test('flattens a large multi-sheet workbook with 200 items across worksheets without arbitrary limit', () => {
+    const sheet1Rows: unknown[][] = [['Item Description', 'Quantity', 'Unit', 'Specification']];
+    const sheet2Rows: unknown[][] = [['Product', 'Order Qty', 'UOM', 'Technical Specs']];
+
+    for (let i = 1; i <= 100; i++) {
+      sheet1Rows.push([`Mechanical Valve ${i}`, 10 + i, 'Nos', `SS316 Class ${i}00`]);
+      sheet2Rows.push([`Electrical Cable ${i}`, 100 + i, 'Meters', `XLPE 4C ${i}mm`]);
+    }
+
+    const text = flattenWorkbook(
+      workbook({
+        Mechanical: sheet1Rows,
+        Electrical: sheet2Rows,
+      })
+    );
+
+    expect(text).toContain('SHEET: Mechanical');
+    expect(text).toContain('SHEET: Electrical');
+    expect(text).toContain('Mechanical Valve 1 | 11 | Nos | SS316 Class 100');
+    expect(text).toContain('Mechanical Valve 100 | 110 | Nos | SS316 Class 10000');
+    expect(text).toContain('Electrical Cable 1 | 101 | Meters | XLPE 4C 1mm');
+    expect(text).toContain('Electrical Cable 100 | 200 | Meters | XLPE 4C 100mm');
+  });
 });
 
 describe('readAsBase64', () => {
@@ -398,7 +422,33 @@ describe('isTextFile and isWordDocument', () => {
     expect(req2.documentText).toContain('Industrial Centrifugal Water Pump 500 GPM');
   });
 
-  test('buildExtractionRequest returns documentText for PDF with extracted text >= 15 chars', async () => {
+  test('buildExtractionRequest falls back to inlineData when docx text is too short to trust', async () => {
+    const { buildExtractionRequest } = require('@/lib/documentExtraction');
+
+    // A docx whose body recovers fewer than 15 characters is treated as unreadable
+    // text, so the file is sent inline for the model to read directly instead.
+    const fn = 'word/document.xml';
+    const xml = '<w:p><w:t>Pump</w:t></w:p>';
+    const enc = new TextEncoder();
+    const fnBytes = enc.encode(fn);
+    const xmlBytes = enc.encode(xml);
+    const header = new Uint8Array(30 + fnBytes.length + xmlBytes.length);
+    header[0] = 0x50; header[1] = 0x4b; header[2] = 0x03; header[3] = 0x04;
+    header[8] = 0; header[9] = 0;
+    header[18] = xmlBytes.length & 0xff; header[19] = (xmlBytes.length >> 8) & 0xff;
+    header[26] = fnBytes.length & 0xff; header[27] = 0;
+    header.set(fnBytes, 30);
+    header.set(xmlBytes, 30 + fnBytes.length);
+
+    const shortDocx = new File([header.buffer], 'short.docx', { type: '' });
+    const req = await buildExtractionRequest(shortDocx);
+
+    expect(req.documentText).toBeUndefined();
+    expect(req.inlineData).toBeDefined();
+    expect(req.mimeType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+  });
+
+  test('buildExtractionRequest returns documentText and inlineData for PDF with extracted text >= 15 chars', async () => {
     const { buildExtractionRequest } = require('@/lib/documentExtraction');
     const pdfWithText = new File([
       '%PDF-1.4\nstream\n(High Pressure Boiler Valve 250 PSI Specification) Tj\nendstream'
@@ -406,6 +456,8 @@ describe('isTextFile and isWordDocument', () => {
     const req = await buildExtractionRequest(pdfWithText);
     expect(req.fileName).toBe('valve_spec.pdf');
     expect(req.documentText).toContain('High Pressure Boiler Valve 250 PSI Specification');
+    expect(req.inlineData).toBeDefined();
+    expect(req.mimeType).toBe('application/pdf');
   });
 
   test('extractDocxText handles compressed docx with DecompressionStream and fallback', async () => {
@@ -481,6 +533,293 @@ describe('isTextFile and isWordDocument', () => {
   test('extractPdfText handles empty or corrupt buffer gracefully', async () => {
     expect(await extractPdfText(new ArrayBuffer(0))).toBe('');
     expect(await extractPdfText(null as any)).toBe('');
+  });
+
+  test('extractDocxText decompresses via DecompressionStream when available', async () => {
+    const { extractDocxText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+    const origResp = (global as any).Response;
+
+    (global as any).DecompressionStream = class MockDS {
+      writable = {
+        getWriter: () => ({
+          write: jest.fn(),
+          close: jest.fn(),
+        }),
+      };
+      readable = {};
+    };
+    (global as any).Response = class MockResponse {
+      async text() {
+        return '<w:p><w:t>Decompressed Docx Line Item</w:t></w:p>';
+      }
+    };
+
+    try {
+      const fn = 'word/document.xml';
+      const compContent = new Uint8Array([0x78, 0x9c, 0x01, 0x00, 0x00, 0xff, 0xff]);
+      const enc = new TextEncoder();
+      const fnBytes = enc.encode(fn);
+      const header = new Uint8Array(30 + fnBytes.length + compContent.length);
+      header[0] = 0x50; header[1] = 0x4b; header[2] = 0x03; header[3] = 0x04;
+      header[8] = 8; header[9] = 0;
+      header[18] = compContent.length & 0xff; header[19] = 0;
+      header[26] = fnBytes.length & 0xff; header[27] = 0;
+      header.set(fnBytes, 30);
+      header.set(compContent, 30 + fnBytes.length);
+
+      const res = await extractDocxText(header.buffer);
+      expect(res).toContain('Decompressed Docx Line Item');
+    } finally {
+      (global as any).DecompressionStream = origDS;
+      (global as any).Response = origResp;
+    }
+  });
+
+  test('extractDocxText catches DecompressionStream error and falls back', async () => {
+    const { extractDocxText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+
+    (global as any).DecompressionStream = class FailingDS {
+      writable = {
+        getWriter: () => {
+          throw new Error('Decompression failed');
+        },
+      };
+      readable = {};
+    };
+
+    try {
+      const fn = 'word/document.xml';
+      const compContent = new Uint8Array([0x78, 0x9c, 0x01, 0x00, 0x00, 0xff, 0xff]);
+      const enc = new TextEncoder();
+      const fnBytes = enc.encode(fn);
+      const header = new Uint8Array(30 + fnBytes.length + compContent.length);
+      header[0] = 0x50; header[1] = 0x4b; header[2] = 0x03; header[3] = 0x04;
+      header[8] = 8; header[9] = 0;
+      header[18] = compContent.length & 0xff; header[19] = 0;
+      header[26] = fnBytes.length & 0xff; header[27] = 0;
+      header.set(fnBytes, 30);
+      header.set(compContent, 30 + fnBytes.length);
+
+      const res = await extractDocxText(header.buffer);
+      expect(typeof res).toBe('string');
+    } finally {
+      (global as any).DecompressionStream = origDS;
+    }
+  });
+
+  test('extractPdfText handles array TJ octal escapes and DecompressionStream', async () => {
+    const { extractPdfText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+    const origResp = (global as any).Response;
+
+    (global as any).DecompressionStream = class MockDS {
+      writable = {
+        getWriter: () => ({
+          write: jest.fn(),
+          close: jest.fn(),
+        }),
+      };
+      readable = {};
+    };
+    (global as any).Response = class MockResponse {
+      async text() {
+        return 'stream\n(Decompressed Pump 20 HP) Tj\nendstream';
+      }
+    };
+
+    try {
+      const streamContent = 'stream\n[(Test \\101 Value) -10 (Part \\(2\\))] TJ\nendstream';
+      const encoder = new TextEncoder();
+      const buffer = encoder.encode(streamContent).buffer;
+
+      const result = await extractPdfText(buffer);
+      expect(result).toContain('Test A Value Part (2)');
+      expect(result).toContain('Decompressed Pump 20 HP');
+    } finally {
+      (global as any).DecompressionStream = origDS;
+      (global as any).Response = origResp;
+    }
+  });
+
+  test('extractPdfText catches DecompressionStream errors gracefully', async () => {
+    const { extractPdfText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+
+    (global as any).DecompressionStream = class FailingDS {
+      writable = {
+        getWriter: () => {
+          throw new Error('Decompress stream failed');
+        },
+      };
+      readable = {};
+    };
+
+    try {
+      const streamContent = 'stream\n(Fallback Plain Text) Tj\nendstream';
+      const encoder = new TextEncoder();
+      const buffer = encoder.encode(streamContent).buffer;
+
+      const result = await extractPdfText(buffer);
+      expect(result).toContain('Fallback Plain Text');
+    } finally {
+      (global as any).DecompressionStream = origDS;
+    }
+  });
+
+  test('extractPdfText catches unexpected buffer errors gracefully', async () => {
+    const { extractPdfText } = require('@/lib/documentExtraction');
+    const throwingBuffer = {
+      get byteLength() {
+        throw new Error('Buffer read failed');
+      },
+    } as any;
+    const result = await extractPdfText(throwingBuffer);
+    expect(result).toBe('');
+  });
+
+  test('readAsText rejects when file read fails and handles empty result', async () => {
+    const { readAsText } = require('@/lib/documentExtraction');
+    const origFR = global.FileReader;
+    (global as any).FileReader = class MockFailingReader {
+      onerror: any;
+      onload: any;
+      readAsText() {
+        setTimeout(() => this.onerror(new Error('fail')), 0);
+      }
+    };
+    await expect(readAsText(new File([''], 'err.txt'))).rejects.toThrow('read failed');
+
+    (global as any).FileReader = class MockEmptyReader {
+      onerror: any;
+      onload: any;
+      result = null;
+      readAsText() {
+        setTimeout(() => this.onload(), 0);
+      }
+    };
+    const emptyResult = await readAsText(new File([''], 'empty.txt'));
+    expect(emptyResult).toBe('');
+
+    global.FileReader = origFR;
+  });
+
+  test('extractDocxText skips non-matching zip entries and handles empty decompressed text', async () => {
+    const { extractDocxText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+    const origResp = (global as any).Response;
+
+    (global as any).DecompressionStream = class MockDS {
+      writable = { getWriter: () => ({ write: jest.fn(), close: jest.fn() }) };
+      readable = {};
+    };
+    (global as any).Response = class MockResponse {
+      async text() {
+        return '';
+      }
+    };
+
+    try {
+      const fn1 = 'word/theme.xml';
+      const fn1Bytes = new TextEncoder().encode(fn1);
+      const content1 = new Uint8Array([1, 2, 3]);
+      const h1 = new Uint8Array(30 + fn1Bytes.length + content1.length);
+      h1[0] = 0x50; h1[1] = 0x4b; h1[2] = 0x03; h1[3] = 0x04;
+      h1[8] = 8;
+      h1[18] = content1.length & 0xff;
+      h1[26] = fn1Bytes.length & 0xff;
+      h1.set(fn1Bytes, 30);
+      h1.set(content1, 30 + fn1Bytes.length);
+
+      const res1 = await extractDocxText(h1.buffer);
+      expect(res1).toBe('');
+
+      const fn2 = 'word/document.xml';
+      const fn2Bytes = new TextEncoder().encode(fn2);
+      const h2 = new Uint8Array(30 + fn2Bytes.length + content1.length);
+      h2[0] = 0x50; h2[1] = 0x4b; h2[2] = 0x03; h2[3] = 0x04;
+      h2[8] = 8;
+      h2[18] = content1.length & 0xff;
+      h2[26] = fn2Bytes.length & 0xff;
+      h2.set(fn2Bytes, 30);
+      h2.set(content1, 30 + fn2Bytes.length);
+
+      const res2 = await extractDocxText(h2.buffer);
+      expect(typeof res2).toBe('string');
+    } finally {
+      (global as any).DecompressionStream = origDS;
+      (global as any).Response = origResp;
+    }
+  });
+
+  test('extractPdfText exercises empty text, TJ without paren strings, empty TJ paren, huge streams, and 500 lines break', async () => {
+    const { extractPdfText } = require('@/lib/documentExtraction');
+    const origDS = (global as any).DecompressionStream;
+    const origResp = (global as any).Response;
+
+    (global as any).DecompressionStream = class MockDS {
+      writable = { getWriter: () => ({ write: jest.fn(), close: jest.fn() }) };
+      readable = {};
+    };
+    (global as any).Response = class MockResponse {
+      async text() {
+        return '';
+      }
+    };
+
+    try {
+      const streamContent = 'stream\n() Tj\n[10 20] TJ\n[()] TJ\n(Valid Item) Tj\nendstream';
+      const encoder = new TextEncoder();
+      const res = await extractPdfText(encoder.encode(streamContent).buffer);
+      expect(res).toBe('Valid Item');
+
+      const hugeData = 'stream\n' + 'x'.repeat(1024 * 1024 + 10) + '\nendstream';
+      const resHuge = await extractPdfText(encoder.encode(hugeData).buffer);
+      expect(resHuge).toBe('');
+
+      let manyLines = 'stream\n';
+      for (let i = 0; i < 550; i++) {
+        manyLines += `(Item Number ${i}) Tj\n`;
+      }
+      manyLines += 'endstream';
+      const resMany = await extractPdfText(encoder.encode(manyLines).buffer);
+      expect(resMany.split('\n').length).toBeGreaterThanOrEqual(500);
+    } finally {
+      (global as any).DecompressionStream = origDS;
+      (global as any).Response = origResp;
+    }
+  });
+
+  test('buildExtractionRequest handles PDF with empty type and short text, or when arrayBuffer throws', async () => {
+    const { buildExtractionRequest } = require('@/lib/documentExtraction');
+    const shortPdf = new File(['%PDF-short'], 'short.pdf', { type: '' });
+    const req1 = await buildExtractionRequest(shortPdf);
+    expect(req1.fileName).toBe('short.pdf');
+    expect(req1.mimeType).toBe('application/pdf');
+    expect(req1.documentText).toBeUndefined();
+    expect(req1.inlineData).toBeDefined();
+
+    const origFR = global.FileReader;
+    (global as any).FileReader = class MockFailingABReader {
+      onerror: any;
+      onload: any;
+      result = 'data:application/pdf;base64,AAAA';
+      readAsArrayBuffer() {
+        setTimeout(() => this.onerror(new Error('buffer error')), 0);
+      }
+      readAsDataURL() {
+        setTimeout(() => this.onload(), 0);
+      }
+    };
+    try {
+      const corruptPdf = new File(['%PDF'], 'corrupt.pdf', { type: '' });
+      const req2 = await buildExtractionRequest(corruptPdf);
+      expect(req2.fileName).toBe('corrupt.pdf');
+      expect(req2.mimeType).toBe('application/pdf');
+    } finally {
+      global.FileReader = origFR;
+    }
   });
 });
 

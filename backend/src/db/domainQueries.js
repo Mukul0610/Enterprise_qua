@@ -12,7 +12,7 @@
 // ==============================================================================
 
 const pool = require('./pool');
-const { getD1Binding, batchD1 } = require('./d1Bridge');
+const { getD1Binding, getD1HttpClient, batchD1 } = require('./d1Bridge');
 
 // ── Vendors ──────────────────────────────────────────────────────────────────
 
@@ -274,7 +274,7 @@ async function deleteVendorInDB(id) {
 async function bulkInsertVendorsInDB(vendors) {
   if (!pool.hasStorage() || vendors.length === 0) return [];
 
-  const d1 = getD1Binding();
+  const d1 = getD1Binding() || getD1HttpClient();
   if (d1) {
     const statements = vendors.map((vendor) => ({
       text: `INSERT INTO vendors (id, email, major_category, status, source, raw, updated_at)
@@ -997,6 +997,64 @@ async function claimDueChaserJobsFromDB(now, staleBefore, limit = 25) {
   return result.rows || [];
 }
 
+// ── RFQ Unlocks & Vendor Credit Transactions ─────────────────────────────────
+
+async function unlockRFQInDB({ id, vendorId, rfqId, creditCharged = 1, source = 'free_credit' }) {
+  if (!pool.hasStorage()) return null;
+  const result = await pool.query(
+    `INSERT INTO rfq_unlocks (id, vendor_id, rfq_id, credit_charged, source, unlocked_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, now(), now())
+     ON CONFLICT (vendor_id, rfq_id) DO NOTHING
+     RETURNING *`,
+    [id, vendorId, rfqId, creditCharged, source],
+    { d1: true }
+  );
+  return result && result.rows ? result.rows[0] : null;
+}
+
+async function getRFQUnlockFromDB(vendorId, rfqId) {
+  if (!pool.hasStorage()) return null;
+  const result = await pool.query(
+    `SELECT * FROM rfq_unlocks WHERE vendor_id = $1 AND rfq_id = $2 LIMIT 1`,
+    [vendorId, rfqId],
+    { d1: true }
+  );
+  return result && result.rows ? result.rows[0] : null;
+}
+
+async function getVendorUnlocksFromDB(vendorId) {
+  if (!pool.hasStorage()) return [];
+  const result = await pool.query(
+    `SELECT * FROM rfq_unlocks WHERE vendor_id = $1 ORDER BY unlocked_at DESC`,
+    [vendorId],
+    { d1: true }
+  );
+  return result && result.rows ? result.rows : [];
+}
+
+async function recordCreditTransactionInDB({ id, vendorId, rfqId, transactionType, amount, balanceAfter, idempotencyKey }) {
+  if (!pool.hasStorage()) return null;
+  const result = await pool.query(
+    `INSERT INTO vendor_credit_transactions (id, vendor_id, rfq_id, transaction_type, amount, balance_after, idempotency_key, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+     ON CONFLICT (idempotency_key) DO NOTHING
+     RETURNING *`,
+    [id, vendorId, rfqId || null, transactionType, amount, balanceAfter, idempotencyKey || null],
+    { d1: true }
+  );
+  return result && result.rows ? result.rows[0] : null;
+}
+
+async function getVendorCreditTransactionsFromDB(vendorId) {
+  if (!pool.hasStorage()) return [];
+  const result = await pool.query(
+    `SELECT * FROM vendor_credit_transactions WHERE vendor_id = $1 ORDER BY created_at DESC`,
+    [vendorId],
+    { d1: true }
+  );
+  return result && result.rows ? result.rows : [];
+}
+
 module.exports = {
   getVendorsFromDB,
   getVendorsPageFromDB,
@@ -1043,4 +1101,10 @@ module.exports = {
   cancelChaserJobsForRFQInDB,
   getPendingChaserJobsFromDB,
   claimDueChaserJobsFromDB,
+  unlockRFQInDB,
+  getRFQUnlockFromDB,
+  getVendorUnlocksFromDB,
+  recordCreditTransactionInDB,
+  getVendorCreditTransactionsFromDB,
 };
+

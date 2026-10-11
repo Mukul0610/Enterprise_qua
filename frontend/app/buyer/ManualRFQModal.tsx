@@ -16,6 +16,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
+import { resolveConfirmationVendorCount } from './ingestion-wizard';
 import { extractRfqCategorySignals, getCategoryMatchedProcucevVendors, matchVendorAgainstSignals } from '@/lib/vendorMatching';
 import {
   Plus,
@@ -56,7 +57,7 @@ import {
   validateManualRFQForm,
 } from '@/lib/manualRfqModel';
 import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail } from '@/lib/validationSchemas';
-import { UI_STRINGS, formatString } from '@/lib/uiStrings';
+import { UI_STRINGS, formatString, extractionReasonMessage } from '@/lib/uiStrings';
 import type {
   ManualRFQForm,
   ManualRFQLineItem,
@@ -65,6 +66,8 @@ import type {
   SourcingMode,
   VendorEntry,
 } from '@/lib/types';
+
+const EXTRACTION = UI_STRINGS.rfqExtraction;
 
 const MANUAL = UI_STRINGS.manualRfq;
 const MODAL = UI_STRINGS.manualRfqModal;
@@ -191,6 +194,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
   const [attachError, setAttachError] = useState<string | null>(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
+  const [hasExtracted, setHasExtracted] = useState(false);
   const [showAiInfo, setShowAiInfo] = useState(false);
   const attachInputRef = useRef<HTMLInputElement>(null);
   /**
@@ -434,7 +438,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       const result = await extractLineItemsFromDocument(request);
 
       if (!result.success || !result.data) {
-        failures.push(`${file.name}: ${result.error}`);
+        failures.push(`${file.name}: ${extractionReasonMessage(result.reason, result.error)}`);
         continue;
       }
       if (!derivedTitle && result.data.title) derivedTitle = result.data.title;
@@ -449,6 +453,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
     if (failures.length > 0) setExtractError(failures.join(' | '));
     if (extracted.length === 0) return;
 
+    setHasExtracted(true);
     setForm((prev) => ({
       ...prev,
       title: prev.title || derivedTitle,
@@ -456,6 +461,16 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       majorCategory: prev.majorCategory || extracted[0].majorCategory,
       lineItems: extracted,
     }));
+  };
+
+  /**
+   * Recovery action from the extraction-failure notice: clear the error and make
+   * sure there is at least one blank row to key into, so the buyer can proceed
+   * manually without hunting for the add-item button.
+   */
+  const handleEnterManually = () => {
+    setExtractError(null);
+    setForm((prev) => (prev.lineItems.length === 0 ? addManualRFQLineItem(prev) : prev));
   };
 
   const handleSubmit = async () => {
@@ -478,9 +493,9 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       phone?: string | null;
     }> | undefined = undefined;
 
-    if (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2') {
+    if (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2' || form.sourcingMode === 'mode_3') {
       if (Array.isArray(buyerVendors)) {
-        const pool = form.sourcingMode === 'mode_1'
+        const pool = (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_3')
           ? buyerVendors.filter((v) => isBuyerUploaded(v))
           : buyerVendors;
         const { signals } = extractRfqCategorySignals(form);
@@ -524,7 +539,9 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       }
     }
 
-    const result = await createRFQ(toRFQCreatePayload(form, mode1AssignedVendors));
+    const result = await createRFQ(
+      toRFQCreatePayload(form, mode1AssignedVendors, hasExtracted ? 'ai_extraction' : 'manual_entry')
+    );
     setIsSaving(false);
 
     if (!result.success) {
@@ -607,8 +624,8 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Vendors Assigned</span>
-                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {confirmationRfq.assignedVendors?.length || (confirmationRfq.sourcingMode === 'mode_3' ? 'AI Matched' : '1+ Supplier')}
+                <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                  {resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
             </div>
@@ -742,9 +759,21 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
             {/* An extraction failure changes nothing, so it is reported without
                 disturbing rows the buyer has already keyed. */}
             {extractError && (
-              <p role="alert" className="text-[11px] text-amber-700 dark:text-amber-400">
-                {extractError}
-              </p>
+              <div role="alert" className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700/60 text-xs space-y-2">
+                <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
+                  <AlertCircle size={14} /> {EXTRACTION.fallbackTitle}
+                </div>
+                <p className="text-[11px] text-amber-900/90 dark:text-amber-200">{extractError}</p>
+                <button
+                  type="button"
+                  onClick={handleEnterManually}
+                  data-testid="manual-enter-fallback"
+                  className="btn btn-primary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
+                >
+                  <Plus size={13} />
+                  <span>{EXTRACTION.manualEntryAction}</span>
+                </button>
+              </div>
             )}
 
             {form.attachments.length > 0 && (
@@ -1537,9 +1566,6 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
                             <Info size={11} />
                             <span>AI Matching Info</span>
                           </button>
-                          <span className="text-[9px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/50 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
-                            ⚡ Hybrid Active
-                          </span>
                         </div>
                       </div>
 

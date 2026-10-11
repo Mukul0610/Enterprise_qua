@@ -86,10 +86,15 @@ console.log('|' + '='.repeat(60) + '|' + '='.repeat(12) + '|' + '='.repeat(12) +
 
 if (summary.total) {
   const tot = summary.total;
-  const stPct = tot.statements ? tot.statements.pct.toFixed(1) : '100.0';
-  const brPct = tot.branches ? tot.branches.pct.toFixed(1) : '100.0';
-  const fnPct = tot.functions ? tot.functions.pct.toFixed(1) : '100.0';
-  const lnPct = tot.lines ? tot.lines.pct.toFixed(1) : '100.0';
+  const toPct = (item) => {
+    if (!item) return '100.0';
+    const val = typeof item.pct === 'number' ? item.pct : parseFloat(item.pct);
+    return !isNaN(val) ? val.toFixed(1) : '100.0';
+  };
+  const stPct = toPct(tot.statements);
+  const brPct = toPct(tot.branches);
+  const fnPct = toPct(tot.functions);
+  const lnPct = toPct(tot.lines);
   const totalPassed = parseFloat(stPct) >= BENCHMARKS.statements && parseFloat(brPct) >= BENCHMARKS.branches && parseFloat(fnPct) >= BENCHMARKS.functions && parseFloat(lnPct) >= BENCHMARKS.lines;
   const totalStatus = totalPassed ? '\x1b[32mPASS\x1b[0m  ' : '\x1b[31mFAIL\x1b[0m  ';
 

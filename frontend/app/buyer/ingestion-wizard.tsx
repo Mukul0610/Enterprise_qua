@@ -9,7 +9,7 @@ import {
   formatFileSize,
   RFQ_DOCUMENT_LIMITS,
 } from '@/lib/constants';
-import { UI_STRINGS, formatString } from '@/lib/uiStrings';
+import { UI_STRINGS, formatString, extractionReasonMessage } from '@/lib/uiStrings';
 import {
   createRFQ,
   extractLineItemsFromDocument,
@@ -65,7 +65,6 @@ import {
   ShieldCheck,
   Tag,
   Info,
-  ChevronDown,
   Check,
   X,
   CheckSquare,
@@ -89,10 +88,10 @@ const ALL_VENDORS_PAGE_SIZE = 100;
 const ALL_VENDORS_SEARCH_DEBOUNCE_MS = 350;
 
 const SOURCING_VERSION_LABELS: Record<string, string> = {
-  mode_0: 'V0(Procucev Network Vendors)',
-  mode_1: 'V1(Internal Vendors)',
-  mode_2: 'V2(Internal + Procucev Vetted Vendors)',
-  mode_3: 'V3(Autonomous AI + 360 Qualification)',
+  mode_0: UI_STRINGS.sourcingModeVersions.mode_0,
+  mode_1: UI_STRINGS.sourcingModeVersions.mode_1,
+  mode_2: UI_STRINGS.sourcingModeVersions.mode_2,
+  mode_3: UI_STRINGS.sourcingModeVersions.mode_3,
 };
 
 function taxonomyMajors(): string[] {
@@ -107,6 +106,58 @@ function withStoredValue(options: string[], value: string): string[] {
   const trimmed = (value || '').trim();
   if (trimmed === '' || options.some((o) => o.toLowerCase() === trimmed.toLowerCase())) return options;
   return [trimmed, ...options];
+}
+
+/**
+ * Resolves the dynamically retrieved Procucev vendor count from the backend response.
+ * For Version 0, Version 2, and Version 3, it displays the actual number of Procucev
+ * network vendors associated with that RFQ version based on the backend response.
+ */
+type ConfirmationVendor = string | {
+  id?: string;
+  name?: string;
+  source?: string;
+  addedByBuyerCompany?: boolean;
+};
+
+interface ConfirmationRFQ {
+  sourcingMode?: string;
+  procucevVendorCount?: number;
+  assignedVendors?: ConfirmationVendor[];
+}
+
+export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | undefined): number {
+  if (!rfq) return 0;
+  const mode = rfq.sourcingMode;
+  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+  const isV1 = mode === 'mode_1' || mode === 'v1' || mode === 'version_1';
+  const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+  const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+
+  // If the backend dynamically returned the vendor count for this RFQ version, use it:
+  if (
+    (isV0 || isV2 || isV3) &&
+    typeof rfq.procucevVendorCount === 'number' &&
+    Number.isFinite(rfq.procucevVendorCount)
+  ) {
+    return Math.max(0, rfq.procucevVendorCount);
+  }
+
+  // Fallback: derive from assignedVendors when the backend field is absent:
+  if (Array.isArray(rfq.assignedVendors)) {
+    if (isV0 || isV2 || isV3) {
+      // V0, V2, V3: only Procucev network vendors are counted.
+      return rfq.assignedVendors.filter((vendor) =>
+        isProcucevVendor(typeof vendor === 'string' ? { id: vendor } : vendor)
+      ).length;
+    }
+    if (isV1) {
+      // V1: all assigned vendors from the private roster.
+      return rfq.assignedVendors.length;
+    }
+  }
+
+  return 0;
 }
 
 interface IngestionWizardProps {
@@ -353,20 +404,6 @@ export default function IngestionWizard({
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [isSourcingDropdownOpen, setIsSourcingDropdownOpen] = useState(false);
-  const sourcingDropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (sourcingDropdownRef.current && !sourcingDropdownRef.current.contains(event.target as Node)) {
-        setIsSourcingDropdownOpen(false);
-      }
-    }
-    if (isSourcingDropdownOpen) {
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }
-  }, [isSourcingDropdownOpen]);
 
   // "All Categories" opts a line item out of category-narrowed matching — the
   // marketplace-suppliers panel then browses the whole real vendor directory
@@ -524,6 +561,7 @@ export default function IngestionWizard({
   const [pincodeValidating, setPincodeValidating] = useState(false);
   const [pincodePostOffices, setPincodePostOffices] = useState<PostOfficeDetail[]>([]);
   const pincodeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const lineItemsSectionRef = useRef<HTMLElement | null>(null);
 
   const validation = useMemo(() => validateManualRFQForm(form), [form]);
   const formErrors = submitAttempted ? validation.formErrors : {};
@@ -676,20 +714,33 @@ export default function IngestionWizard({
 
         showToast(
           EXTRACTION.successTitle,
-          `Extracted ${extracted.length} line items successfully from "${primaryFile.name}".`,
+          formatString(EXTRACTION.successToast, { accepted: extracted.length, fileName: primaryFile.name }),
           'success'
         );
       } else {
-        setExtractionError(result.error || EXTRACTION.unreadableResponse);
-        showToast(EXTRACTION.fallbackTitle, result.error || EXTRACTION.unreadableResponse, 'warning');
+        const msg = extractionReasonMessage(result.reason, result.error);
+        setExtractionError(msg);
+        showToast(EXTRACTION.fallbackTitle, msg, 'warning');
       }
-    } catch (err: any) {
-      const msg = err?.message || EXTRACTION.unreadableResponse;
+    } catch {
+      const msg = EXTRACTION.unreadableResponse;
       setExtractionError(msg);
       showToast(EXTRACTION.fallbackTitle, msg, 'warning');
     } finally {
       setIsExtracting(false);
     }
+  };
+
+  /**
+   * Recovery action from the failure banner: ensure there is at least one line
+   * item to key into and bring the line-item table into view, so a failed
+   * extraction leads straight into manual entry.
+   */
+  const handleEnterManually = () => {
+    setForm((prev) => (prev.lineItems.length === 0 ? addManualRFQLineItem(prev) : prev));
+    setExtractionError(null);
+    showToast(EXTRACTION.fallbackTitle, EXTRACTION.manualEntryStarted, 'info');
+    lineItemsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
   /** Auto-categorize all line items with AI */
@@ -847,8 +898,8 @@ export default function IngestionWizard({
 
       let mode1AssignedVendors: AssignedVendorEntry[] | undefined = undefined;
 
-      if ((form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2') && Array.isArray(buyerVendors)) {
-        const pool = form.sourcingMode === 'mode_1'
+      if ((form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2' || form.sourcingMode === 'mode_3') && Array.isArray(buyerVendors)) {
+        const pool = (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_3')
           ? buyerVendors.filter((v) => isBuyerUploaded(v))
           : buyerVendors;
         const { signals: dispatchSignals } = extractRfqCategorySignals(updatedForm);
@@ -895,7 +946,11 @@ export default function IngestionWizard({
           item.majorCategory === ALL_CATEGORIES_OPTION ? { ...item, majorCategory: '' } : item
         ),
       };
-      const payload = toRFQCreatePayload(sanitizedForm, mode1AssignedVendors);
+      const rfqSource = 'ai_extraction';
+      const payload = toRFQCreatePayload(sanitizedForm, mode1AssignedVendors, rfqSource);
+      if (extractionSummary?.fileName) {
+        payload.sourceFileName = extractionSummary.fileName;
+      }
       const result = await createRFQ(payload);
 
       if (!result.success) {
@@ -1104,20 +1159,25 @@ export default function IngestionWizard({
               <Sparkles size={14} /> Extraction Complete
             </div>
             <p className="text-[11px] text-emerald-900/80 dark:text-emerald-200 mt-0.5">
-              Successfully extracted <strong>{extractionSummary.accepted} line items</strong> from &ldquo;{extractionSummary.fileName}&rdquo; using {extractionSummary.model}. Review and adjust details below.
+              Successfully extracted <strong>{extractionSummary.accepted} line items</strong> from &ldquo;{extractionSummary.fileName}&rdquo;
             </p>
           </div>
         )}
 
         {extractionError && (
-          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700/60 text-xs space-y-1">
+          <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-700/60 text-xs space-y-2">
             <div className="font-bold text-amber-900 dark:text-amber-300 flex items-center gap-1.5">
-              <AlertCircle size={14} /> Document Parsing Notice
+              <AlertCircle size={14} /> {EXTRACTION.fallbackTitle}
             </div>
             <p className="text-[11px] text-amber-900/90 dark:text-amber-200">{extractionError}</p>
-            <p className="text-[11px] text-amber-800/80 dark:text-amber-300 font-semibold">
-              You can key line items directly in the table below.
-            </p>
+            <button
+              type="button"
+              onClick={handleEnterManually}
+              className="btn btn-primary btn-sm font-bold inline-flex items-center gap-1.5 shadow-xs"
+            >
+              <Plus size={13} />
+              <span>{EXTRACTION.manualEntryAction}</span>
+            </button>
           </div>
         )}
       </section>
@@ -1125,7 +1185,7 @@ export default function IngestionWizard({
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* MERGED SECTIONS 1, 2 & 3: RFQ DETAILS, LINE ITEMS & SOURCING  */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <section className="glass-panel p-3.5 sm:p-4 rounded-xl space-y-3 border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-xs">
+      <section ref={lineItemsSectionRef} className="glass-panel p-3.5 sm:p-4 rounded-xl space-y-3 border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 dark:border-gray-800 pb-2.5">
           <h2 className="text-sm sm:text-base font-bold text-slate-900 dark:text-white flex items-center gap-2">
             <FileText size={16} className="text-indigo-600 dark:text-indigo-400" />
@@ -1270,12 +1330,14 @@ export default function IngestionWizard({
               {isCategorizing ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
               {isCategorizing ? 'Classifying...' : 'Auto-Categorize All (AI)'}
             </button>
-            <button
-              onClick={() => setForm(addManualRFQLineItem(form))}
-              className="btn btn-primary btn-sm font-bold flex items-center gap-1 shadow-xs"
-            >
-              <Plus size={14} /> Add Line Item
-            </button>
+            {form.lineItems.length < 5 && (
+              <button
+                onClick={() => setForm(addManualRFQLineItem(form))}
+                className="btn btn-primary btn-sm font-bold flex items-center gap-1 shadow-xs"
+              >
+                <Plus size={14} /> Add Line Item
+              </button>
+            )}
           </div>
         </div>
 
@@ -1424,8 +1486,9 @@ export default function IngestionWizard({
           </div>
         )}
 
-        {form.lineItems.length > 0 && (
-          <div className="pt-1">
+        {/* ── When 5+ items exist, place Add Line Item at bottom-right ── */}
+        {form.lineItems.length >= 5 && (
+          <div className="flex justify-end pt-1">
             <button
               onClick={() => setForm(addManualRFQLineItem(form))}
               className="btn btn-primary btn-sm font-bold flex items-center gap-1 shadow-xs"
@@ -1445,7 +1508,7 @@ export default function IngestionWizard({
             </h2>
           </div>
 
-          <div className="space-y-3" ref={sourcingDropdownRef}>
+          <div className="space-y-3">
             <label htmlFor="sourcing-mode-select" className="block text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-gray-300">
               Select Sourcing Version
             </label>
@@ -1471,94 +1534,37 @@ export default function IngestionWizard({
               ))}
             </select>
 
-            {/* Custom Clean Dropdown Selector */}
-            <div className="relative">
-              {(() => {
-                const activeMode = SOURCING_MODES.find((m) => m.id === form.sourcingMode) || SOURCING_MODES[0];
+            {/* Horizontal Compact Sourcing Mode Selection Buttons */}
+            <div
+              role="radiogroup"
+              aria-label="Select Sourcing Version"
+              className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0 flex-wrap sm:flex-nowrap"
+            >
+              {SOURCING_MODES.map((mode) => {
+                const isSelected = form.sourcingMode === mode.id;
+                const label = SOURCING_VERSION_LABELS[mode.id] || mode.shortLabel;
 
                 return (
-                  <div>
-                    <button
-                      type="button"
-                      data-testid="sourcing-mode-trigger"
-                      onClick={() => setIsSourcingDropdownOpen((prev) => !prev)}
-                      aria-expanded={isSourcingDropdownOpen}
-                      className="w-full text-left rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800/90 p-3.5 hover:border-indigo-400 dark:hover:border-indigo-500 focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 transition-all flex items-center justify-between gap-4 shadow-2xs cursor-pointer group"
-                    >
-                      <div className="flex items-center gap-3.5 min-w-0">
-                        <span className="text-sm font-bold text-slate-900 dark:text-white">
-                          {SOURCING_VERSION_LABELS[activeMode.id] || activeMode.shortLabel}
-                        </span>
-                      </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <div className="p-1 rounded-lg bg-slate-100 dark:bg-gray-700/60 text-slate-500 dark:text-gray-400 group-hover:text-indigo-600 dark:group-hover:text-indigo-300 transition-colors">
-                          <ChevronDown
-                            size={16}
-                            className={`transition-transform duration-200 ${
-                              isSourcingDropdownOpen ? 'rotate-180 text-indigo-600 dark:text-indigo-400' : ''
-                            }`}
-                          />
-                        </div>
-                      </div>
-                    </button>
-
-                    {/* Dropdown Menu Popover */}
-                    {isSourcingDropdownOpen && (
-                      <div className="absolute z-50 mt-2 w-full rounded-2xl border border-slate-200/90 dark:border-gray-700/80 bg-white/95 dark:bg-gray-900/95 backdrop-blur-xl shadow-2xl shadow-slate-900/10 dark:shadow-black/60 p-2 space-y-1.5 animate-fade-in">
-                        {SOURCING_MODES.map((mode) => {
-                          const isSelected = form.sourcingMode === mode.id;
-
-                          return (
-                            <div
-                              key={mode.id}
-                              data-testid={`custom-mode-option-${mode.id}`}
-                              onClick={() => {
-                                patchForm('sourcingMode', mode.id as SourcingMode);
-                                setIsSourcingDropdownOpen(false);
-                              }}
-                              className={`px-4 py-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-2 ${
-                                isSelected
-                                  ? 'bg-indigo-50/80 dark:bg-indigo-950/40 border-indigo-300 dark:border-indigo-700/80 shadow-xs'
-                                  : 'bg-slate-50/50 dark:bg-gray-800/30 border-slate-100 dark:border-gray-800 hover:border-slate-300 dark:hover:border-gray-700 hover:bg-white dark:hover:bg-gray-800/80'
-                              }`}
-                            >
-                              <h4 className={`text-sm font-bold ${isSelected ? 'text-indigo-950 dark:text-indigo-200' : 'text-slate-900 dark:text-white'}`}>
-                                {SOURCING_VERSION_LABELS[mode.id] || mode.shortLabel}
-                              </h4>
-
-                              <div className="flex items-center gap-1.5">
-                                {isSelected ? (
-                                  <span className="inline-flex items-center gap-1 text-[11px] font-extrabold text-indigo-600 dark:text-indigo-400 bg-indigo-100/70 dark:bg-indigo-900/50 px-2 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-800">
-                                    <Check size={12} /> Active
-                                  </span>
-                                ) : (
-                                  <span className="text-[11px] font-medium text-slate-400 hover:text-indigo-600 transition-colors">
-                                    Select
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
+                  <button
+                    key={mode.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={isSelected}
+                    data-testid={`sourcing-mode-btn-${mode.id}`}
+                    onClick={() => patchForm('sourcingMode', mode.id as SourcingMode)}
+                    className={`h-9 px-3.5 py-1.5 rounded-xl text-xs font-semibold tracking-tight transition-all duration-150 shrink-0 flex items-center justify-center gap-1.5 border cursor-pointer select-none ${
+                      isSelected
+                        ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs shadow-indigo-600/20'
+                        : 'bg-white dark:bg-gray-800 text-slate-700 dark:text-gray-300 border-slate-200 dark:border-gray-700 hover:bg-slate-50 dark:hover:bg-gray-700/60 hover:border-slate-300 dark:hover:border-gray-600'
+                    }`}
+                  >
+                    <span data-testid={`mode-${mode.id}`} aria-hidden="true" className="contents">
+                      {isSelected && <Check size={13} className="shrink-0 stroke-[2.5]" />}
+                      <span>{label}</span>
+                    </span>
+                  </button>
                 );
-              })()}
-            </div>
-
-            {/* Test & Quick Selector Target */}
-            <div className="hidden" aria-hidden="true">
-              {SOURCING_MODES.map((mode) => (
-                <button
-                  key={mode.id}
-                  type="button"
-                  data-testid={`mode-${mode.id}`}
-                  onClick={() => patchForm('sourcingMode', mode.id as SourcingMode)}
-                >
-                  {SOURCING_VERSION_LABELS[mode.id] || mode.shortLabel}
-                </button>
-              ))}
+              })}
             </div>
           </div>
 
@@ -1971,9 +1977,6 @@ export default function IngestionWizard({
                         <Info size={13} />
                         <span>AI Matching Criteria</span>
                       </button>
-                      <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100/70 dark:bg-emerald-900/50 px-2.5 py-1 rounded-full border border-emerald-200 dark:border-emerald-800 shrink-0">
-                        ⚡ Hybrid Active
-                      </span>
                     </div>
                   </div>
 
@@ -2785,8 +2788,8 @@ export default function IngestionWizard({
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Mode & Vendors</span>
-                <span className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {confirmationRfq.assignedVendors?.length || (confirmationRfq.sourcingMode === 'mode_3' ? 'AI Blind' : '1+ Supplier')}
+                <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
+                  {resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
             </div>

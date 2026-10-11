@@ -1,9 +1,18 @@
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const dotenv = require('dotenv');
 
-// Load environment variables
+// Load environment variables (from working directory and backend directory)
 dotenv.config();
+try {
+  // eslint-disable-next-line no-undef
+  if (typeof __dirname !== 'undefined') {
+    dotenv.config({ path: path.resolve(__dirname, '../.env') });
+  }
+} catch {
+  // Ignored in Cloudflare Workers / ESM bundles where __dirname does not exist
+}
 
 const apiRoutes = require('./routes');
 const graphqlRoutes = require('./routes/graphql');

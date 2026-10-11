@@ -1,11 +1,14 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { authClient } from '@/lib/authClient';
+import { formatFileSize } from '@/lib/constants';
 import { rfqAttachmentUrl, submitRFQInquiry } from '@/lib/rfqClient';
-import { VendorOpportunity } from '@/lib/types';
+import { downloadVendorQuotationExcel } from '@/lib/bidComparisonExport';
+import type { RFQQuoteAttachment, VendorOpportunity } from '@/lib/types';
+import * as XLSX from 'xlsx';
 import {
   ArrowLeft,
   Mail,
@@ -23,9 +26,12 @@ import {
   IndianRupee,
   Send,
   Download,
+  Upload,
   AlertCircle,
   MessageSquare,
   HelpCircle,
+  Search,
+  Paperclip,
 } from 'lucide-react';
 
 interface QuotationFormProps {
@@ -71,9 +77,25 @@ const BUYER_CONTACTS_MAP: Record<string, Omit<BuyerContactInfo, 'source'>> = {
 
 export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: QuotationFormProps) {
   const router = useRouter();
-  const { rfqs, vendorOpportunities, buyerVendors, showToast, addAuditLog, vendorSubscription, currentUserSession, refreshFromDB, adoptCreatedRFQ } = useApp();
+  const {
+    rfqs,
+    vendorOpportunities,
+    buyerVendors,
+    showToast,
+    addAuditLog,
+    vendorSubscription,
+    currentUserSession,
+    refreshFromDB,
+    adoptCreatedRFQ,
+    vendorFreeCreditsRemaining,
+    vendorUnlockedRfqIds,
+    refreshVendorCredits,
+    unlockRFQForVendor,
+  } = useApp();
   const [selectedBuyerModal, setSelectedBuyerModal] = useState<(BuyerContactInfo & { rfqNumber: string }) | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [opportunitySearch, setOpportunitySearch] = useState('');
+  const [opportunityStatusFilter, setOpportunityStatusFilter] = useState<'all' | 'open' | 'submitted' | 'closed'>('all');
 
   // This vendor's own backend record id — needed to tell "my submitted quote"
   // apart from any other vendor's quote on the same RFQ, and to submit/download
@@ -81,11 +103,14 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [myVendorId, setMyVendorId] = useState<string | null>(null);
   const [myVendorName, setMyVendorName] = useState<string>('');
   const [myAddedByBuyerCompany, setMyAddedByBuyerCompany] = useState<string | null>(null);
+  const [myBuyerId, setMyBuyerId] = useState<string | null>(null);
   const [freeCreditsRemaining, setFreeCreditsRemaining] = useState<number | null>(null);
   const myVendorRecord = buyerVendors?.find(
     (v) => v.email?.toLowerCase() === currentUserSession?.email?.toLowerCase()
   );
-  const effectiveFreeCredits = freeCreditsRemaining ?? myVendorRecord?.freeQuotationCredits ?? (vendorSubscription === 'premium' ? 5 : 0);
+  const effectiveFreeCredits = (vendorSubscription as string) === 'standard'
+    ? 0
+    : (freeCreditsRemaining ?? myVendorRecord?.freeQuotationCredits ?? vendorFreeCreditsRemaining ?? 5);
   // isOwnBuyerRfq depends on myAddedByBuyerCompany, which only exists once
   // this fetch resolves — the deep-link auto-open effect below waits on this
   // flag so it doesn't judge a real direct-buyer RFQ as locked just because
@@ -120,6 +145,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
           setMyVendorId(data.data.id);
           setMyVendorName(data.data.name);
           setMyAddedByBuyerCompany(data.data.addedByBuyerCompany || null);
+          setMyBuyerId(data.data.buyerId || data.data.buyerAccountId || null);
           if (data.data.freeQuotationCredits !== undefined) {
             setFreeCreditsRemaining(Number(data.data.freeQuotationCredits));
           }
@@ -151,32 +177,75 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   // This vendor's real submitted quotes, read back from the actual RFQ
   // records (rfq.quotes[]) instead of a hardcoded 2-row placeholder list.
   const submittedQuotes = rfqs
-    .filter((rfq) => (rfq.quotes || []).some((q) => q.vendorId === myVendorId))
+    .filter((rfq) =>
+      (rfq.quotes || []).some(
+        (q: any) =>
+          (myVendorId && q.vendorId === myVendorId) ||
+          (currentUserSession?.email && q.vendorEmail && q.vendorEmail.toLowerCase() === currentUserSession.email.toLowerCase()) ||
+          (myVendorName && q.vendorName && q.vendorName.toLowerCase().trim() === myVendorName.toLowerCase().trim())
+      )
+    )
     .map((rfq) => {
-      const myQuote: any = (rfq.quotes || []).find((q: any) => q.vendorId === myVendorId);
+      const myQuote: any = (rfq.quotes || []).find(
+        (q: any) =>
+          (myVendorId && q.vendorId === myVendorId) ||
+          (currentUserSession?.email && q.vendorEmail && q.vendorEmail.toLowerCase() === currentUserSession.email.toLowerCase()) ||
+          (myVendorName && q.vendorName && q.vendorName.toLowerCase().trim() === myVendorName.toLowerCase().trim())
+      );
       return {
         rfqNumber: rfq.rfqNumber,
         title: rfq.title,
         submittedDate: myQuote?.submittedAt ? new Date(myQuote.submittedAt).toLocaleString() : '-',
         status: rfq.status === 'PO Generated' ? 'PO Generated' : 'Quote Submitted',
         submissionMethod: 'Portal Submission',
+        totalPrice: Number(myQuote?.totalPrice) || 0,
       };
     });
 
   // Was a hardcoded list of 4 specific RFQ numbers standing in for "this
-  // vendor's own buyer roster" — direct-vs-marketplace now reflects the real
-  // relationship: this vendor's real addedByBuyerCompany against the RFQ's
-  // real buyer (same real fields opportunity-feed.tsx and the backend's own
-  // quota enforcement in GET /api/rfqs/:id/email-preview check).
+  // Direct-vs-marketplace reflects the real relationship:
+  // When a buyer uploads or adds a vendor, the vendor is buyer-mapped and has unlimited quotations for that buyer's RFQs.
   const isOwnBuyerRfq = (rfqNumber: string) => {
-    if (!myAddedByBuyerCompany) return false;
     const rfq = vendorOpportunities.find((o) => o.rfqNumber === rfqNumber);
-    return !!rfq && rfq.buyer === myAddedByBuyerCompany;
+    if (!rfq) return false;
+    if (myAddedByBuyerCompany && rfq.buyer === myAddedByBuyerCompany) return true;
+    if (myBuyerId && (rfq as any).buyerAccountId === myBuyerId) return true;
+    if (myVendorRecord) {
+      if (myVendorRecord.addedByBuyerCompany && rfq.buyer === myVendorRecord.addedByBuyerCompany) return true;
+      if (myVendorRecord.buyerId && (rfq as any).buyerAccountId === myVendorRecord.buyerId) return true;
+      if (myVendorRecord.buyerAccountId && (rfq as any).buyerAccountId === myVendorRecord.buyerAccountId) return true;
+    }
+    return false;
   };
 
   // Compile RFQ Bidding summaries
   const totalReceivedCount = vendorOpportunities.length;
   const totalSubmittedCount = submittedQuotes.length;
+  const filteredOpportunities = useMemo(() => {
+    const query = opportunitySearch.trim().toLocaleLowerCase();
+    return vendorOpportunities.filter((opp) => {
+      const quote = submittedQuotes.some((item) => item.rfqNumber === opp.rfqNumber);
+      const isClosed = opp.status === 'Closed' || opp.status === 'Expired';
+      if (opportunityStatusFilter === 'submitted' && !quote && opp.status !== 'submitted' && opp.status !== 'under_review') return false;
+      if (opportunityStatusFilter === 'closed' && !isClosed) return false;
+      if (opportunityStatusFilter === 'open' && (isClosed || quote || opp.status === 'submitted')) return false;
+      if (!query) return true;
+      const rfqRecord = rfqs.find((rfq) => rfq.rfqNumber === opp.rfqNumber);
+      const itemNames = (rfqRecord?.extractedEntities || []).map((item) => item.itemName);
+      return [
+        opp.rfqNumber,
+        opp.title,
+        opp.buyer,
+        opp.status,
+        opp.majorCategory,
+        rfqRecord?.category || '',
+        opp.deliveryLocation,
+        rfqRecord?.deliveryLocation || '',
+        ...itemNames,
+      ]
+        .some((value) => value.toLocaleLowerCase().includes(query));
+    });
+  }, [vendorOpportunities, submittedQuotes, rfqs, opportunitySearch, opportunityStatusFilter]);
 
   const handleCopyText = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -197,6 +266,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [bidWarrantyYears, setBidWarrantyYears] = useState('');
   const [bidPaymentTerms, setBidPaymentTerms] = useState('45 Days Net');
   const [bidRemarks, setBidRemarks] = useState('');
+  const [bidDocuments, setBidDocuments] = useState<File[]>([]);
+  const [uploadedBidDocuments, setUploadedBidDocuments] = useState<RFQQuoteAttachment[]>([]);
   const [isSubmittingQuote, setIsSubmittingQuote] = useState(false);
   const [submitModalError, setSubmitModalError] = useState<string | null>(null);
   const [submitModalSuccess, setSubmitModalSuccess] = useState<{
@@ -212,6 +283,48 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
   const [inquiryMessage, setInquiryMessage] = useState('');
   const [isInquiring, setIsInquiring] = useState(false);
   const [inquirySuccess, setInquirySuccess] = useState(false);
+  const excelInputRef = useRef<HTMLInputElement | null>(null);
+
+  const handleUploadPricedExcel = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !biddingOn) return;
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = new Uint8Array(evt.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const firstSheetName = workbook.SheetNames[0];
+        const worksheet = workbook.Sheets[firstSheetName];
+        const jsonRows: any[] = XLSX.utils.sheet_to_json(worksheet);
+
+        const newPrices: Record<string, string> = { ...bidLineItemPrices };
+        let matchedCount = 0;
+
+        jsonRows.forEach((row) => {
+          const rawItem = String(row['Item'] || row['Item Name'] || row['Description'] || row['Item Description'] || '').trim().toLowerCase();
+          const rawRate = row['Rate (INR)'] ?? row['Rate'] ?? row['Unit Price (INR)'] ?? row['Unit Price'] ?? row['Price'];
+          const rateVal = Number(rawRate);
+
+          if (rawItem && Number.isFinite(rateVal) && rateVal > 0) {
+            const matched = (biddingOn.lineItems || []).find(
+              (li) => (li.description || '').trim().toLowerCase() === rawItem || (li.id && String(row['Item ID'] || '').trim() === li.id)
+            );
+            if (matched) {
+              newPrices[matched.id] = String(rateVal);
+              matchedCount++;
+            }
+          }
+        });
+
+        setBidLineItemPrices(newPrices);
+        showToast('Excel Imported', `Successfully imported pricing for ${matchedCount} item(s).`, 'success');
+      } catch (err: any) {
+        showToast('Import Failed', err?.message || 'Could not parse the uploaded Excel file.', 'warning');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    e.target.value = '';
+  };
 
   const openBidForm = (opp: VendorOpportunity) => {
     setBiddingOn(opp);
@@ -221,6 +334,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
     setBidWarrantyYears('');
     setBidPaymentTerms('45 Days Net');
     setBidRemarks('');
+    setBidDocuments([]);
+    setUploadedBidDocuments([]);
     setSubmitModalError(null);
     setSubmitModalSuccess(null);
   };
@@ -286,7 +401,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
     if (vendorOpportunities.length === 0) return;
     autoOpenedRef.current = true;
     const alreadyQuoted = submittedQuotes.some((q) => q.rfqNumber === opportunity.rfqNumber);
-    const locked = !isOwnBuyerRfq(opportunity.rfqNumber) && vendorSubscription !== 'connect' && vendorSubscription !== 'select';
+    const locked = !isOwnBuyerRfq(opportunity.rfqNumber) && vendorSubscription !== 'connect' && vendorSubscription !== 'select' && effectiveFreeCredits <= 0;
     if (!alreadyQuoted && !locked) {
       openBidForm(opportunity);
     }
@@ -339,6 +454,11 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       totalPrice = lineItemQuotes.reduce((sum, li) => sum + li.totalPrice, 0);
       const totalQty = rfqLineItems.reduce((sum, li) => sum + (li.quantity || 0), 0);
       unitPrice = totalQty > 0 ? totalPrice / totalQty : totalPrice;
+      if (!Number.isFinite(unitPrice) || !Number.isFinite(totalPrice)) {
+        setSubmitModalError('The entered line-item rates produce an invalid quotation total.');
+        showToast('Validation Error', 'Check the line-item quantities and rates.', 'warning');
+        return;
+      }
     } else {
       unitPrice = Number(bidUnitPrice);
       if (!unitPrice || unitPrice <= 0) {
@@ -348,10 +468,46 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       }
       const quantity = rfqLineItems[0]?.quantity || 1;
       totalPrice = unitPrice * quantity;
+      if (!Number.isFinite(totalPrice)) {
+        setSubmitModalError('The entered rate produces an invalid quotation total.');
+        showToast('Validation Error', 'Check the rate and quantity.', 'warning');
+        return;
+      }
     }
 
     setIsSubmittingQuote(true);
     try {
+      const attachments = [...uploadedBidDocuments];
+      const missingMimeType = bidDocuments.find((file) => !file.type);
+      if (missingMimeType) throw new Error(`${missingMimeType.name} has an unsupported file type.`);
+      for (const file of bidDocuments.slice(attachments.length)) {
+        const content = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || '');
+            const encoded = result.split(',')[1];
+            if (!encoded) reject(new Error(`Could not read ${file.name}.`));
+            else resolve(encoded);
+          };
+          reader.onerror = () => reject(new Error(`Could not read ${file.name}.`));
+          reader.readAsDataURL(file);
+        });
+        const uploadResponse = await fetch(
+          `/api/rfqs/${encodeURIComponent(biddingOn.rfqNumber)}/quote-attachments`,
+          {
+            method: 'POST',
+            headers: authHeaders(),
+            body: JSON.stringify({ fileName: file.name, mimeType: file.type, content }),
+          }
+        );
+        const uploadData = await uploadResponse.json();
+        if (!uploadResponse.ok || !uploadData.success || !uploadData.data) {
+          throw new Error(uploadData.error || `Could not upload ${file.name}.`);
+        }
+        attachments.push(uploadData.data as RFQQuoteAttachment);
+        setUploadedBidDocuments([...attachments]);
+      }
+
       const res = await fetch(`/api/rfqs/${encodeURIComponent(biddingOn.rfqNumber)}/quotes`, {
         method: 'POST',
         headers: authHeaders(),
@@ -363,6 +519,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
           warrantyYears: Number(bidWarrantyYears) || 0,
           paymentTerms: bidPaymentTerms,
           remarks: bidRemarks,
+          ...(attachments.length ? { attachments } : {}),
         }),
       });
       const data = await res.json();
@@ -397,6 +554,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
         source: isDirect ? 'buyer_uploaded' : 'quote_submitted',
       };
       setBiddingOn(null);
+      setBidDocuments([]);
+      setUploadedBidDocuments([]);
       setSelectedBuyerModal({ ...buyerDetails, rfqNumber: targetRfqNum });
       await refreshFromDB();
       if (onSubmitSuccess) onSubmitSuccess();
@@ -422,30 +581,31 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
     URL.revokeObjectURL(objectUrl);
   };
 
+  const isRfqUnlocked = (rfqNumber: string) => {
+    if (isOwnBuyerRfq(rfqNumber)) return true;
+    const norm = String(rfqNumber).toLowerCase();
+    return vendorUnlockedRfqIds.some((id) => String(id).toLowerCase() === norm);
+  };
+
   const handleDownloadRfq = async (opp: VendorOpportunity) => {
     try {
-      const params = myVendorId ? `?vendorId=${encodeURIComponent(myVendorId)}` : '';
-      // This route requires authentication (and, for a vendor, now enforces
-      // their real download quota server-side) — the request was previously
-      // sent with no Authorization header at all and would 401 for real.
-      const res = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}/email-preview${params}`, {
+      const res = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}/email-preview`, {
         headers: authHeaders(),
       });
       const data = await res.json();
       if (!res.ok || !data.success) {
+        if (data.exhausted || res.status === 403) {
+          showToast('Free Credits Exhausted', data.error || 'You have used all 5 free RFQ download credits. You cannot download another RFQ using your free allowance.', 'warning');
+          return;
+        }
         throw new Error(data.error || 'Could not generate the RFQ specification.');
       }
 
-      // The RFQ text info (BOQ, deadline, budget etc.) as a real file, not
-      // just a toast claiming an email was sent — a vendor without inbox
-      // access to that address previously had no way to actually see it.
+      // The RFQ text info (BOQ, deadline, budget etc.) as a real file
       const htmlBody: string = data.data?.htmlBody || '';
       triggerBlobDownload(new Blob([htmlBody], { type: 'text/html' }), `${opp.rfqNumber}-specification.html`);
 
-      // Supporting documents the buyer attached. GET /api/rfqs/:id is scoped
-      // server-side the same way as the details page (canAccessRfq /
-      // vendorCoversRFQ), so this only ever returns attachments for an RFQ
-      // this vendor can already see.
+      // Supporting documents the buyer attached
       try {
         const rfqRes = await fetch(`/api/rfqs/${encodeURIComponent(opp.rfqNumber)}`, { headers: authHeaders() });
         const rfqData = await rfqRes.json();
@@ -457,75 +617,67 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
           triggerBlobDownload(blob, file.fileName || `${opp.rfqNumber}-attachment`);
         }
       } catch {
-        // The specification itself already downloaded; a failure fetching
-        // attachments is surfaced by their absence, not a blocking error.
+        // Ignored
       }
+
+      await refreshVendorCredits();
+      await refreshFromDB();
 
       addAuditLog(
         `${myVendorName || currentUserSession?.name || 'Vendor'} downloaded RFQ specification for ${opp.rfqNumber}`,
         opp.rfqNumber,
         currentUserSession?.email
       );
-      showToast('RFQ Downloaded', `RFQ specification for ${opp.rfqNumber} has been downloaded.`, 'success');
+      showToast('RFQ Downloaded', `RFQ specification for ${opp.rfqNumber} has been downloaded and unlocked.`, 'success');
     } catch (err: any) {
       showToast('Download Failed', err?.message || 'Could not download the RFQ specification.', 'warning');
     }
   };
 
   return (
-    <div className="max-w-5xl mx-auto space-y-6 animate-fade-in pb-10">
-      {/* Title & Navigation */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200 dark:border-slate-800">
-        <div>
-          <button
-            onClick={onBack}
-            className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-gray-400 hover:text-slate-900 dark:hover:text-white mb-2 transition-colors font-medium"
-          >
-            <ArrowLeft size={14} /> Back to Opportunity Feed
-          </button>
-          <div>
-            <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-              Sourcing Enquiries & Quotation Tracking
-            </h1>
-          </div>
-        </div>
-      </div>
-
+    <div className="vendor-quotation-page mx-auto w-full min-w-0 max-w-[1600px] space-y-6 pb-10">
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-xs font-semibold text-slate-600 transition hover:bg-white/80 hover:text-blue-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
+      >
+        <ArrowLeft size={15} /> Back to Dashboard
+      </button>
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* VENDOR SOURCING SUMMARY CARDS */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs font-medium">
-        <div className="glass-panel p-4 rounded-xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900/80 shadow-sm flex items-center justify-between">
+      <div className="grid grid-cols-1 gap-3 text-xs font-medium sm:grid-cols-2 xl:grid-cols-3 sm:gap-4">
+        <div className="flex min-h-[112px] items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-gray-900/80 sm:p-5">
           <div>
-            <div className="text-[10px] text-slate-500 dark:text-gray-400 uppercase tracking-wider">RFQs Received (Active Enquiries)</div>
-            <span className="text-2xl font-black text-slate-900 dark:text-white mt-1 mono">{totalReceivedCount} Active</span>
+            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-gray-400">RFQs Received (Active Enquiries)</div>
+            <span className="mt-2 block font-mono text-2xl font-black text-slate-900 dark:text-white">{totalReceivedCount} <span className="text-base font-semibold">Active</span></span>
           </div>
-          <div className="p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400">
-            <Building size={16} />
+          <div className="rounded-xl bg-blue-50 p-3 text-blue-700 dark:bg-blue-950/60 dark:text-blue-300">
+            <Building size={19} />
           </div>
         </div>
 
-        <div className="glass-panel p-4 rounded-xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900/80 shadow-sm flex items-center justify-between">
+        <div className="flex min-h-[112px] items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-gray-900/80 sm:p-5">
           <div>
-            <div className="text-[10px] text-slate-500 dark:text-gray-400 uppercase tracking-wider">Quotations Submitted</div>
-            <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 mt-1 mono">{totalSubmittedCount} Sent</span>
+            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-gray-400">Quotations Submitted</div>
+            <span className="mt-2 block font-mono text-2xl font-black text-emerald-700 dark:text-emerald-400">{totalSubmittedCount} <span className="text-base font-semibold">Sent</span></span>
           </div>
-          <div className="p-2.5 rounded-lg bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400">
-            <Mail size={16} />
+          <div className="rounded-xl bg-emerald-50 p-3 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-400">
+            <Mail size={19} />
           </div>
         </div>
 
-        <div className="glass-panel p-4 rounded-xl border border-slate-200 dark:border-gray-800 bg-white dark:bg-gray-900/80 shadow-sm flex items-center justify-between">
+        <div className="flex min-h-[112px] items-center justify-between rounded-2xl border border-slate-200 bg-white p-4 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md dark:border-slate-800 dark:bg-gray-900/80 sm:col-span-2 sm:p-5 xl:col-span-1">
           <div>
-            <div className="text-[10px] text-slate-500 dark:text-gray-400 uppercase tracking-wider">Quotation Credits</div>
-            <span className="text-2xl font-black text-amber-600 dark:text-amber-400 mt-1 mono">
+            <div className="text-[10px] font-bold uppercase tracking-[0.12em] text-slate-500 dark:text-gray-400">Quotation Credits</div>
+            <span className="mt-2 block font-mono text-2xl font-black text-orange-700 dark:text-orange-400">
               {vendorSubscription === 'connect' || vendorSubscription === 'select'
                 ? 'Active Plan'
                 : `${effectiveFreeCredits} Free Left`}
             </span>
           </div>
-          <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400">
-            <ShieldCheck size={16} />
+          <div className="rounded-xl bg-orange-50 p-3 text-orange-700 dark:bg-orange-950/50 dark:text-orange-300">
+            <ShieldCheck size={19} />
           </div>
         </div>
       </div>
@@ -533,34 +685,110 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* CONSOLIDATED ACTIVE RFQS RECEIVED TABLE (ENQUIRIES & STATUS) */}
       {/* ═══════════════════════════════════════════════════════════════ */}
-      <div className="glass-panel p-5 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-gray-900/80 shadow-md space-y-3">
-        <div className="flex items-center justify-between flex-wrap gap-2">
-          <h3 className="text-xs font-bold text-slate-800 dark:text-gray-200 uppercase tracking-wider flex items-center gap-2">
-            <FileText size={14} className="text-indigo-600" />
-            Active Sourcing Enquiries & Submitted Quotation Status
-          </h3>
-          <span className="text-[10px] text-slate-500 dark:text-gray-400 flex items-center gap-1">
-            <Info size={12} className="text-indigo-500" /> Click buyer icon to view contact details
-          </span>
+      <section className="rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-gray-900/80">
+        <div className="space-y-4 border-b border-slate-100 p-4 dark:border-slate-800 sm:p-5">
+          <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+            <div>
+              <h2 className="flex items-center gap-2 text-sm font-extrabold text-slate-900 dark:text-gray-100 sm:text-base">
+                <span className="rounded-lg bg-blue-50 p-2 text-blue-700 dark:bg-blue-950/60 dark:text-cyan-300"><FileText size={16} /></span>
+                Active sourcing enquiries
+              </h2>
+              <p className="mt-1 pl-10 text-xs text-slate-500 dark:text-gray-400">Track deadlines, submitted bids, and buyer responses.</p>
+            </div>
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-gray-400">
+              <Info size={13} className="shrink-0 text-blue-600 dark:text-blue-400" /> Buyer information becomes available for eligible enquiries
+            </span>
+          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-[minmax(0,1fr)_220px]">
+            <label className="relative block min-w-0">
+              <span className="sr-only">Search enquiries</span>
+              <Search size={16} aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="search"
+                value={opportunitySearch}
+                onChange={(event) => setOpportunitySearch(event.target.value)}
+                placeholder="Search RFQ number, title, or buyer..."
+                className="has-leading-icon h-11 w-full rounded-xl border-slate-200 bg-slate-50 pr-3 text-sm focus:border-blue-400 focus:bg-white dark:border-slate-700 dark:bg-gray-950 dark:focus:bg-gray-900"
+              />
+            </label>
+            <label className="block min-w-0">
+              <span className="sr-only">Filter enquiries by status</span>
+              <select
+                value={opportunityStatusFilter}
+                onChange={(event) => setOpportunityStatusFilter(event.target.value as typeof opportunityStatusFilter)}
+                className="h-11 w-full rounded-xl border-slate-200 bg-slate-50 px-3 text-sm font-semibold text-slate-700 dark:border-slate-700 dark:bg-gray-950 dark:text-gray-200"
+              >
+                <option value="all">All enquiries</option>
+                <option value="open">Awaiting your quote</option>
+                <option value="submitted">Quote submitted</option>
+                <option value="closed">Closed enquiries</option>
+              </select>
+            </label>
+          </div>
+          <p aria-live="polite" className="text-xs font-medium text-slate-500 dark:text-gray-400">
+            Showing <span className="font-bold text-slate-700 dark:text-gray-200">{filteredOpportunities.length}</span> of {totalReceivedCount} enquiries
+          </p>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+        {filteredOpportunities.length === 0 ? (
+          <div className="flex flex-col items-center gap-2 px-5 py-12 text-center">
+            <div className="rounded-full bg-slate-100 p-3 text-slate-500 dark:bg-slate-800 dark:text-gray-400"><Search size={20} /></div>
+            <p className="text-sm font-bold text-slate-700 dark:text-gray-200">
+              {vendorOpportunities.length === 0 ? 'No enquiries yet' : 'No matching enquiries'}
+            </p>
+            <p className="max-w-sm text-xs leading-relaxed text-slate-500 dark:text-gray-400">
+              {vendorOpportunities.length === 0
+                ? 'New sourcing requests from buyers will appear here.'
+                : 'Try another search term or choose a different status filter.'}
+            </p>
+            {vendorOpportunities.length > 0 && (opportunitySearch || opportunityStatusFilter !== 'all') && (
+              <button
+                type="button"
+                onClick={() => { setOpportunitySearch(''); setOpportunityStatusFilter('all'); }}
+                className="mt-1 text-xs font-bold text-blue-700 hover:underline dark:text-cyan-300"
+              >
+                Clear search and filters
+              </button>
+            )}
+          </div>
+        ) : (
+        <div className="vendor-quotation-table-wrap">
+          <table className="vendor-quotation-table w-full text-left text-xs">
             <thead>
               <tr className="border-b border-slate-100 dark:border-gray-800 text-slate-400 uppercase tracking-wider text-[9px] font-bold">
-                <th className="py-2">RFQ Number</th>
-                <th className="py-2">Description / Title</th>
-                <th className="py-2">Buyer Company</th>
-                <th className="py-2 text-center">Deadline</th>
-                <th className="py-2 text-center">Download RFQ</th>
-                <th className="py-2">Submission Method</th>
-                <th className="py-2">Submitted Time</th>
-                <th className="py-2 text-right">Sourcing Status</th>
+                <th className="py-3">RFQ Number</th>
+                <th className="py-3">RFQ Details</th>
+                <th className="py-3">Buyer Company</th>
+                <th className="py-3 text-center">Deadline</th>
+                <th className="py-3 text-center">RFQ Documents</th>
+                <th className="py-3">Your Bid</th>
+                <th className="py-3">Clarifications</th>
+                <th className="py-3 text-right">Sourcing Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-150/40 dark:divide-gray-850 text-[11px]">
-              {vendorOpportunities.map((opp) => {
+              {filteredOpportunities.map((opp) => {
                 const quote = submittedQuotes.find((q) => q.rfqNumber === opp.rfqNumber);
+                const rfqRecord = rfqs.find((rfq) => rfq.rfqNumber === opp.rfqNumber);
+                const allItemDetails = rfqRecord?.extractedEntities?.length
+                  ? rfqRecord.extractedEntities
+                  : opp.lineItems.map((item) => ({
+                    id: item.id,
+                    itemName: item.description,
+                    quantity: item.quantity,
+                    unit: '',
+                  }));
+                const itemDetails = allItemDetails.slice(0, 2);
+                const additionalItemCount = Math.max(0, allItemDetails.length - itemDetails.length);
+                const ownInquiries = (rfqRecord?.inquiries || []).filter((inquiry) =>
+                  (!!myVendorId && inquiry.vendorId === myVendorId) ||
+                  (!!currentUserSession?.email && inquiry.vendorEmail?.toLowerCase() === currentUserSession.email.toLowerCase()) ||
+                  (!!myVendorName && inquiry.vendorName?.toLowerCase().trim() === myVendorName.toLowerCase().trim())
+                );
+                const latestInquiry = ownInquiries.reduce<(typeof ownInquiries)[number] | null>(
+                  (latest, inquiry) => !latest || new Date(inquiry.createdAt).getTime() > new Date(latest.createdAt).getTime() ? inquiry : latest,
+                  null
+                );
                 const parentCompany = getParentCompany(opp.buyer);
                 const isDirectBuyer = isOwnBuyerRfq(opp.rfqNumber);
                 const freeCredits = effectiveFreeCredits;
@@ -585,17 +813,38 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                 };
 
                 return (
-                  <tr key={opp.rfqNumber} className="hover:bg-slate-50/50 dark:hover:bg-gray-850/20">
+                  <tr key={opp.rfqNumber} className="transition-colors hover:bg-slate-50/80 dark:hover:bg-gray-850/40">
                     {/* RFQ Number */}
-                    <td className="py-3 font-mono font-bold text-slate-900 dark:text-white">
+                    <td data-label="RFQ Number" className="py-3 font-mono font-bold text-slate-900 dark:text-white">
                       {opp.rfqNumber}
                     </td>
                     
                     {/* Title */}
-                    <td className="py-3 font-semibold text-slate-800 dark:text-gray-200">{opp.title}</td>
+                    <td data-label="RFQ Details" className="py-3">
+                      <div className="font-semibold text-slate-800 dark:text-gray-200">{opp.title}</div>
+                      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[10px] text-slate-500 dark:text-gray-400">
+                        {(opp.majorCategory || rfqRecord?.category) && (
+                          <span>{opp.majorCategory || rfqRecord?.category}</span>
+                        )}
+                        {(opp.deliveryLocation || rfqRecord?.deliveryLocation) && (
+                          <span>· {opp.deliveryLocation || rfqRecord?.deliveryLocation}</span>
+                        )}
+                      </div>
+                      {itemDetails.length > 0 && (
+                        <ul className="mt-1 space-y-0.5 text-[10px] text-slate-600 dark:text-gray-300">
+                          {itemDetails.map((item) => (
+                            <li key={item.id}>
+                              {item.itemName}
+                              {item.quantity > 0 && ` · ${item.quantity}${item.unit ? ` ${item.unit}` : ''}`}
+                            </li>
+                          ))}
+                          {additionalItemCount > 0 && <li>+{additionalItemCount} more item{additionalItemCount === 1 ? '' : 's'}</li>}
+                        </ul>
+                      )}
+                    </td>
                     
                     {/* Buyer Company & Details Icon */}
-                    <td className="py-3">
+                    <td data-label="Buyer Company" className="py-3">
                       {canViewBuyerDetails ? (
                         <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="font-semibold text-slate-800 dark:text-gray-200">
@@ -627,17 +876,17 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                     </td>
                     
                     {/* Deadline */}
-                    <td className="py-3 text-center font-medium mono text-amber-600 dark:text-amber-400">{opp.deadline}</td>
+                    <td data-label="Deadline" className="py-3 text-center font-medium mono text-amber-700 dark:text-amber-300">{opp.deadline || '—'}</td>
                     
                     {/* Download RFQ */}
-                    <td className="py-3 text-center">
+                    <td data-label="RFQ Documents" className="py-3 text-center">
                       <div className="flex items-center justify-center gap-1.5">
                         <button
                           onClick={() => router.push(`/vendor/rfq-details?rfq=${encodeURIComponent(opp.rfqNumber)}`)}
-                          className="btn btn-secondary btn-xs py-1 px-2.5 flex items-center justify-center gap-1 text-[9px] font-bold border border-slate-200"
+                          className="btn btn-secondary btn-xs min-h-9 py-1 px-2.5 flex items-center justify-center gap-1 text-[10px] font-bold border border-slate-200"
                           title="View RFQ Details"
                         >
-                          <FileText size={11} className="text-indigo-655" />
+                          <FileText size={12} className="text-blue-700 dark:text-blue-300" />
                           <span>View Details</span>
                         </button>
                         <button
@@ -648,35 +897,61 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                               handleDownloadRfq(opp);
                             }
                           }}
-                          className="btn btn-secondary btn-xs py-1 px-2.5 flex items-center justify-center gap-1 text-[9px] font-bold border border-slate-200"
+                          className="btn btn-secondary btn-xs min-h-9 py-1 px-2.5 flex items-center justify-center gap-1 text-[10px] font-bold border border-slate-200"
                           title="Download RFQ Specification"
                         >
-                          <Download size={11} className="text-indigo-655" />
+                          <Download size={12} className="text-blue-700 dark:text-blue-300" />
                           <span>Download RFQ</span>
                         </button>
                       </div>
                     </td>
 
-                    {/* Submission Method */}
-                    <td className="py-3">
+                    {/* This vendor's submitted quote only */}
+                    <td data-label="Your Bid" className="py-3">
                       {quote ? (
-                        <span className="font-semibold text-slate-800 dark:text-gray-200">{quote.submissionMethod}</span>
+                        <div>
+                          <span className="font-bold text-slate-800 dark:text-gray-200">
+                            {quote.totalPrice > 0 ? `₹${quote.totalPrice.toLocaleString('en-IN')}` : 'Quote submitted'}
+                          </span>
+                          <span className="mt-1 block text-[10px] text-slate-500 dark:text-gray-400">
+                            {quote.submissionMethod} · {quote.submittedDate}
+                          </span>
+                        </div>
                       ) : (
-                        <span className="text-slate-400">-</span>
+                        <span className="text-slate-400">No bid submitted</span>
                       )}
                     </td>
 
-                    {/* Submitted Time */}
-                    <td className="py-3">
-                      {quote ? (
-                        <span className="text-slate-500 font-medium">{quote.submittedDate}</span>
-                      ) : (
-                        <span className="text-slate-400">-</span>
-                      )}
+                    {/* This vendor's own clarification history */}
+                    <td data-label="Clarifications" className="py-3">
+                      <div className="flex flex-col items-start gap-1.5">
+                        {ownInquiries.length > 0 ? (
+                          <span className="text-[10px] font-semibold text-slate-700 dark:text-gray-200">
+                            {ownInquiries.length} sent · {latestInquiry?.status === 'answered' ? 'Buyer replied' : 'Awaiting reply'}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-slate-400">None sent</span>
+                        )}
+                        {latestInquiry?.reply && (
+                          <span className="max-w-[220px] truncate text-[10px] text-slate-500 dark:text-gray-400" title={latestInquiry.reply}>
+                            Latest reply: {latestInquiry.reply}
+                          </span>
+                        )}
+                        {!isLocked && opp.status !== 'Closed' && opp.status !== 'Expired' && (
+                          <button
+                            onClick={() => openInquiryModal(opp)}
+                            className="btn btn-secondary btn-xs min-h-8 py-1 px-2.5 inline-flex items-center gap-1 text-[10px] font-semibold text-slate-600 dark:text-gray-300"
+                            title="Ask a question or raise a clarification with the buyer"
+                          >
+                            <MessageSquare size={10} />
+                            <span>Clarify</span>
+                          </button>
+                        )}
+                      </div>
                     </td>
                     
                     {/* Sourcing Status */}
-                    <td className="py-3 text-right">
+                    <td data-label="Sourcing Status" className="py-3 text-right">
                       {quote ? (
                         <span className={`px-2 py-0.5 rounded text-[9px] font-black uppercase tracking-wide border inline-block ${
                           quote.status === 'PO Generated' 
@@ -694,16 +969,13 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                       ) : (
                         <div className="flex items-center justify-end gap-1.5">
                           <button
-                            onClick={() => openInquiryModal(opp)}
-                            className="btn btn-secondary btn-xs py-1 px-2 inline-flex items-center gap-1 text-[9px] font-semibold text-slate-600 dark:text-gray-300"
-                            title="Ask a question or raise a clarification with the buyer"
-                          >
-                            <MessageSquare size={10} />
-                            <span>Clarify</span>
-                          </button>
-                          <button
-                            onClick={() => openBidForm(opp)}
-                            className="btn btn-emerald btn-xs py-1 px-2.5 inline-flex items-center gap-1 text-[9px] font-bold"
+                            onClick={() => {
+                              if (!isRfqUnlocked(opp.rfqNumber) && !isOwnBuyerRfq(opp.rfqNumber)) {
+                                handleDownloadRfq(opp);
+                              }
+                              openBidForm(opp);
+                            }}
+                            className="btn btn-emerald btn-xs min-h-9 py-1 px-2.5 inline-flex items-center gap-1 text-[10px] font-bold"
                           >
                             <Send size={10} /> Submit Quote
                           </button>
@@ -716,7 +988,8 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
             </tbody>
           </table>
         </div>
-      </div>
+        )}
+      </section>
 
       {/* ═══════════════════════════════════════════════════════════════ */}
       {/* INQUIRY / CLARIFICATION MODAL */}
@@ -982,7 +1255,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
       {/* ═══════════════════════════════════════════════════════════════ */}
       {biddingOn && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-fade-in">
-          <div className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 text-xs text-slate-800 dark:text-gray-200 animate-scale-up">
+          <div className="bg-white dark:bg-gray-900 border border-slate-200 dark:border-gray-800 rounded-2xl p-4 sm:p-6 max-w-6xl max-h-[92vh] overflow-y-auto w-full shadow-2xl space-y-4 text-xs text-slate-800 dark:text-gray-200 animate-scale-up">
             <div className="flex items-start justify-between pb-3 border-b border-slate-100 dark:border-gray-800">
               <div className="flex items-center gap-2">
                 <div className="p-2 rounded-xl bg-emerald-50 dark:bg-emerald-950/70 text-emerald-600 dark:text-emerald-400">
@@ -1036,32 +1309,102 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                 <div className="space-y-3">
                   {(biddingOn.lineItems?.length || 0) > 1 ? (
                     <div>
-                      <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                        Unit Price (₹) per Line Item *
-                      </label>
-                      <div className="space-y-2">
-                        {(biddingOn.lineItems || []).map((li) => (
-                          <div key={li.id} className="flex items-center gap-2">
-                            <span className="flex-1 text-[11px] text-slate-600 dark:text-gray-300 truncate" title={li.description}>
-                              {li.description} <span className="text-slate-400">(Qty {li.quantity})</span>
-                            </span>
-                            <div className="relative w-28 shrink-0">
-                              <IndianRupee size={11} className="absolute left-2.5 top-2 text-slate-400" />
-                              <input
-                                type="number"
-                                min={0}
-                                aria-label={`Unit price for ${li.description}`}
-                                value={bidLineItemPrices[li.id] || ''}
-                                onChange={(e) =>
-                                  setBidLineItemPrices((prev) => ({ ...prev, [li.id]: e.target.value }))
-                                }
-                                disabled={isSubmittingQuote || biddingOn.status === 'Closed' || biddingOn.status === 'Expired'}
-                                placeholder="0"
-                                className="w-full pl-7 pr-2 py-1.5 rounded-lg border border-slate-200 dark:border-gray-800 text-[11px] font-mono font-bold bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white"
-                              />
-                            </div>
-                          </div>
-                        ))}
+                      {(biddingOn.lineItems?.length || 0) > 10 && (
+                        <div className="mb-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 text-blue-800 dark:text-blue-300 text-[11px] flex items-center justify-between gap-2 flex-wrap">
+                          <span className="font-semibold flex items-center gap-1.5">
+                            <Info size={14} className="text-blue-600 dark:text-blue-400 shrink-0" />
+                            RFQ has {biddingOn.lineItems.length} items: email bids are not accepted. Submit through this portal; download the Excel sheet, enter your rates, and upload it with your supporting documents.
+                          </span>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between mb-1.5 flex-wrap gap-2">
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                          Line Item Pricing ({biddingOn.lineItems.length} items) *
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="file"
+                            ref={excelInputRef}
+                            onChange={handleUploadPricedExcel}
+                            accept=".xlsx,.xls,.csv"
+                            className="hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => excelInputRef.current?.click()}
+                            className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/50 hover:bg-emerald-100 px-2 py-1 rounded border border-emerald-200 dark:border-emerald-800 flex items-center gap-1 transition-colors"
+                            title="Upload filled Excel sheet with item rates"
+                          >
+                            <Upload size={11} /> Upload Priced Excel
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadVendorQuotationExcel(biddingOn.rfqNumber, biddingOn.lineItems || [], bidLineItemPrices)
+                            }
+                            className="text-[10px] font-bold text-indigo-700 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/50 hover:bg-indigo-100 px-2 py-1 rounded border border-indigo-200 dark:border-indigo-800 flex items-center gap-1 transition-colors"
+                            title="Download pre-filled RFQ Excel sheet"
+                          >
+                            <Download size={11} /> Export as Excel (Download RFQ)
+                          </button>
+                        </div>
+                      </div>
+                      <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-gray-800">
+                        <table className="w-full min-w-[960px] text-left text-[11px] border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-gray-950/60 text-slate-500 dark:text-gray-400 border-b border-slate-200 dark:border-gray-800">
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold">Item</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold text-right">Qty</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold">UOM</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold min-w-[10rem]">Rate (₹)</th>
+                              <th className="px-2.5 py-2 text-[10px] uppercase font-bold text-right min-w-[10rem]">Amount (₹)</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-gray-800">
+                            {(biddingOn.lineItems || []).map((li) => {
+                              const rate = Number(bidLineItemPrices[li.id]) || 0;
+                              const amount = rate * li.quantity;
+                              return (
+                                <tr key={li.id}>
+                                  <td className="px-2.5 py-1.5 text-slate-700 dark:text-gray-300 max-w-[220px] truncate" title={li.description}>
+                                    {li.description}
+                                  </td>
+                                  <td className="px-2.5 py-1.5 text-right mono text-slate-600 dark:text-gray-300">{li.quantity}</td>
+                                  <td className="px-2.5 py-1.5 text-slate-500 dark:text-gray-400">{li.unit || '—'}</td>
+                                  <td className="px-2.5 py-1.5">
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      aria-label={`Rate for ${li.description}`}
+                                      value={bidLineItemPrices[li.id] || ''}
+                                      onChange={(e) =>
+                                        setBidLineItemPrices((prev) => ({ ...prev, [li.id]: e.target.value }))
+                                      }
+                                      disabled={isSubmittingQuote || biddingOn.status === 'Closed' || biddingOn.status === 'Expired'}
+                                      placeholder="0"
+                                      className="w-36 px-3 py-2 rounded-lg border border-slate-200 dark:border-gray-800 text-[12px] font-mono font-bold bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white"
+                                    />
+                                  </td>
+                                  <td className="px-2.5 py-1.5 text-right mono font-bold text-slate-900 dark:text-white">
+                                    {amount > 0 ? amount.toLocaleString('en-IN') : '—'}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-slate-200 dark:border-gray-800 bg-slate-50 dark:bg-gray-950/60">
+                              <td colSpan={4} className="px-2.5 py-2 text-right font-bold text-slate-700 dark:text-gray-300">
+                                Total
+                              </td>
+                              <td className="px-2.5 py-2 text-right mono font-black text-slate-900 dark:text-white">
+                                {(biddingOn.lineItems || [])
+                                  .reduce((sum, li) => sum + (Number(bidLineItemPrices[li.id]) || 0) * li.quantity, 0)
+                                  .toLocaleString('en-IN')}
+                              </td>
+                            </tr>
+                          </tfoot>
+                        </table>
                       </div>
                     </div>
                   ) : (
@@ -1128,6 +1471,63 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                       placeholder="Special notes, inclusions, exclusions, or freight details..."
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 dark:border-gray-800 text-xs font-medium bg-slate-50 dark:bg-gray-950 text-slate-900 dark:text-white resize-none"
                     />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">
+                      Bid Documents (up to 5 files, 10 MB each)
+                    </label>
+                    <input
+                      type="file"
+                      multiple
+                      accept=".pdf,.xls,.xlsx,.doc,.docx,.txt,.csv,.png,.jpg,.jpeg"
+                      disabled={isSubmittingQuote || biddingOn.status === 'Closed' || biddingOn.status === 'Expired'}
+                      onChange={(event) => {
+                        const files = Array.from(event.target.files || []);
+                        if (files.length > 5) {
+                          showToast('Too Many Documents', 'Attach no more than five documents.', 'warning');
+                          event.target.value = '';
+                          return;
+                        }
+                        const emptyFile = files.find((file) => file.size === 0);
+                        if (emptyFile) {
+                          showToast('Empty Document', `${emptyFile.name} is empty. Choose a file with content.`, 'warning');
+                          event.target.value = '';
+                          return;
+                        }
+                        const oversized = files.find((file) => file.size > 10 * 1024 * 1024);
+                        if (oversized) {
+                          showToast('Document Too Large', `${oversized.name} exceeds the 10 MB limit.`, 'warning');
+                          event.target.value = '';
+                          return;
+                        }
+                        setBidDocuments(files);
+                        setUploadedBidDocuments([]);
+                      }}
+                      className="block w-full rounded-xl border border-slate-200 dark:border-gray-800 bg-slate-50 dark:bg-gray-950 px-3 py-2 text-xs"
+                    />
+                    {bidDocuments.length > 0 && (
+                      <ul className="mt-2 space-y-1">
+                        {bidDocuments.map((file, index) => (
+                          <li key={`${file.name}-${file.lastModified}`} className="flex items-center justify-between gap-2 text-[11px]">
+                            <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-slate-600 dark:text-gray-300">
+                              <Paperclip size={12} className="shrink-0" /> {file.name}
+                              <span className="text-slate-400">({formatFileSize(file.size)})</span>
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isSubmittingQuote}
+                              onClick={() => {
+                                setBidDocuments((previous) => previous.filter((_, fileIndex) => fileIndex !== index));
+                                setUploadedBidDocuments([]);
+                              }}
+                              className="text-rose-600 hover:underline"
+                            >
+                              Remove
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 </div>
 

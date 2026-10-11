@@ -260,6 +260,13 @@ describe('API Route Endpoints', () => {
       expect(res.statusCode).toBe(201);
       expect(res.body.data.buyerId).toBe(buyerAccount.id);
       expect(res.body.data.addedByBuyerCompany).toBe('API Test Buyer Co');
+      expect(res.body.data).not.toHaveProperty('tempPassword');
+
+      const detailRes = await request(app)
+        .get(`/api/vendors/${res.body.data.id}`)
+        .set(authHeader('buyer'));
+      expect(detailRes.statusCode).toBe(200);
+      expect(detailRes.body.data).not.toHaveProperty('tempPassword');
     });
 
     test('POST /api/vendors: a buyer omitting a vendor email is rejected', async () => {
@@ -315,7 +322,12 @@ describe('API Route Endpoints', () => {
     test('GET /api/vendors/:id/onboarding-email returns email preview payload', async () => {
       // Carries the vendor's real tempPassword, so it's now restricted to the
       // buyer-side roles that actually onboard vendors (or an admin).
-      const res = await request(app).get(`/api/vendors/${testVendorId}/onboarding-email`).set(authHeader('buyer'));
+      const nonOwnerRes = await request(app)
+        .get(`/api/vendors/${testVendorId}/onboarding-email`)
+        .set(authHeader('buyer'));
+      expect(nonOwnerRes.statusCode).toBe(403);
+
+      const res = await request(app).get(`/api/vendors/${testVendorId}/onboarding-email`).set(authHeader('admin'));
       expect(res.statusCode).toBe(200);
       expect(res.body.data).toHaveProperty('htmlBody');
       expect(res.body.data).toHaveProperty('to');

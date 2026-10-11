@@ -656,7 +656,12 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
       const res = mockRes();
       const next = jest.fn();
 
-      jest.spyOn(storeService, 'getVendorById').mockReturnValue({ id: 'v1', email: 'vendor@test.com' });
+      jest.spyOn(storeService, 'getVendorById').mockReturnValue({
+        id: 'v1',
+        email: 'vendor@test.com',
+        buyerId: 'buyer-1',
+        tempPassword: 'temporary-pass',
+      });
 
       // Non-owner updating categories -> 403
       await vendorController.updateCategories(
@@ -688,7 +693,7 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
       // generateOnboardingEmailPreview: buyer success
       const resEmailBuyer = mockRes();
       await vendorController.generateOnboardingEmailPreview(
-        { user: { role: 'buyer' }, params: { id: 'v1' } },
+        { user: { role: 'buyer', sub: 'buyer-1' }, params: { id: 'v1' } },
         resEmailBuyer,
         next
       );
@@ -1047,7 +1052,7 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
 
       // Restore mock pool
       pool.pool = {
-        query: jest.fn().mockImplementation((sql) => {
+        query: jest.fn().mockImplementation((sql, params) => {
           if (sql.includes('from "user" where email')) {
             return Promise.resolve({ rows: [{ id: 'existing-v' }] });
           }
@@ -1078,7 +1083,7 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
     test('insertVendorAccount with transaction success (new org and reused org)', async () => {
       const originalPool = pool.pool;
       pool.pool = {
-        query: jest.fn().mockImplementation((sql) => {
+        query: jest.fn().mockImplementation((sql, params) => {
           if (sql.includes('from "user"') || sql.includes('where lower(u.email)')) {
             return Promise.resolve({ rows: [] });
           }
@@ -1087,11 +1092,15 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
       };
 
       // Test with transaction executing client queries
+      const userInsert = jest.fn().mockResolvedValue({ rows: [{ uuid: 'user-created' }] });
       jest.spyOn(pool, 'withTransaction').mockImplementation(async (callback) => {
         const client = {
-          query: jest.fn().mockImplementation((sql) => {
+          query: jest.fn().mockImplementation((sql, params) => {
             if (sql.includes('select uuid from organization')) {
               return Promise.resolve({ rows: [] });
+            }
+            if (sql.includes('insert into "user"')) {
+              return userInsert(sql, params);
             }
             return Promise.resolve({ rows: [{ uuid: 'org-created' }] });
           }),
@@ -1104,9 +1113,12 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
         password: 'Password123',
         fullName: 'Vendor Lead',
         organizationName: 'Fresh Vendor Inc',
+        resetPasswordRequired: false,
       });
       expect(res.created).toBe(true);
       expect(res.user.role).toBe('vendor');
+      expect(userInsert.mock.calls[0][0]).toContain('is_active, self_client, is_approved, reset_password');
+      expect(userInsert.mock.calls[0][1][11]).toBe(false);
 
       pool.pool = originalPool;
     });

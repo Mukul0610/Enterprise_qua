@@ -468,6 +468,128 @@ input[type="range"] {
   cursor: pointer;
 }
 
+.vendor-quotation-table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.vendor-quotation-table {
+  min-width: 1120px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.vendor-quotation-table th,
+.vendor-quotation-table td {
+  padding-right: 12px;
+  padding-left: 12px;
+  vertical-align: middle;
+}
+
+.vendor-quotation-table th:first-child,
+.vendor-quotation-table td:first-child {
+  padding-left: 20px;
+}
+
+.vendor-quotation-table th:last-child,
+.vendor-quotation-table td:last-child {
+  padding-right: 20px;
+}
+
+@media (max-width: 1350px) {
+  .vendor-quotation-table-wrap {
+    overflow: visible;
+    padding: 12px;
+  }
+
+  .vendor-quotation-table {
+    display: block;
+    min-width: 0;
+  }
+
+  .vendor-quotation-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .vendor-quotation-table tbody {
+    display: grid;
+    gap: 12px;
+  }
+
+  .vendor-quotation-table tbody tr {
+    display: block;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 14px;
+    background: var(--bg-card);
+    padding: 4px 14px;
+    box-shadow: var(--shadow-sm);
+  }
+
+  .vendor-quotation-table tbody td {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 14px;
+    border: 0;
+    border-bottom: 1px solid var(--border-subtle);
+    padding: 11px 0 !important;
+    text-align: right !important;
+    overflow-wrap: anywhere;
+  }
+
+  .vendor-quotation-table tbody td:last-child {
+    border-bottom: 0;
+  }
+
+  .vendor-quotation-table tbody td::before {
+    flex: 0 0 36%;
+    color: var(--text-muted);
+    content: attr(data-label);
+    font-family: var(--font-sans);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    line-height: 1.5;
+    text-align: left;
+    text-transform: uppercase;
+  }
+
+  .vendor-quotation-table tbody td[data-label="RFQ Number"] {
+    color: var(--primary);
+    font-size: 11px;
+  }
+
+  .vendor-quotation-table tbody td[data-label="RFQ Documents"] > div,
+  .vendor-quotation-table tbody td[data-label="Sourcing Status"] > div,
+  .vendor-quotation-table tbody td[data-label="Clarifications"] > div {
+    flex: 1;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 6px;
+  }
+
+  .vendor-quotation-table tbody td[data-label="Clarifications"] > div {
+    align-items: flex-end;
+  }
+
+  .vendor-quotation-table tbody td[data-label="RFQ Documents"] .btn,
+  .vendor-quotation-table tbody td[data-label="Sourcing Status"] .btn {
+    min-height: 36px;
+  }
+
+  .vendor-quotation-page {
+    padding-right: 2px;
+    padding-left: 2px;
+  }
+}
+
 /* ═══════════════════════════════════════════════════════════════ */
 /* PRINT MEDIA STYLES (Isolates modal document & hides background) */
 /* ═══════════════════════════════════════════════════════════════ */
@@ -550,4 +672,3 @@ input[type="range"] {
     color: #000000 !important;
   }
 }
-

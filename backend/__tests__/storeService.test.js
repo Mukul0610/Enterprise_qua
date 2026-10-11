@@ -109,7 +109,8 @@ describe('Store Service & Business Operations', () => {
     // controller, now awaits provisionVendorOnboarding explicitly after
     // addVendor returns. These tests call it the same way.
     test('addVendor starts onboardingEmailStatus pending; provisionVendorOnboarding sends a real invite', async () => {
-      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({});
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({ created: true });
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: true });
 
       try {
@@ -128,10 +129,13 @@ describe('Store Service & Business Operations', () => {
           fullName: 'Priya',
           organizationName: 'Invited By Buyer Co',
           createdBy: 'buyer@example.com',
+          resetExisting: false,
+          resetPasswordRequired: true,
         }));
         expect(sendSpy).toHaveBeenCalled();
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('sent');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
@@ -155,9 +159,7 @@ describe('Store Service & Business Operations', () => {
         expect(findSpy).toHaveBeenCalledWith('already-has-login@example.com');
         expect(identitySpy).not.toHaveBeenCalled();
         expect(sendSpy).not.toHaveBeenCalled();
-        // Left exactly as addVendor's own default set it — never touched
-        // again by the (skipped) onboarding path.
-        expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('pending');
+        expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('account_exists');
       } finally {
         findSpy.mockRestore();
         identitySpy.mockRestore();
@@ -166,7 +168,8 @@ describe('Store Service & Business Operations', () => {
     });
 
     test('provisionVendorOnboarding marks the invite failed (not silently pending) when the onboarding email fails to send', async () => {
-      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({});
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({ created: true });
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: false, reason: 'SMTP down' });
 
       try {
@@ -175,12 +178,14 @@ describe('Store Service & Business Operations', () => {
 
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('failed');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
     });
 
     test('provisionVendorOnboarding never sends the onboarding email if the identity account could not be created after retrying (no broken credentials mailed out)', async () => {
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
       const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockRejectedValue(new Error('ETIMEDOUT'));
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: true });
 
@@ -192,6 +197,7 @@ describe('Store Service & Business Operations', () => {
         expect(sendSpy).not.toHaveBeenCalled();
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('failed');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
@@ -728,6 +734,7 @@ describe('Store Service & Business Operations', () => {
           {
             companyName: 'Mapped Hist Co',
             email: 'mapped-hist@example.com',
+            phone: '+91 98765 43210',
             categoriesMappedByBuyer: true,
             majorCategory: 'Industrial Valves',
             minorCategories: ['Ball Valves'],
@@ -738,7 +745,11 @@ describe('Store Service & Business Operations', () => {
         await new Promise((resolve) => setImmediate(resolve));
 
         expect(categoryMappedSpy).toHaveBeenCalledWith(
-          expect.objectContaining({ majorCategory: 'Industrial Valves', minorCategories: ['Ball Valves'] })
+          expect.objectContaining({
+            majorCategory: 'Industrial Valves',
+            minorCategories: ['Ball Valves'],
+            contactPhone: '+91 98765 43210',
+          })
         );
         expect(selfMapSpy).not.toHaveBeenCalled();
       } finally {
@@ -764,6 +775,7 @@ describe('Store Service & Business Operations', () => {
           {
             companyName: 'Unmapped Hist Co',
             email: 'unmapped-hist@example.com',
+            phone: '+91 98765 43210',
             categoriesMappedByBuyer: false,
           },
         ]);
@@ -771,8 +783,81 @@ describe('Store Service & Business Operations', () => {
         await new Promise((resolve) => setImmediate(resolve));
         await new Promise((resolve) => setImmediate(resolve));
 
-        expect(selfMapSpy).toHaveBeenCalled();
+        expect(selfMapSpy).toHaveBeenCalledWith(expect.objectContaining({ contactPhone: '+91 98765 43210' }));
         expect(categoryMappedSpy).not.toHaveBeenCalled();
+      } finally {
+        findSpy.mockRestore();
+        identitySpy.mockRestore();
+        categoryMappedSpy.mockRestore();
+        selfMapSpy.mockRestore();
+        sendSpy.mockRestore();
+      }
+    });
+
+    test('processHistoricalPurchaseData dispatches both Template A and B in a single action and tracks failures and deduplication on retry', async () => {
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({ created: true });
+      const categoryMappedSpy = jest
+        .spyOn(mailerService, 'buildVendorCategoryMappingEmail')
+        .mockImplementation(({ to }) => ({ to, subject: 'Template A', html: '<p>A</p>' }));
+      const selfMapSpy = jest
+        .spyOn(mailerService, 'buildVendorSelfMappingEmail')
+        .mockImplementation(({ to }) => ({ to, subject: 'Template B', html: '<p>B</p>' }));
+      const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockImplementation(async (payload) => {
+        if (payload.to === 'failing-vendor@example.com') {
+          return { sent: false, reason: 'Mailbox full' };
+        }
+        return { sent: true };
+      });
+
+      try {
+        const result = await storeService.processHistoricalPurchaseData('2_years', [
+          {
+            companyName: 'Mapped Supplier Co',
+            email: 'mapped-both@example.com',
+            categoriesMappedByBuyer: true,
+            majorCategory: 'Mechanical',
+            minorCategories: ['Valves'],
+          },
+          {
+            companyName: 'Unmapped Supplier Co',
+            email: 'unmapped-both@example.com',
+            categoriesMappedByBuyer: false,
+          },
+          {
+            companyName: 'Failing Email Supplier Co',
+            email: 'failing-vendor@example.com',
+            categoriesMappedByBuyer: false,
+          },
+          {
+            companyName: 'Invalid Email Supplier Co',
+            email: 'invalid-email-address',
+            categoriesMappedByBuyer: true,
+          },
+        ]);
+
+        expect(result.success).toBe(true);
+        expect(result.totalProcessed).toBe(4);
+        expect(result.mappedCount).toBe(2);
+        expect(result.unmappedCount).toBe(2);
+        expect(result.mappedEmailsSent).toBe(1);
+        expect(result.unmappedEmailsSent).toBe(1);
+        expect(result.failedEmailCount).toBe(2);
+        expect(result.overallStatus).toBe('COMPLETED_WITH_FAILURES');
+        expect(categoryMappedSpy).toHaveBeenCalled();
+        expect(selfMapSpy).toHaveBeenCalled();
+
+        // Safe retry: previously sent vendors must not be emailed again
+        const retryResult = await storeService.processHistoricalPurchaseData('2_years', [
+          {
+            companyName: 'Mapped Supplier Co',
+            email: 'mapped-both@example.com',
+            categoriesMappedByBuyer: true,
+            majorCategory: 'Mechanical',
+            minorCategories: ['Valves'],
+          },
+        ]);
+        expect(retryResult.mappedEmailsSent).toBe(1);
       } finally {
         findSpy.mockRestore();
         identitySpy.mockRestore();
@@ -1056,6 +1141,93 @@ describe('Store Service & Business Operations', () => {
       expect((mode2RFQ.assignedVendors || []).map((v) => v.id)).toContain(networkVendor.id);
     });
 
+    test('createRFQ dynamically calculates and sets procucevVendorCount for Version 0, Version 2, and Version 3 based on category matches', () => {
+      const vA = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Alpha',
+        email: 'dyn-alpha@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.8,
+      });
+      const vB = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Beta',
+        email: 'dyn-beta@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.5,
+      });
+      const vC = storeService.addVendor({
+        name: 'Dynamic Procucev Vendor Gamma',
+        email: 'dyn-gamma@ex.com',
+        majorCategory: 'Dyn-Vendor-Cat-1',
+        rating: 4.2,
+      });
+
+      // Version 0: Procucev network vendors auto-populated
+      const rfqV0 = storeService.createRFQ({
+        id: 'rfq-dyn-v0-test',
+        title: 'Dynamic V0 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_0',
+      });
+      expect(rfqV0.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV0)).toBe(3);
+
+      // Version 2: Hybrid sourcing auto-populates network vendors
+      const rfqV2 = storeService.createRFQ({
+        id: 'rfq-dyn-v2-test',
+        title: 'Dynamic V2 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_2',
+      });
+      expect(rfqV2.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV2)).toBe(3);
+
+      // Version 3: AI Autonomous Sourcing dynamically evaluates Procucev candidate network vendors
+      const rfqV3 = storeService.createRFQ({
+        id: 'rfq-dyn-v3-test',
+        title: 'Dynamic V3 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_3',
+      });
+      expect(rfqV3.procucevVendorCount).toBe(3);
+      expect(storeService.getProcucevVendorCount(rfqV3)).toBe(3);
+
+      // Version 1: Private roster only -> procucevVendorCount is 0
+      const rfqV1 = storeService.createRFQ({
+        id: 'rfq-dyn-v1-test',
+        title: 'Dynamic V1 RFQ',
+        category: 'Dyn-Vendor-Cat-1',
+        sourcingMode: 'mode_1',
+      });
+      expect(rfqV1.procucevVendorCount).toBe(0);
+
+      // Different RFQ category with only 1 matching vendor updates dynamically
+      storeService.addVendor({
+        name: 'Single Cat Vendor',
+        email: 'single-cat@ex.com',
+        majorCategory: 'Dyn-Single-Cat',
+      });
+      const rfqSingle = storeService.createRFQ({
+        id: 'rfq-dyn-single-test',
+        title: 'Single Category RFQ',
+        category: 'Dyn-Single-Cat',
+        sourcingMode: 'mode_3',
+      });
+      expect(rfqSingle.procucevVendorCount).toBe(1);
+
+      // Unmatched category has 0 procucevVendorCount
+      const rfqEmpty = storeService.createRFQ({
+        id: 'rfq-dyn-empty-test',
+        title: 'Unmatched Category RFQ',
+        category: 'Non-Existent-Category-XYZ',
+        sourcingMode: 'mode_0',
+      });
+      expect(rfqEmpty.procucevVendorCount).toBe(0);
+
+      // getProcucevVendorCount handles null/empty/legacy objects
+      expect(storeService.getProcucevVendorCount(null)).toBe(0);
+      expect(storeService.getProcucevVendorCount({ sourcingMode: 'mode_0', assignedVendors: [{ id: vA.id }] })).toBe(1);
+    });
+
     test('createRFQ auto-invites category and sub-category matched vendors for an email-sourced RFQ in any sourcing mode', () => {
       const subCatVendor = storeService.addVendor({
         name: 'Email Sub-Category Vendor',
@@ -1143,6 +1315,43 @@ describe('Store Service & Business Operations', () => {
       expect(assignedIds).toContain(procucevVendor.id);
       expect(assignedIds).not.toContain(privateVendor.id);
     });
+
+    test('mode_2 excludes another buyer private vendors while preserving own and network vendors', () => {
+      const buyer = storeService.addBuyerAccount({
+        organizationName: 'Mode 2 Buyer',
+        corporateEmail: 'mode2-buyer@ex.com',
+      });
+      const ownVendor = storeService.addVendor({
+        name: 'Own Private Vendor',
+        majorCategory: 'Mode 2 Category',
+        buyerId: buyer.id,
+        source: 'buyer_uploaded',
+      });
+      const otherBuyerVendor = storeService.addVendor({
+        name: 'Other Private Vendor',
+        majorCategory: 'Mode 2 Category',
+        buyerId: 'different-buyer',
+        source: 'buyer_uploaded',
+      });
+      const networkVendor = storeService.addVendor({
+        name: 'Network Vendor',
+        majorCategory: 'Mode 2 Category',
+        source: 'procucev_network',
+      });
+
+      const rfq = storeService.createRFQ({
+        title: 'Buyer-private sourcing',
+        category: 'Mode 2 Category',
+        sourcingMode: 'mode_2',
+      }, buyer);
+      const assignedIds = rfq.assignedVendors.map((vendor) => vendor.id);
+
+      expect(assignedIds).toContain(ownVendor.id);
+      expect(assignedIds).toContain(networkVendor.id);
+      expect(assignedIds).not.toContain(otherBuyerVendor.id);
+      expect(storeService.candidateVendorsForRFQ(rfq).map((vendor) => vendor.id))
+        .not.toContain(otherBuyerVendor.id);
+    });
   });
 
   describe('inviteVendorsToRFQ (category manager invite flow)', () => {
@@ -1206,6 +1415,48 @@ describe('Store Service & Business Operations', () => {
       expect(result.invitedCount).toBe(0);
     });
 
+    test('rejects invitations to another buyer private vendor but permits this buyer private vendor', async () => {
+      const buyer = storeService.addBuyerAccount({
+        organizationName: 'Invite Owner Buyer',
+        corporateEmail: 'invite-owner@ex.com',
+      });
+      const rfq = storeService.createRFQ({
+        title: 'Private roster invite',
+        category: 'Private Invite Category',
+        sourcingMode: 'mode_3',
+      }, buyer);
+      const ownVendor = storeService.addVendor({
+        name: 'Owned Private Vendor',
+        email: 'owned-private@ex.com',
+        majorCategory: 'Private Invite Category',
+        buyerId: buyer.id,
+        source: 'buyer_uploaded',
+      });
+      const otherBuyerVendor = storeService.addVendor({
+        name: 'Foreign Private Vendor',
+        email: 'foreign-private@ex.com',
+        majorCategory: 'Private Invite Category',
+        buyerId: 'different-buyer',
+        source: 'buyer_uploaded',
+      });
+
+      const result = await storeService.inviteVendorsToRFQ(
+        rfq.id,
+        [ownVendor.id, otherBuyerVendor.id],
+        'cm@ex.com'
+      );
+
+      expect(result.invitedCount).toBe(1);
+      expect(result.excludedCount).toBe(1);
+      expect(result.excludedVendors).toEqual([
+        expect.objectContaining({ id: otherBuyerVendor.id }),
+      ]);
+      expect(result.updatedRFQ.assignedVendors.map((vendor) => vendor.id)).toContain(ownVendor.id);
+      expect(result.updatedRFQ.assignedVendors.map((vendor) => vendor.id)).not.toContain(otherBuyerVendor.id);
+      expect(inviteEmailSpy).toHaveBeenCalledTimes(1);
+      expect(inviteEmailSpy).toHaveBeenCalledWith(ownVendor.email, expect.any(Object));
+    });
+
     test('invites a vendor: grants access, fires the fake chaser feed, a real notification, a real email, and an audit entry', async () => {
       const vendor = storeService.addVendor({ name: 'Invite Flow Vendor', email: 'inviteflow@ex.com', majorCategory: 'Invite-Flow-Cat' });
       const rfq = storeService.createRFQ({ title: 'Invite Flow RFQ', category: 'Invite-Flow-Cat' , sourcingMode: 'mode_3' });
@@ -1249,7 +1500,10 @@ describe('Store Service & Business Operations', () => {
     test('vendorIds that is not an array is treated as empty — invitedCount 0', async () => {
       const rfq = storeService.createRFQ({ title: 'Non-Array Invite RFQ', category: 'Non-Array-Cat' , sourcingMode: 'mode_3' });
       const result = await storeService.inviteVendorsToRFQ(rfq.id, null, 'cm@ex.com');
-      expect(result).toEqual({ updatedRFQ: rfq, invitedCount: 0 });
+      expect(result.updatedRFQ).toEqual(rfq);
+      expect(result.invitedCount).toBe(0);
+      expect(result.excludedCount).toBe(0);
+      expect(result.excludedVendors).toEqual([]);
     });
 
     test('defaults the audit actor when no actorEmail is given', async () => {
@@ -1300,7 +1554,7 @@ describe('Store Service & Business Operations', () => {
       await new Promise((r) => setImmediate(r)); // let the rejected promise settle
     });
 
-    test('excludes category mismatched vendors from invite shortlist and sends update request email', async () => {
+    test('allows Category Manager manual override for mismatched vendor and sends invite without mismatch email', async () => {
       const mismatchEmailSpy = jest.spyOn(mailerService, 'sendVendorCategoryMismatchEmail').mockResolvedValue({ sent: true });
       const matchedVendor = storeService.addVendor({ name: 'Matching Vendor', email: 'match@ex.com', majorCategory: 'Mechanical' });
       const mismatchedVendor = storeService.addVendor({ name: 'Mismatched Vendor', email: 'mismatch@ex.com', majorCategory: 'Civil Works' });
@@ -1308,19 +1562,16 @@ describe('Store Service & Business Operations', () => {
       const rfq = storeService.createRFQ({ title: 'Mechanical RFQ', category: 'Mechanical', sourcingMode: 'mode_3' });
       const result = await storeService.inviteVendorsToRFQ(rfq.id, [matchedVendor.id, mismatchedVendor.id], 'cm@ex.com');
 
-      expect(result.invitedCount).toBe(1);
-      expect(result.excludedCount).toBe(1);
+      expect(result.invitedCount).toBe(2);
+      expect(result.overrideCount).toBe(1);
       expect(result.updatedRFQ.assignedVendors.map((v) => v.id)).toContain(matchedVendor.id);
-      expect(result.updatedRFQ.assignedVendors.map((v) => v.id)).not.toContain(mismatchedVendor.id);
-      expect(mismatchEmailSpy).toHaveBeenCalledWith('mismatch@ex.com', expect.objectContaining({
-        rfqNumber: rfq.rfqNumber,
-        vendorName: 'Mismatched Vendor',
-      }));
+      expect(result.updatedRFQ.assignedVendors.map((v) => v.id)).toContain(mismatchedVendor.id);
+      expect(mismatchEmailSpy).not.toHaveBeenCalled();
     });
   });
 
   describe('validateAndShortlistVendors', () => {
-    test('filters out vendors with category mismatch and dispatches profile update emails', () => {
+    test('filters out vendors with category mismatch without sending mismatch emails and records audit log', () => {
       const mismatchEmailSpy = jest.spyOn(mailerService, 'sendVendorCategoryMismatchEmail').mockResolvedValue({ sent: true });
       const rfq = storeService.createRFQ({ title: 'Electrical Requisition', category: 'Electrical Equipment' });
 
@@ -1332,10 +1583,7 @@ describe('Store Service & Business Operations', () => {
       const res = storeService.validateAndShortlistVendors(rfq, vendorList, 'buyer@company.com');
       expect(res.shortlisted.map((v) => v.id)).toEqual(['v-elec']);
       expect(res.excluded.map((v) => v.id)).toEqual(['v-mech']);
-      expect(mismatchEmailSpy).toHaveBeenCalledWith('mech@ex.com', expect.objectContaining({
-        rfqNumber: rfq.rfqNumber,
-        rfqCategory: 'Electrical Equipment',
-      }));
+      expect(mismatchEmailSpy).not.toHaveBeenCalled();
     });
   });
 
@@ -2260,5 +2508,3 @@ describe('demo RFQ seeding', () => {
     });
   });
 });
-
-

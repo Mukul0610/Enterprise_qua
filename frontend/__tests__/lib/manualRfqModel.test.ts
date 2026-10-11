@@ -376,6 +376,11 @@ describe('toRFQCreatePayload', () => {
       attachment,
     ]);
   });
+
+  it('supports passing custom source such as ai_extraction', () => {
+    const payload = toRFQCreatePayload(completeForm(), undefined, 'ai_extraction');
+    expect(payload.source).toBe('ai_extraction');
+  });
 });
 
 describe('line item collection helpers', () => {

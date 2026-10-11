@@ -3,7 +3,6 @@
 import React, { useMemo, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { RFQFollowUpDeepDiveModal } from '@/app/components/Modals';
-import { RFQDeleteDialog, RFQEditModal } from '@/app/buyer/RFQEditModal';
 import { SOURCING_MODES, formatCurrency, formatIndianDate } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import type { RFQItem, RFQPortfolioSummary, RFQSource, SourcingMode } from '@/lib/types';
@@ -24,6 +23,7 @@ import {
   Eye,
   FileText,
   Trash2,
+  Sparkles,
 } from 'lucide-react';
 
 const SCREEN = UI_STRINGS.screens.rfqSummary;
@@ -66,12 +66,7 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
     deepDiveModalOpen,
     setDeepDiveModalOpen,
     selectedRFQForDeepDive,
-    updateRFQ,
   } = useApp();
-
-  // Held as the RFQ itself rather than an id, so the dialogs can name the record
-  // they are about without looking it up again.
-  const [rfqBeingEdited, setRfqBeingEdited] = useState<RFQItem | null>(null);
 
   // GET /api/rfqs is itself scoped to the signed-in buyer's own account now
   // (server-side — see command-center.tsx's matching note), so allRfqs is
@@ -128,7 +123,14 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
 
   /** Distinct statuses actually present, so the filter never offers a dead option. */
   const availableStatuses = useMemo(() => Object.keys(summary.byStatus).sort(), [summary.byStatus]);
-  const availableSources = useMemo(() => Object.keys(summary.bySource).sort(), [summary.bySource]);
+
+  /**
+   * Intake source filter options are defined statically so the buyer always
+   * sees every possible source — including AI RFQ Create — even when no RFQs
+   * created through that channel exist yet. The order is canonical:
+   * AI RFQ Create → Email Gateway → Manual Entry.
+   */
+  const intakeSourceOptions = RFQ.intakeSourceFilterOptions;
 
   const filteredRFQs = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -172,8 +174,11 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
       'AI Recommended': 'badge-emerald',
       'In Evaluation': 'badge-blue',
       'PO Generated': 'badge-purple',
+      'Quotes Received': 'badge-blue',
       Parsing: 'badge-amber',
       'Quotes Pending': 'badge-amber',
+      Closed: 'badge-neutral',
+      Expired: 'badge-rose',
     };
     return <span className={`badge ${toneByStatus[status] || 'badge-blue'}`}>{status}</span>;
   };
@@ -207,6 +212,11 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
         icon: <Pencil size={10} />,
         label: RFQ.sourceManualEntry,
         tone: 'bg-teal-50 dark:bg-teal-950/60 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800',
+      },
+      ai_extraction: {
+        icon: <Sparkles size={10} />,
+        label: RFQ.sourceAiExtraction || 'AI Extraction',
+        tone: 'bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
       },
     };
     const resolved = meta[source || ''] || {
@@ -290,14 +300,14 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
           <Layers size={14} className="text-indigo-600 dark:text-indigo-400" />
           {RFQ.modeDistributionTitle}
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 sm:gap-2.5 text-xs">
           {SOURCING_MODES.map((mode) => {
             const count = summary.bySourcingMode[mode.id] || 0;
             const share = summary.totalRFQs === 0 ? 0 : Math.round((count / summary.totalRFQs) * 100);
             return (
               <div
                 key={mode.id}
-                className="p-2 rounded-lg bg-slate-50 dark:bg-gray-950 border border-slate-200 dark:border-gray-800 space-y-1"
+                className="p-2 sm:p-2.5 rounded-lg bg-slate-50 dark:bg-gray-950 border border-slate-200 dark:border-gray-800 space-y-1 flex flex-col justify-between"
               >
                 <div className="flex items-center justify-between">
                   {modeBadge(mode.id)}
@@ -405,10 +415,14 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
               }}
               className="text-xs font-semibold"
             >
+              {/* All Sources is always first and resets the filter. */}
               <option value={ALL}>{RFQ.allSources}</option>
-              {availableSources.map((source) => (
-                <option key={source} value={source}>
-                  {source}
+              {/* Static options: AI RFQ Create, Email Gateway, Manual Entry.
+                  Always rendered so buyers can filter by source even before
+                  any RFQs of that type exist in the portfolio. */}
+              {intakeSourceOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
                 </option>
               ))}
             </select>
@@ -525,15 +539,6 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
                         >
                           <Eye size={13} />
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setRfqBeingEdited(rfq)}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-700 dark:hover:text-indigo-300 hover:bg-slate-100 dark:hover:bg-gray-800"
-                          aria-label={formatString(EDIT.editAria, { rfqNumber: rfq.rfqNumber })}
-                          title={EDIT.editAction}
-                        >
-                          <Pencil size={13} />
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -617,8 +622,6 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
         onClose={() => setDeepDiveModalOpen(false)}
         rfq={selectedRFQForDeepDive}
       />
-
-      <RFQEditModal rfq={rfqBeingEdited} onClose={() => setRfqBeingEdited(null)} onSave={updateRFQ} />
     </div>
   );
 }
