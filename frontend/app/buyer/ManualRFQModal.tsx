@@ -493,9 +493,9 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       phone?: string | null;
     }> | undefined = undefined;
 
-    if (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2') {
+    if (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2' || form.sourcingMode === 'mode_3') {
       if (Array.isArray(buyerVendors)) {
-        const pool = form.sourcingMode === 'mode_1'
+        const pool = (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_3')
           ? buyerVendors.filter((v) => isBuyerUploaded(v))
           : buyerVendors;
         const { signals } = extractRfqCategorySignals(form);

@@ -1165,6 +1165,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
           ],
         })
       ).toBe(2);
+      // Version 2 and 3 return all eligible assigned vendors, not just network vendors.
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_2',
@@ -1173,13 +1174,13 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
             { id: 'v-buyer-2', source: 'buyer_uploaded' },
           ],
         })
-      ).toBe(1);
+      ).toBe(2);
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_3',
           assignedVendors: [{ id: 'v-buyer-3', source: 'buyer_uploaded' }],
         })
-      ).toBe(0);
+      ).toBe(1);
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_1',

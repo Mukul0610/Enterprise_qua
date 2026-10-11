@@ -1949,7 +1949,7 @@ class StoreService {
     // Enterprise QUA – V0 (Free Starter Trial) Flow:
     // When buyer raises RFQ from V0 (mode_0), RFQ is sent ONLY to Procucev vendors.
     // Buyer-uploaded vendors are excluded from V0 RFQs.
-    if (newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0') {
+    if (newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0' || newRFQ.sourcingMode === 'version_0') {
       const MAX_V0_CATEGORY_INVITES = 100;
       // Filter existing assignedVendors to strictly Procucev vendors
       newRFQ.assignedVendors = (Array.isArray(newRFQ.assignedVendors) ? newRFQ.assignedVendors : []).filter((v) => {
@@ -2031,7 +2031,7 @@ class StoreService {
     // meant to stay strictly private). mode_1 now only ever gets whatever
     // the client-supplied assignedVendors already contains (the buyer's own
     // roster, category-filtered on the frontend).
-    if (newRFQ.sourcingMode === 'mode_2' || newRFQ.source === 'email_gateway') {
+    if (newRFQ.sourcingMode === 'mode_2' || newRFQ.sourcingMode === 'v2' || newRFQ.sourcingMode === 'version_2' || newRFQ.source === 'email_gateway') {
       // Capped: a bulk-imported category can match thousands of vendors (seen
       // live: 3000+ on a single RFQ, a 787KB payload) — embedding all of them
       // in assignedVendors on every future read of this RFQ is exactly the
@@ -2094,7 +2094,7 @@ class StoreService {
       newRFQ.sourcingMode === 'v3' ||
       newRFQ.sourcingMode === 'version_3'
     ) {
-      const MAX_V3_CATEGORY_INVITES = 200;
+      const MAX_V3_CATEGORY_INVITES = 100;
       let v3Matches = this.candidateVendorsForRFQ(newRFQ)
         .filter((v) => this.isProcucevVendor(v))
         .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
@@ -2115,32 +2115,30 @@ class StoreService {
       mode3ProcucevCount = v3Matches.length;
     }
 
-    // Dynamically calculate and attach Procucev vendor count for Version 0, Version 2, and Version 3:
+    // Dynamically calculate and attach vendor count for Version 0, Version 2, and Version 3.
+    // V0: Procucev-network-only count (all invited vendors ARE Procucev vendors for mode_0).
+    // V2: Total invited count = buyer private roster + Procucev network (hybrid mode).
+    // V3: Total invited count = buyer private roster (or category-matched pool if not supplied).
     let procucevVendorCount = 0;
     const isV0 = newRFQ.sourcingMode === 'mode_0' || newRFQ.sourcingMode === 'v0' || newRFQ.sourcingMode === 'version_0';
     const isV2 = newRFQ.sourcingMode === 'mode_2' || newRFQ.sourcingMode === 'v2' || newRFQ.sourcingMode === 'version_2';
     const isV3 = newRFQ.sourcingMode === 'mode_3' || newRFQ.sourcingMode === 'v3' || newRFQ.sourcingMode === 'version_3';
 
     if (isV0) {
-      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
-        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
-        return this.isProcucevVendor(resolved);
-      });
-      procucevVendorCount = procucevAssigned.length > 0
-        ? procucevAssigned.length
+      // V0: Every invited vendor is a Procucev network vendor — report total assigned.
+      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
+        ? (newRFQ.assignedVendors || []).length
         : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
     } else if (isV2) {
-      const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
-        const resolved = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
-        return this.isProcucevVendor(resolved);
-      });
-      procucevVendorCount = procucevAssigned.length > 0
-        ? procucevAssigned.length
-        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      // V2 Hybrid: report the TOTAL number of invited vendors (buyer roster + Procucev network).
+      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
+        ? (newRFQ.assignedVendors || []).length
+        : this.candidateVendorsForRFQ(newRFQ).length;
     } else if (isV3) {
-      procucevVendorCount = mode3ProcucevCount > 0
-        ? mode3ProcucevCount
-        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      // V3: Total invited count = buyer private roster if supplied, otherwise category-matched pool.
+      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
+        ? (newRFQ.assignedVendors || []).length
+        : mode3ProcucevCount;
     }
 
     newRFQ.procucevVendorCount = procucevVendorCount;

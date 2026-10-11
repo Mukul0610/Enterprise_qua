@@ -2589,148 +2589,155 @@ fix that all issuse and merge in that  pr
 ```
 
 ---
+
 **[2026-10-10T20:46:53+05:30]**
 In the Buyer portal, update the Intake Source dropdown filter to include the missing AI RFQ Create option along with Email Gateway and Manual Entry. Keep the All Sources option as the default or reset option. Ensure that selecting each option displays only RFQs created through the corresponding source, and selecting All Sources displays RFQs from every source. Verify that the filter works correctly with the existing search, status filters, and pagination without affecting other functionality.
 
 ---
+
 **[2026-10-10T21:12:30+05:30]**
 Update the Buyer portal's RFQ Details section to display the correct Target Delivery Date and Intake Source. If the buyer provides a target delivery date while creating an RFQ, display the saved date instead of “Not provided.” For AI-created RFQs, display the source as AI Extraction, and for manually created RFQs, display Manual Entry. Ensure the values are fetched correctly from the database and remain consistent across the RFQ details page without affecting existing functionality.
 
 ---
+
 **[2026-10-10T21:15:39+05:30]**
 continue
 
 ---
+
 **[2026-10-10T21:52:37+05:30]**
 continue
 
 ---
+
 **[2026-10-10T21:48:56+05:30]**
 raise pr for this issuse
 
 ---
+
 **[2026-10-10T22:35:01+05:30]**
 Update the Sourcing Distribution section in the Buyer portal to display all four version cards — Version 0, Version 1, Version 2, and Version 3 — in a single horizontal row on desktop screens. Ensure all four cards have equal widths, consistent spacing, and proper alignment. On smaller screens, allow the cards to wrap into multiple rows or adapt responsively without overlapping or breaking the layout. Maintain the existing card functionality, data, and styling while ensuring a clean and consistent UI.
 
 ---
+
 **[2026-10-10T22:48:54+05:30]**
-PASS __tests__/types.test.js
+PASS **tests**/types.test.js
 A worker process has failed to exit gracefully and has been force exited. This is likely caused by tests leaking due to improper teardown. Try running with --detectOpenHandles to find leaks. Active timers can also cause this, ensure that .unref() was called on them.
 -------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-File                           | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s                                                                                                                                                                                                                                       
+File | % Stmts | % Branch | % Funcs | % Lines | Uncovered Line #s  
 -------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-All files                      |   93.42 |    85.31 |   92.33 |   94.11 |                                                                                                                                                                                                                                                         
- src                           |   98.82 |    94.44 |   92.85 |   98.79 |                                                                                                                                                                                                                                                         
-  app.js                       |   97.56 |       75 |    87.5 |   97.43 | 48                                                                                                                                                                                                                                                      
-  server.js                    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
- src/config                    |    88.3 |     76.6 |   72.72 |    91.3 |                                                                                                                                                                                                                                                         
-  constants.js                 |   89.47 |    74.73 |   72.22 |   92.02 | 660,698-706,798-800,1494,1513                                                                                                                                                                                                                           
-  types.js                     |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  validationSchemas.js         |   85.86 |    81.01 |      75 |   89.77 | 189,577-578,587-588,603,607-609                                                                                                                                                                                                                         
- src/controllers               |   92.44 |    83.26 |   96.59 |    92.7 |                                                                                                                                                                                                                                                         
-  aiFeedController.js          |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  auditController.js           |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  authController.js            |   97.75 |    96.07 |     100 |   97.75 | 128-133                                                                                                                                                                                                                                                 
-  bootstrapController.js       |     100 |       95 |     100 |     100 | 11                                                                                                                                                                                                                                                      
-  buyerAccountController.js    |   95.29 |    91.74 |   95.45 |   96.13 | 276,285-286,297,318-319,461-462                                                                                                                                                                                                                         
-  buyerProfileController.js    |     100 |    91.66 |     100 |     100 | 118                                                                                                                                                                                                                                                     
-  catalogueController.js       |   91.52 |    91.42 |     100 |    93.1 | 68-69,91-92                                                                                                                                                                                                                                             
-  configController.js          |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  cryptoController.js          |   95.65 |      100 |     100 |   95.65 | 130-131                                                                                                                                                                                                                                                 
-  dbController.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  evaluationController.js      |     100 |    93.54 |     100 |     100 | 47-48                                                                                                                                                                                                                                                   
-  graphqlController.js         |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  logsController.js            |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  notificationController.js    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  pincodeController.js         |     100 |    85.71 |     100 |     100 | 16                                                                                                                                                                                                                                                      
-  rfqController.js             |   82.05 |    65.02 |   88.88 |   82.19 | 147,257-258,289-290,307,320-385,548,873-874,884-885,898-899,927,1037-1038,1043-1044,1060,1068,1088-1092,1114,1176-1248                                                                                                                                  
-  supportChatController.js     |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  vendorController.js          |   94.79 |    89.66 |     100 |   95.11 | 228,230,343-344,370-371,478,625-626,660,763,771,776,796-797,810-811                                                                                                                                                                                     
-  zohoWebhookController.js     |     100 |    96.66 |     100 |     100 | 23                                                                                                                                                                                                                                                      
- src/db                        |   90.46 |    82.46 |   90.86 |    91.1 |                                                                                                                                                                                                                                                         
-  authSessionQueries.js        |      70 |    63.63 |     100 |   73.68 | 31,52,64-65,80,96-99,118                                                                                                                                                                                                                                
-  buyerProfileQueries.js       |   97.02 |    89.03 |     100 |   97.35 | 481,483,485,499                                                                                                                                                                                                                                         
-  d1Bridge.js                  |   70.31 |     56.6 |      60 |   72.41 | 36,84,88-89,107,135-138,229-238,256                                                                                                                                                                                                                     
-  domainQueries.js             |   83.33 |    72.33 |   84.28 |   83.25 | 167-186,279-294,394-400,914-926,932,942,952-997,1004-1032,1037-1055                                                                                                                                                                                     
-  emailGatewayQueries.js       |   97.29 |    91.66 |     100 |     100 | 47                                                                                                                                                                                                                                                      
-  identityQueries.js           |   83.75 |    87.22 |   96.15 |   83.13 | 199,353-406,556-624,753,779-832                                                                                                                                                                                                                         
-  migrate.js                   |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  optimizationMetrics.js       |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  pool.js                      |   97.11 |    85.88 |   94.11 |   97.91 | 82-83                                                                                                                                                                                                                                                   
-  queryAuditor.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  queryCache.js                |     100 |       90 |     100 |     100 | 21-23,57                                                                                                                                                                                                                                                
-  view.js                      |     100 |    98.13 |     100 |     100 | 57,1510                                                                                                                                                                                                                                                 
- src/graphql                   |   98.07 |    88.54 |     100 |   98.36 |                                                                                                                                                                                                                                                         
-  resolvers.js                 |   98.04 |    88.54 |     100 |   98.34 | 176-181                                                                                                                                                                                                                                                 
-  schema.js                    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
- src/middleware                |     100 |    93.75 |     100 |     100 |                                                                                                                                                                                                                                                         
-  auth.js                      |     100 |    93.75 |     100 |     100 | 15,39                                                                                                                                                                                                                                                   
-  errorHandler.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  logger.js                    |     100 |     90.9 |     100 |     100 | 34-42                                                                                                                                                                                                                                                   
- src/routes                    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  aiFeed.js                    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  audit.js                     |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  auth.js                      |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  bootstrap.js                 |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  buyerAccounts.js             |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  buyerProfile.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  catalogue.js                 |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  crypto.js                    |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  db.js                        |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  evaluations.js               |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  graphql.js                   |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  index.js                     |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  logs.js                      |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  notifications.js             |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  pincode.js                   |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  rfqs.js                      |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  supportChat.js               |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  systemConfig.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  vendors.js                   |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  zoho.js                      |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
- src/services                  |   94.01 |    86.36 |   91.93 |   94.76 |                                                                                                                                                                                                                                                         
-  aiChaserService.js           |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  auditService.js              |     100 |    93.33 |     100 |     100 | 59,75                                                                                                                                                                                                                                                   
-  authService.js               |   88.55 |       82 |   95.65 |   88.02 | 32-44,183-188,491,511-513,523-526,533-534,547,551-552,667,671-672,685,689-690,710-722                                                                                                                                                                   
-  buyerAccountResolver.js      |     100 |    97.05 |     100 |     100 | 78                                                                                                                                                                                                                                                      
-  buyerProfileService.js       |   98.41 |    93.65 |     100 |   98.36 | 131-132                                                                                                                                                                                                                                                 
-  cryptoService.js             |   97.02 |    97.72 |     100 |    96.9 | 126,280,285                                                                                                                                                                                                                                             
-  emailGatewayService.js       |   96.84 |    89.27 |   88.13 |   97.35 | 511,734,764-803,1018-1023,1408                                                                                                                                                                                                                          
-  emailIngestionService.js     |     100 |    94.54 |     100 |     100 | 114,159,163-164,291-296                                                                                                                                                                                                                                 
-  emailService.js              |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  evaluationService.js         |     100 |    95.91 |     100 |     100 | 10,58                                                                                                                                                                                                                                                   
-  geminiService.js             |   99.27 |    93.75 |   97.56 |     100 | 225,293,313-335,362,555,701,733,740,753,764,789,808,817,872-873,924,927,942-943,955-959,965-972                                                                                                                                                         
-  invoiceService.js            |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  largeFileIngestionService.js |    94.9 |    87.57 |   96.77 |   96.35 | 91,265,540-546,566,585-590,605,686-692,857,867                                                                                                                                                                                                          
-  logErrorResolver.js          |   95.83 |    91.42 |     100 |   95.78 | 26,95-97                                                                                                                                                                                                                                                
-  loggerService.js             |   98.42 |    93.33 |     100 |   98.36 | 38,287                                                                                                                                                                                                                                                  
-  mailerService.js             |   91.29 |    84.36 |   95.77 |    92.5 | 232,241-246,279,403-440,467,539,592,640,669-672,686,1087-1115                                                                                                                                                                                           
-  performanceOptimizer.js      |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  pincodeService.js            |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  r2Client.js                  |   94.73 |      100 |     100 |   94.11 | 24                                                                                                                                                                                                                                                      
-  rfqAttachmentService.js      |     100 |     94.2 |     100 |     100 | 192-196,198-199                                                                                                                                                                                                                                         
-  rfqChaserScheduler.js        |   78.97 |    65.38 |   44.89 |   81.81 | 108,185,245,402,423,429-431,473-524                                                                                                                                                                                                                     
-  rfqIngestionService.js       |   95.59 |    96.92 |     100 |   95.58 | 140-152                                                                                                                                                                                                                                                 
-  rfqSummaryService.js         |     100 |    94.33 |     100 |     100 | 50-51,98,170,172                                                                                                                                                                                                                                        
-  smsService.js                |   98.64 |    93.39 |   95.23 |   99.29 | 75                                                                                                                                                                                                                                                      
-  storeService.js              |   90.97 |     80.5 |   92.98 |   91.81 | 692-693,735-744,894-895,903,1080,1149,1158,1167,1229-1234,1619,1625,1999,2101,2169-2347,2357-2359,2446-2472,2607-2609,2870-2886,2949,2978,3019-3027,3032,3080-3084,3087-3089,3130-3133,3219,3315-3316,3514-3515,3603-3604,3640-3644,3782-3789,4246-4249 
-  whatsAppService.js           |   96.69 |    81.81 |   83.33 |   99.09 | 26                                                                                                                                                                                                                                                      
-  zohoPaymentService.js        |     100 |    97.91 |     100 |     100 | 45                                                                                                                                                                                                                                                      
-  zohoReconciliationService.js |     100 |    94.11 |     100 |     100 | 98                                                                                                                                                                                                                                                      
- src/workerShims               |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
-  iconvLiteShim.js             |     100 |      100 |     100 |     100 |                                                                                                                                                                                                                                                         
+All files | 93.42 | 85.31 | 92.33 | 94.11 |  
+ src | 98.82 | 94.44 | 92.85 | 98.79 |  
+ app.js | 97.56 | 75 | 87.5 | 97.43 | 48  
+ server.js | 100 | 100 | 100 | 100 |  
+ src/config | 88.3 | 76.6 | 72.72 | 91.3 |  
+ constants.js | 89.47 | 74.73 | 72.22 | 92.02 | 660,698-706,798-800,1494,1513  
+ types.js | 100 | 100 | 100 | 100 |  
+ validationSchemas.js | 85.86 | 81.01 | 75 | 89.77 | 189,577-578,587-588,603,607-609  
+ src/controllers | 92.44 | 83.26 | 96.59 | 92.7 |  
+ aiFeedController.js | 100 | 100 | 100 | 100 |  
+ auditController.js | 100 | 100 | 100 | 100 |  
+ authController.js | 97.75 | 96.07 | 100 | 97.75 | 128-133  
+ bootstrapController.js | 100 | 95 | 100 | 100 | 11  
+ buyerAccountController.js | 95.29 | 91.74 | 95.45 | 96.13 | 276,285-286,297,318-319,461-462  
+ buyerProfileController.js | 100 | 91.66 | 100 | 100 | 118  
+ catalogueController.js | 91.52 | 91.42 | 100 | 93.1 | 68-69,91-92  
+ configController.js | 100 | 100 | 100 | 100 |  
+ cryptoController.js | 95.65 | 100 | 100 | 95.65 | 130-131  
+ dbController.js | 100 | 100 | 100 | 100 |  
+ evaluationController.js | 100 | 93.54 | 100 | 100 | 47-48  
+ graphqlController.js | 100 | 100 | 100 | 100 |  
+ logsController.js | 100 | 100 | 100 | 100 |  
+ notificationController.js | 100 | 100 | 100 | 100 |  
+ pincodeController.js | 100 | 85.71 | 100 | 100 | 16  
+ rfqController.js | 82.05 | 65.02 | 88.88 | 82.19 | 147,257-258,289-290,307,320-385,548,873-874,884-885,898-899,927,1037-1038,1043-1044,1060,1068,1088-1092,1114,1176-1248  
+ supportChatController.js | 100 | 100 | 100 | 100 |  
+ vendorController.js | 94.79 | 89.66 | 100 | 95.11 | 228,230,343-344,370-371,478,625-626,660,763,771,776,796-797,810-811  
+ zohoWebhookController.js | 100 | 96.66 | 100 | 100 | 23  
+ src/db | 90.46 | 82.46 | 90.86 | 91.1 |  
+ authSessionQueries.js | 70 | 63.63 | 100 | 73.68 | 31,52,64-65,80,96-99,118  
+ buyerProfileQueries.js | 97.02 | 89.03 | 100 | 97.35 | 481,483,485,499  
+ d1Bridge.js | 70.31 | 56.6 | 60 | 72.41 | 36,84,88-89,107,135-138,229-238,256  
+ domainQueries.js | 83.33 | 72.33 | 84.28 | 83.25 | 167-186,279-294,394-400,914-926,932,942,952-997,1004-1032,1037-1055  
+ emailGatewayQueries.js | 97.29 | 91.66 | 100 | 100 | 47  
+ identityQueries.js | 83.75 | 87.22 | 96.15 | 83.13 | 199,353-406,556-624,753,779-832  
+ migrate.js | 100 | 100 | 100 | 100 |  
+ optimizationMetrics.js | 100 | 100 | 100 | 100 |  
+ pool.js | 97.11 | 85.88 | 94.11 | 97.91 | 82-83  
+ queryAuditor.js | 100 | 100 | 100 | 100 |  
+ queryCache.js | 100 | 90 | 100 | 100 | 21-23,57  
+ view.js | 100 | 98.13 | 100 | 100 | 57,1510  
+ src/graphql | 98.07 | 88.54 | 100 | 98.36 |  
+ resolvers.js | 98.04 | 88.54 | 100 | 98.34 | 176-181  
+ schema.js | 100 | 100 | 100 | 100 |  
+ src/middleware | 100 | 93.75 | 100 | 100 |  
+ auth.js | 100 | 93.75 | 100 | 100 | 15,39  
+ errorHandler.js | 100 | 100 | 100 | 100 |  
+ logger.js | 100 | 90.9 | 100 | 100 | 34-42  
+ src/routes | 100 | 100 | 100 | 100 |  
+ aiFeed.js | 100 | 100 | 100 | 100 |  
+ audit.js | 100 | 100 | 100 | 100 |  
+ auth.js | 100 | 100 | 100 | 100 |  
+ bootstrap.js | 100 | 100 | 100 | 100 |  
+ buyerAccounts.js | 100 | 100 | 100 | 100 |  
+ buyerProfile.js | 100 | 100 | 100 | 100 |  
+ catalogue.js | 100 | 100 | 100 | 100 |  
+ crypto.js | 100 | 100 | 100 | 100 |  
+ db.js | 100 | 100 | 100 | 100 |  
+ evaluations.js | 100 | 100 | 100 | 100 |  
+ graphql.js | 100 | 100 | 100 | 100 |  
+ index.js | 100 | 100 | 100 | 100 |  
+ logs.js | 100 | 100 | 100 | 100 |  
+ notifications.js | 100 | 100 | 100 | 100 |  
+ pincode.js | 100 | 100 | 100 | 100 |  
+ rfqs.js | 100 | 100 | 100 | 100 |  
+ supportChat.js | 100 | 100 | 100 | 100 |  
+ systemConfig.js | 100 | 100 | 100 | 100 |  
+ vendors.js | 100 | 100 | 100 | 100 |  
+ zoho.js | 100 | 100 | 100 | 100 |  
+ src/services | 94.01 | 86.36 | 91.93 | 94.76 |  
+ aiChaserService.js | 100 | 100 | 100 | 100 |  
+ auditService.js | 100 | 93.33 | 100 | 100 | 59,75  
+ authService.js | 88.55 | 82 | 95.65 | 88.02 | 32-44,183-188,491,511-513,523-526,533-534,547,551-552,667,671-672,685,689-690,710-722  
+ buyerAccountResolver.js | 100 | 97.05 | 100 | 100 | 78  
+ buyerProfileService.js | 98.41 | 93.65 | 100 | 98.36 | 131-132  
+ cryptoService.js | 97.02 | 97.72 | 100 | 96.9 | 126,280,285  
+ emailGatewayService.js | 96.84 | 89.27 | 88.13 | 97.35 | 511,734,764-803,1018-1023,1408  
+ emailIngestionService.js | 100 | 94.54 | 100 | 100 | 114,159,163-164,291-296  
+ emailService.js | 100 | 100 | 100 | 100 |  
+ evaluationService.js | 100 | 95.91 | 100 | 100 | 10,58  
+ geminiService.js | 99.27 | 93.75 | 97.56 | 100 | 225,293,313-335,362,555,701,733,740,753,764,789,808,817,872-873,924,927,942-943,955-959,965-972  
+ invoiceService.js | 100 | 100 | 100 | 100 |  
+ largeFileIngestionService.js | 94.9 | 87.57 | 96.77 | 96.35 | 91,265,540-546,566,585-590,605,686-692,857,867  
+ logErrorResolver.js | 95.83 | 91.42 | 100 | 95.78 | 26,95-97  
+ loggerService.js | 98.42 | 93.33 | 100 | 98.36 | 38,287  
+ mailerService.js | 91.29 | 84.36 | 95.77 | 92.5 | 232,241-246,279,403-440,467,539,592,640,669-672,686,1087-1115  
+ performanceOptimizer.js | 100 | 100 | 100 | 100 |  
+ pincodeService.js | 100 | 100 | 100 | 100 |  
+ r2Client.js | 94.73 | 100 | 100 | 94.11 | 24  
+ rfqAttachmentService.js | 100 | 94.2 | 100 | 100 | 192-196,198-199  
+ rfqChaserScheduler.js | 78.97 | 65.38 | 44.89 | 81.81 | 108,185,245,402,423,429-431,473-524  
+ rfqIngestionService.js | 95.59 | 96.92 | 100 | 95.58 | 140-152  
+ rfqSummaryService.js | 100 | 94.33 | 100 | 100 | 50-51,98,170,172  
+ smsService.js | 98.64 | 93.39 | 95.23 | 99.29 | 75  
+ storeService.js | 90.97 | 80.5 | 92.98 | 91.81 | 692-693,735-744,894-895,903,1080,1149,1158,1167,1229-1234,1619,1625,1999,2101,2169-2347,2357-2359,2446-2472,2607-2609,2870-2886,2949,2978,3019-3027,3032,3080-3084,3087-3089,3130-3133,3219,3315-3316,3514-3515,3603-3604,3640-3644,3782-3789,4246-4249
+whatsAppService.js | 96.69 | 81.81 | 83.33 | 99.09 | 26  
+ zohoPaymentService.js | 100 | 97.91 | 100 | 100 | 45  
+ zohoReconciliationService.js | 100 | 94.11 | 100 | 100 | 98  
+ src/workerShims | 100 | 100 | 100 | 100 |  
+ iconvLiteShim.js | 100 | 100 | 100 | 100 |  
 -------------------------------|---------|----------|---------|---------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 =============================== Coverage summary ===============================
-Statements   : 93.42% ( 8499/9097 )
-Branches     : 85.31% ( 7381/8651 )
-Functions    : 92.33% ( 1169/1266 )
-Lines        : 94.11% ( 7852/8343 )
+Statements : 93.42% ( 8499/9097 )
+Branches : 85.31% ( 7381/8651 )
+Functions : 92.33% ( 1169/1266 )
+Lines : 94.11% ( 7852/8343 )
 ================================================================================
 
 Summary of all failing tests
-FAIL __tests__/v0RfqWorkflow.test.js
-  ● V0 RFQ Complete Workflow — Procucev Network Vendors › 3. Vendor 5 Free RFQ Download Credits & Exhaustion › initializes with 5 free credits and tracks atomic deductions
+FAIL **tests**/v0RfqWorkflow.test.js
+● V0 RFQ Complete Workflow — Procucev Network Vendors › 3. Vendor 5 Free RFQ Download Credits & Exhaustion › initializes with 5 free credits and tracks atomic deductions
 
     expect(received).toBe(expected) // Object.is equality
 
@@ -2747,11 +2754,10 @@ FAIL __tests__/v0RfqWorkflow.test.js
 
       at Object.toBe (__tests__/v0RfqWorkflow.test.js:156:41)
 
-
 Test Suites: 1 failed, 73 passed, 74 total
-Tests:       1 failed, 2231 passed, 2232 total
-Snapshots:   0 total
-Time:        34.702 s
+Tests: 1 failed, 2231 passed, 2232 total
+Snapshots: 0 total
+Time: 34.702 s
 Ran all test suites.
 Force exiting Jest: Have you considered using `--detectOpenHandles` to detect async operations that kept running after all tests finished?
 Error: Process completed with exit code 1.
@@ -2759,9 +2765,26 @@ Error: Process completed with exit code 1.
 fiix and merge in that pr
 
 ### 2026-10-10T23:03:47+05:30
+
 Fix the RFQ success popup to display the correct, dynamically retrieved Procucev vendor count for Version 0, Version 2, and Version 3. Ensure each version shows the actual number of vendors associated with that RFQ version based on the backend response, rather than hardcoded, incorrect, or missing values. Verify that the vendor count updates correctly for different RFQs and versions while maintaining the existing popup design and functionality.
 
 raise pr for this issuse also after codde can implement
 
 ### 2026-10-11T16:05:06.282+05:30
+
 push code
+
+### 2026-10-11T19:30:10+05:30
+
+In RFQ creation, Version 2 and Version 3 are displaying Procucev vendor counts when sending RFQ invitations. Please verify and fix the vendor-matching logic so that the system displays and sends RFQs to the correct number of eligible vendors for each version
+
+yesterday i already fix this bug but it is not working
+
+### 2026-10-11T19:50:00+05:30
+
+continue
+
+### 2026-10-11T20:10:10+05:30
+
+raise the pr
+

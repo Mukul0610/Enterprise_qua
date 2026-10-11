@@ -129,27 +129,34 @@ interface ConfirmationRFQ {
 export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | undefined): number {
   if (!rfq) return 0;
   const mode = rfq.sourcingMode;
-  const isNetworkMode =
-    mode === 'mode_0' || mode === 'v0' || mode === 'version_0' ||
-    mode === 'mode_2' || mode === 'v2' || mode === 'version_2' ||
-    mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+  const isV1 = mode === 'mode_1' || mode === 'v1' || mode === 'version_1';
+  const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+  const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
 
+  // If the backend dynamically returned the vendor count for this RFQ version, use it:
   if (
-    isNetworkMode &&
+    (isV0 || isV2 || isV3) &&
     typeof rfq.procucevVendorCount === 'number' &&
     Number.isFinite(rfq.procucevVendorCount)
-  ) return Math.max(0, rfq.procucevVendorCount);
+  ) {
+    return Math.max(0, rfq.procucevVendorCount);
+  }
 
+  // Fallback: derive from assignedVendors when the backend field is absent:
   if (Array.isArray(rfq.assignedVendors)) {
-    if (isNetworkMode) {
+    if (isV2 || isV3 || isV1) {
+      // V1, V2, V3: all assigned vendors are eligible recipients.
+      return rfq.assignedVendors.length;
+    }
+    if (isV0) {
+      // V0: only Procucev network vendors are eligible recipients.
       return rfq.assignedVendors.filter((vendor) =>
         isProcucevVendor(typeof vendor === 'string' ? { id: vendor } : vendor)
       ).length;
     }
-    if (mode === 'mode_1' || mode === 'v1' || mode === 'version_1') {
-      return rfq.assignedVendors.length;
-    }
   }
+
   return 0;
 }
 
@@ -891,8 +898,8 @@ export default function IngestionWizard({
 
       let mode1AssignedVendors: AssignedVendorEntry[] | undefined = undefined;
 
-      if ((form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2') && Array.isArray(buyerVendors)) {
-        const pool = form.sourcingMode === 'mode_1'
+      if ((form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_2' || form.sourcingMode === 'mode_3') && Array.isArray(buyerVendors)) {
+        const pool = (form.sourcingMode === 'mode_1' || form.sourcingMode === 'mode_3')
           ? buyerVendors.filter((v) => isBuyerUploaded(v))
           : buyerVendors;
         const { signals: dispatchSignals } = extractRfqCategorySignals(updatedForm);
