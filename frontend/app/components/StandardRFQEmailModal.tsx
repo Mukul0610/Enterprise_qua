@@ -31,6 +31,7 @@ export default function StandardRFQEmailModal() {
   if (!emailModalOpen || !selectedEmailForModal) return null;
 
   const email = selectedEmailForModal;
+  const portalOnly = email.lineItems.length > 10;
 
   const handleCopy = () => {
     const rawEmailText = `
@@ -60,8 +61,11 @@ SPECIAL INSTRUCTIONS:
 ${email.specialInstructions}
 
 MANDATORY QUOTATION SUBMISSION INSTRUCTIONS:
-- To submit your quotation, reply directly to this RFQ email with your itemized commercial quote, unit rates, and technical datasheets attached (PDF/Excel).
-- CRITICAL: DO NOT MODIFY OR CHANGE THE EMAIL SUBJECT LINE ("${email.subject}"). The exact subject line is required for automated AI parsing and ingestion into the comparative evaluation matrix.
+${portalOnly
+    ? `- This RFQ has ${email.lineItems.length} line items. Email bids are not accepted for RFQs with more than 10 items.
+- Submit through the Procucev Vendor Portal: download the RFQ Excel file, enter a unit price for each item, then upload the completed workbook and supporting documents.`
+    : `- Submit your quotation by replying to this invitation with your itemized commercial quote, unit rates, and supporting documents, or use the Procucev Vendor Portal.
+- DO NOT MODIFY OR CHANGE THE EMAIL SUBJECT LINE ("${email.subject}"). The exact subject line is required for automated AI parsing and ingestion into the comparative evaluation matrix.`}
 
 SHA-256 DIGITAL AUDIT SEAL: ${email.shaSignature}
 `;
@@ -253,29 +257,33 @@ SHA-256 DIGITAL AUDIT SEAL: ${email.shaSignature}
               </div>
             </div>
 
-            {/* Mandatory Email Reply Quotation Directives Box */}
+            {/* Submission directives vary with the RFQ line-item count. */}
             <div className="p-4 rounded-xl bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white border border-indigo-500/40 shadow-lg space-y-2.5">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2 text-amber-400 font-extrabold text-xs">
-                  <Mail size={16} />
-                  <span>MANDATORY: SUBMIT QUOTATION BY DIRECT EMAIL REPLY</span>
+                  {portalOnly ? <FileSpreadsheet size={16} /> : <Mail size={16} />}
+                  <span>{portalOnly ? 'MANDATORY: SUBMIT QUOTATION THROUGH THE PORTAL' : 'SUBMIT QUOTATION BY EMAIL REPLY OR PORTAL'}</span>
                 </div>
                 <span className="px-2 py-0.5 rounded text-[9px] font-mono font-bold bg-amber-400/20 text-amber-300 border border-amber-400/40 uppercase">
-                  Direct Email Submission Only
+                  {portalOnly ? 'Portal Submission Only' : 'Email or Portal'}
                 </span>
               </div>
               <p className="text-[11px] text-slate-200 leading-relaxed">
-                Vendors must submit their official quotation, commercial line-item prices, and technical datasheets by <strong>replying directly to this email</strong> (<span className="text-indigo-300 font-semibold">{email.buyerContactEmail}</span>) with attachments (PDF / Excel).
+                {portalOnly
+                  ? <>This RFQ has <strong>{email.lineItems.length} line items</strong>. Email bids are not accepted. Open the Procucev Vendor Portal to download the RFQ Excel file, enter your prices, then upload the completed workbook and supporting documents.</>
+                  : <>Submit your official quotation and commercial line-item prices by replying to this invitation with supporting documents, or use the Procucev Vendor Portal. Keep the subject line unchanged for automated processing.</>}
               </p>
-              <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-400/30 text-amber-200 text-[11px] space-y-1">
-                <div className="font-bold flex items-center gap-1.5 text-amber-300">
-                  <AlertCircle size={14} className="shrink-0 text-amber-400" />
-                  <span>CRITICAL SUBMISSION REQUIREMENT:</span>
+              {!portalOnly && (
+                <div className="p-3 rounded-lg bg-amber-500/10 border border-amber-400/30 text-amber-200 text-[11px] space-y-1">
+                  <div className="font-bold flex items-center gap-1.5 text-amber-300">
+                    <AlertCircle size={14} className="shrink-0 text-amber-400" />
+                    <span>EMAIL SUBMISSION REQUIREMENT:</span>
+                  </div>
+                  <p className="text-slate-300 text-[10.5px] leading-normal">
+                    <strong>DO NOT MODIFY OR CHANGE THE SUBJECT LINE</strong> when replying. The exact subject line (<code className="font-mono text-white bg-black/50 px-1 py-0.5 rounded font-bold">{email.subject}</code>) is required for automated processing.
+                  </p>
                 </div>
-                <p className="text-slate-300 text-[10.5px] leading-normal">
-                  <strong>DO NOT MODIFY OR CHANGE THE SUBJECT LINE</strong> when replying. The exact subject line (<code className="font-mono text-white bg-black/50 px-1 py-0.5 rounded font-bold">{email.subject}</code>) is strictly required for our AI Ingestion Gateway to autonomously scan your quotation and update the comparative matrix.
-                </p>
-              </div>
+              )}
             </div>
 
             {/* Sign-off & SHA-256 Stamp */}
@@ -320,4 +328,3 @@ SHA-256 DIGITAL AUDIT SEAL: ${email.shaSignature}
     </div>
   );
 }
-

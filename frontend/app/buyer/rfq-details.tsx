@@ -628,9 +628,6 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
     const inquiries = Array.isArray(activeRfq.inquiries) ? activeRfq.inquiries : [];
     inquiries.forEach((inq) => {
       const isProc = checkIsProcucevVendor(inq.vendorId, inq.vendorName, inq.vendorEmail, inq);
-      // Procucev/internal vendors are shown in the buyer's chat list by name
-      // only — their email/phone/other contact details are never exposed.
-      // See the `isProc` stripping applied below.
 
       const key = inq.vendorId || inq.vendorEmail || inq.vendorName || inq.id;
       const msgs = Array.isArray(inq.messages) && inq.messages.length > 0
@@ -695,8 +692,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         typeof v === 'object' ? v : undefined
       );
 
-      // Procucev/internal vendors are shown by name only — never their
-      // email, contact person or phone.
+      // Retain the classification for the buyer-only filter below.
       const key = vId || vEmail || vName;
       const existing = Array.from(map.values()).find(
         (c) => (vEmail && c.vendorEmail === vEmail) || c.vendorName === vName || (vId && c.vendorId === vId)
@@ -747,6 +743,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
     });
 
     return Array.from(map.values())
+      .filter((channel) => !channel.isProcucev)
       .sort((a, b) => {
         if (a.status === 'open' && b.status !== 'open') return -1;
         if (b.status === 'open' && a.status !== 'open') return 1;

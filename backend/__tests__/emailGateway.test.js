@@ -2849,6 +2849,36 @@ describe('emailGatewayService.processVendorQuoteMessage complex-RFQ portal redir
     );
   });
 
+  test('accepts an email bid for an RFQ with exactly ten items', async () => {
+    const rfq = complexRfq();
+    rfq.extractedEntities = rfq.extractedEntities.slice(0, 10);
+    const redirectSpy = jest.spyOn(mailerService, 'sendComplexRfqPortalRedirectEmail');
+
+    const result = await emailGatewayService.processVendorQuoteMessage(quoteMessage, rfq, vendorRecord);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_INGESTED);
+    expect(result.quote.source).toBe('email');
+    expect(redirectSpy).not.toHaveBeenCalled();
+  });
+
+  test('uses lineItems as the item-count fallback for the portal-only threshold', async () => {
+    const rfq = complexRfq();
+    rfq.lineItems = rfq.extractedEntities;
+    delete rfq.extractedEntities;
+    const redirectSpy = jest
+      .spyOn(mailerService, 'sendComplexRfqPortalRedirectEmail')
+      .mockResolvedValue({ sent: true });
+
+    const result = await emailGatewayService.processVendorQuoteMessage(quoteMessage, rfq, vendorRecord);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED);
+    expect(rfq.quotes).toBeUndefined();
+    expect(redirectSpy).toHaveBeenCalledWith(
+      vendorRecord.email,
+      expect.objectContaining({ rfq, itemCount: 11 })
+    );
+  });
+
   test('still returns PORTAL_SUBMISSION_REQUIRED when the portal redirect email throws (catch branch)', async () => {
     const rfq = complexRfq();
     jest
@@ -3090,6 +3120,5 @@ describe('emailGatewayService.resolveVendorFromEmail', () => {
     expect(await emailGatewayService.resolveVendorFromEmail('unknown@nowhere.com')).toBeNull();
   });
 });
-
 
 

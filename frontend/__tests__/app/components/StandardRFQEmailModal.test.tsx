@@ -117,6 +117,35 @@ describe('StandardRFQEmailModal', () => {
     jest.useRealTimers();
   });
 
+  it('directs RFQs with more than ten items to the portal and Excel upload only', () => {
+    const complexEmailPayload: StandardRFQEmailPayload = {
+      ...sampleEmailPayload,
+      lineItems: Array.from({ length: 11 }, (_, index) => ({
+        ...sampleEmailPayload.lineItems[0],
+        itemNumber: index + 1,
+        itemName: `Pump component ${index + 1}`,
+      })),
+    };
+    (storeModule.useApp as jest.Mock).mockReturnValue({
+      selectedEmailForModal: complexEmailPayload,
+      emailModalOpen: true,
+      setEmailModalOpen: mockSetEmailModalOpen,
+      showToast: mockShowToast,
+    });
+
+    render(<StandardRFQEmailModal />);
+
+    expect(screen.getByText('Portal Submission Only')).toBeInTheDocument();
+    expect(screen.getByText(/Email bids are not accepted/i)).toBeInTheDocument();
+    expect(screen.getByText(/download the RFQ Excel file/i)).toBeInTheDocument();
+    expect(screen.queryByText(/MANDATORY: SUBMIT QUOTATION BY DIRECT EMAIL REPLY/i)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/Copy Email Text/i));
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(
+      expect.stringContaining('Email bids are not accepted for RFQs with more than 10 items'),
+    );
+  });
+
   it('handles print action with iframe and fallback', () => {
     jest.useFakeTimers();
     (storeModule.useApp as jest.Mock).mockReturnValue({

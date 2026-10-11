@@ -2762,3 +2762,6 @@ fiix and merge in that pr
 Fix the RFQ success popup to display the correct, dynamically retrieved Procucev vendor count for Version 0, Version 2, and Version 3. Ensure each version shows the actual number of vendors associated with that RFQ version based on the backend response, rather than hardcoded, incorrect, or missing values. Verify that the vendor count updates correctly for different RFQs and versions while maintaining the existing popup design and functionality.
 
 raise pr for this issuse also after codde can implement
+
+### 2026-10-11T16:05:06.282+05:30
+push code

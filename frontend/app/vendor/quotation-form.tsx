@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { useApp } from '@/lib/store';
 import { authClient } from '@/lib/authClient';
+import { formatFileSize } from '@/lib/constants';
 import { rfqAttachmentUrl, submitRFQInquiry } from '@/lib/rfqClient';
 import { downloadVendorQuotationExcel } from '@/lib/bidComparisonExport';
 import type { RFQQuoteAttachment, VendorOpportunity } from '@/lib/types';
@@ -1312,7 +1313,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                         <div className="mb-2 p-2.5 rounded-xl bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800/60 text-blue-800 dark:text-blue-300 text-[11px] flex items-center justify-between gap-2 flex-wrap">
                           <span className="font-semibold flex items-center gap-1.5">
                             <Info size={14} className="text-blue-600 dark:text-blue-400 shrink-0" />
-                            Complex RFQ ({biddingOn.lineItems.length} items): For faster submission, download the Excel sheet, enter your rates, and upload it back.
+                            RFQ has {biddingOn.lineItems.length} items: email bids are not accepted. Submit through this portal; download the Excel sheet, enter your rates, and upload it with your supporting documents.
                           </span>
                         </div>
                       )}
@@ -1487,6 +1488,12 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                           event.target.value = '';
                           return;
                         }
+                        const emptyFile = files.find((file) => file.size === 0);
+                        if (emptyFile) {
+                          showToast('Empty Document', `${emptyFile.name} is empty. Choose a file with content.`, 'warning');
+                          event.target.value = '';
+                          return;
+                        }
                         const oversized = files.find((file) => file.size > 10 * 1024 * 1024);
                         if (oversized) {
                           showToast('Document Too Large', `${oversized.name} exceeds the 10 MB limit.`, 'warning');
@@ -1504,7 +1511,7 @@ export default function QuotationForm({ opportunity, onBack, onSubmitSuccess }: 
                           <li key={`${file.name}-${file.lastModified}`} className="flex items-center justify-between gap-2 text-[11px]">
                             <span className="inline-flex min-w-0 items-center gap-1.5 truncate text-slate-600 dark:text-gray-300">
                               <Paperclip size={12} className="shrink-0" /> {file.name}
-                              <span className="text-slate-400">({(file.size / 1024 / 1024).toFixed(1)} MB)</span>
+                              <span className="text-slate-400">({formatFileSize(file.size)})</span>
                             </span>
                             <button
                               type="button"

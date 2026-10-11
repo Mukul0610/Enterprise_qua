@@ -962,14 +962,12 @@ function makeInquiry(overrides: any = {}): any {
         })
       );
 
-      // Procucev/internal vendors are shown in the buyer's chat list by name
-      // only (not fully hidden) — only their contact details are withheld.
       expect(screen.getByText('Vendor Inquiries & Clarifications')).toBeInTheDocument();
       expect(screen.getAllByText('Local Machine Shop').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByText('Global Turbines Ltd').length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText('Global Turbines Ltd')).not.toBeInTheDocument();
     });
 
-    it('filters Procucev vendors out of the Assigned & Invited Suppliers panel specifically (they still surface by name in chat)', () => {
+    it('filters Procucev vendors out of both buyer inquiry and assigned supplier sections', () => {
       renderDetails(
         buildRFQ({
           sourcingMode: 'mode_2',

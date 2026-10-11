@@ -1048,6 +1048,25 @@ class StoreService {
     return false;
   }
 
+  isVendorPrivateToDifferentBuyer(vendor, rfq) {
+    if (!vendor || !rfq) return false;
+
+    const hasBuyerOwnership = Boolean(
+      vendor.buyerId ||
+      vendor.buyerAccountId ||
+      vendor.addedByBuyerCompany ||
+      vendor.buyerEmail ||
+      (Array.isArray(vendor.mappedBuyerIds) && vendor.mappedBuyerIds.length > 0) ||
+      (Array.isArray(vendor.buyerIds) && vendor.buyerIds.length > 0)
+    );
+    if (!hasBuyerOwnership) return false;
+
+    // Invitation is an access grant, not evidence that a buyer owns a private
+    // vendor. Ignore invitation lists while resolving the owning buyer.
+    const rfqWithoutInvitations = { ...rfq, assignedVendors: [], followUpData: null };
+    return !this.isVendorMappedToRfqBuyer(vendor, rfqWithoutInvitations);
+  }
+
   /**
    * Check whether a vendor is eligible to submit a quotation for an RFQ.
    *
@@ -1865,6 +1884,30 @@ class StoreService {
         autoChasingEnabled: true,
       },
     };
+
+    // Private vendor records belong only to the buyer account that uploaded
+    // them. Never carry another buyer's private roster entry onto this RFQ.
+    const foreignPrivateVendors = [];
+    newRFQ.assignedVendors = newRFQ.assignedVendors.filter((entry) => {
+      const vendor = entry && entry.id ? this.getVendorById(entry.id, 'all') : null;
+      if (!this.isVendorPrivateToDifferentBuyer(vendor || entry, newRFQ)) return true;
+      foreignPrivateVendors.push(vendor || entry);
+      return false;
+    });
+    if (foreignPrivateVendors.length > 0) {
+      logger.warn(
+        `Excluded ${foreignPrivateVendors.length} private vendor(s) owned by another buyer from RFQ ${newRFQ.rfqNumber}.`,
+        {
+          rfqNumber: newRFQ.rfqNumber,
+          vendorIds: foreignPrivateVendors.map((vendor) => vendor.id).filter(Boolean),
+        },
+        'STORE_SERVICE'
+      );
+      if (newRFQ.followUpData) {
+        newRFQ.followUpData.vendors = newRFQ.assignedVendors;
+        newRFQ.followUpData.totalInvited = newRFQ.assignedVendors.length;
+      }
+    }
 
     // Verify each vendor in assignedVendors against the RFQ's category signals.
     // If a vendor does not match the category:
@@ -2884,6 +2927,7 @@ class StoreService {
   candidateVendorsForRFQ(rfq) {
     const signals = this._rfqCategorySignals(rfq);
     return this.vendors
+      .filter((v) => !this.isVendorPrivateToDifferentBuyer(v, rfq))
       .filter((v) => signals.some((c) => this.vendorCoversCategory(v, c)))
       .map((v) => ({ ...v, alreadyInvited: this._isInvitedVendor(v, rfq) }));
   }
@@ -2910,10 +2954,11 @@ class StoreService {
     const existing = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
     const newlyInvited = [];
     const overrideVendors = [];
+    const excludedVendors = [];
     const signals = this._rfqCategorySignals(rfq);
 
     for (const id of Array.isArray(vendorIds) ? vendorIds : []) {
-      let vendor = this.getVendorById(id);
+      let vendor = this.getVendorById(id, 'all');
       if (!vendor) {
         vendor = await domainQueries.getVendorByIdFromDB(id);
         if (vendor && !this.vendors.some((v) => v.id === vendor.id)) {
@@ -2921,6 +2966,19 @@ class StoreService {
         }
       }
       if (!vendor) continue;
+      if (this.isVendorPrivateToDifferentBuyer(vendor, rfq)) {
+        excludedVendors.push({
+          id: vendor.id,
+          name: vendor.name,
+          reason: 'This private vendor belongs to a different buyer account.',
+        });
+        logger.warn(
+          `Rejected invitation of private vendor ${vendor.id} owned by another buyer to RFQ ${rfq.rfqNumber}.`,
+          { rfqNumber: rfq.rfqNumber, vendorId: vendor.id },
+          'STORE_SERVICE'
+        );
+        continue;
+      }
       if (this._isInvitedVendor(vendor, rfq)) continue;
 
       const hasCategory = vendor.majorCategory || (Array.isArray(vendor.minorCategories) && vendor.minorCategories.length > 0);
@@ -2934,7 +2992,12 @@ class StoreService {
     }
 
     if (newlyInvited.length === 0) {
-      return { updatedRFQ: rfq, invitedCount: 0 };
+      return {
+        updatedRFQ: rfq,
+        invitedCount: 0,
+        excludedCount: excludedVendors.length,
+        excludedVendors,
+      };
     }
 
     const entries = newlyInvited.map((v) => ({
@@ -3007,6 +3070,8 @@ class StoreService {
       updatedRFQ,
       invitedCount: newlyInvited.length,
       overrideCount: overrideVendors.length,
+      excludedCount: excludedVendors.length,
+      excludedVendors,
     };
   }
 

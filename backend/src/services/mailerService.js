@@ -813,6 +813,7 @@ function buildRfqInviteEmail(to, context = {}) {
 
   const gatewayEmail = vendorGatewayAddress();
   const buyerCc = cc || buyerEmail || undefined;
+  const requiresPortal = items.length > 10;
 
   const inner = `
     <p>${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}</p>
@@ -849,7 +850,11 @@ function buildRfqInviteEmail(to, context = {}) {
       }
       <h4 style="margin: 0 0 10px 0; color: #1e40af; font-size: 15px; font-weight: 700;">How to Submit Your Quotation</h4>
       <p style="margin: 0 0 10px 0; font-size: 13px; color: #1e293b; line-height: 1.5;">
-        You can submit your bid either by <strong>replying directly to this email at <a href="mailto:${gatewayEmail}" style="color: #0284c7; font-weight: bold;">${gatewayEmail}</a></strong> (keep the subject line intact with RFQ number <strong>#${rfq.rfqNumber}</strong>${buyerCc ? ` and keep buyer CC'd: <strong>${buyerCc}</strong>` : ''}), or online via the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Quotation Portal</a>.
+        ${
+          requiresPortal
+            ? `This RFQ has ${items.length} line items. <strong>Email bids are not accepted for RFQs with more than 10 items.</strong> Submit your bid through the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Vendor Portal</a>: download the RFQ Excel file, enter a unit price for each item, then upload the completed workbook and supporting documents.`
+            : `You can submit your bid either by <strong>replying directly to this email at <a href="mailto:${gatewayEmail}" style="color: #0284c7; font-weight: bold;">${gatewayEmail}</a></strong> (keep the subject line intact with RFQ number <strong>#${rfq.rfqNumber}</strong>${buyerCc ? ` and keep buyer CC'd: <strong>${buyerCc}</strong>` : ''}), or online via the <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="color: #0284c7; font-weight: bold;">Procucev Quotation Portal</a>. Attach your quotation and any supporting documents when submitting by email.`
+        }
       </p>
 
       <p style="margin: 12px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Mandatory Quotation Information Required:</p>
@@ -861,10 +866,14 @@ function buildRfqInviteEmail(to, context = {}) {
         <li><strong>Remarks</strong> — Any inclusions, exclusions, or terms.</li>
       </ul>
 
-      <p style="margin: 14px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Email Reply Format (Copy, Fill & Send):</p>
-      <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #1e293b; white-space: pre-wrap; line-height: 1.4;">${sampleReplyFormat}</div>
-      <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;"><em>Our automated AI Email Gateway will parse your reply and immediately reflect your bid in Enterprise QUA Vendor Comparison.</em></p>
-      ${items.length > 1 ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>For multi-item RFQs, please quote unit price per item in your reply.</em></p>' : ''}
+      ${
+        requiresPortal
+          ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>Make sure every RFQ line item is priced in the downloaded workbook. Include supporting documents with your portal submission.</em></p>'
+          : `<p style="margin: 14px 0 6px 0; font-size: 13px; font-weight: 700; color: #1e293b;">Email Reply Format (Copy, Fill & Send):</p>
+             <div style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; padding: 12px; font-family: monospace; font-size: 12px; color: #1e293b; white-space: pre-wrap; line-height: 1.4;">${sampleReplyFormat}</div>
+             <p style="margin: 8px 0 0 0; font-size: 11px; color: #64748b;"><em>Our automated AI Email Gateway will parse your reply and immediately reflect your bid in Enterprise QUA Vendor Comparison.</em></p>
+             ${items.length > 1 ? '<p style="margin: 8px 0 0 0; font-size: 12px; color: #475569;"><em>For multi-item RFQs, please quote unit price per item in your reply.</em></p>' : ''}`
+      }
     </div>
 
     <div style="margin: 16px 0; padding: 12px 16px; background: #fdf4ff; border: 1px solid #f0abfc; border-radius: 8px; font-size: 12px; color: #701a75;">
@@ -877,7 +886,7 @@ function buildRfqInviteEmail(to, context = {}) {
     </p>
 
     <div style="text-align: center; margin: 24px 0;">
-      <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="background: #0284c7; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px; margin-bottom: 10px;">Submit Quotation in 1-Click</a>
+      <a href="${getPublicFrontendUrl()}/vendor/quotation-form?rfq=${encodeURIComponent(rfq.rfqNumber || '')}" style="background: #0284c7; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 14px; margin-bottom: 10px;">${requiresPortal ? 'Open Portal to Download Excel & Submit Bid' : 'Submit Quotation in 1-Click'}</a>
       <br />
       <a href="${vendorSignInUrl()}" style="color: #0284c7; text-decoration: underline; font-weight: 600; font-size: 13px;">Open in Vendor Web Portal</a>
     </div>

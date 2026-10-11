@@ -603,6 +603,28 @@ describe('mailerService', () => {
       expect(msg.replyTo).toBeTruthy();
     });
 
+    test('allows email submission at ten items but makes larger RFQs portal-only', () => {
+      const lineItems = Array.from({ length: 11 }, (_, index) => ({
+        itemName: `Industrial part ${index + 1}`,
+        quantity: 1,
+        unit: 'pcs',
+      }));
+      const tenItemMessage = mailerService.buildRfqInviteEmail('vendor@example.com', {
+        rfq: { rfqNumber: 'RFQ-2026-01010', extractedEntities: lineItems.slice(0, 10) },
+      });
+      const elevenItemMessage = mailerService.buildRfqInviteEmail('vendor@example.com', {
+        rfq: { rfqNumber: 'RFQ-2026-01011', extractedEntities: lineItems },
+      });
+
+      expect(tenItemMessage.html).toContain('replying directly to this email');
+      expect(tenItemMessage.html).toContain('Email Reply Format (Copy, Fill & Send)');
+      expect(elevenItemMessage.html).toContain('Email bids are not accepted for RFQs with more than 10 items');
+      expect(elevenItemMessage.html).toContain('download the RFQ Excel file');
+      expect(elevenItemMessage.html).toContain('upload the completed workbook and supporting documents');
+      expect(elevenItemMessage.html).not.toContain('Email Reply Format (Copy, Fill & Send)');
+      expect(elevenItemMessage.html).toContain('Open Portal to Download Excel & Submit Bid');
+    });
+
     test('supports fallback to items and single-item quotation reply format', () => {
       const rfqSingle = {
         rfqNumber: 'RFQ-2026-00101',

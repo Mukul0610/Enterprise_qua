@@ -685,6 +685,13 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
     };
   }
 
+  const rfqItems =
+    Array.isArray(targetRfq.extractedEntities) && targetRfq.extractedEntities.length > 0
+      ? targetRfq.extractedEntities
+      : Array.isArray(targetRfq.lineItems)
+        ? targetRfq.lineItems
+        : [];
+  const itemCount = rfqItems.length;
   const extraction = await geminiService.extractQuotationFromEmail(
     {
       bodyText: message.bodyText || message.textBody || message.text,
@@ -695,7 +702,6 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
     targetRfq
   );
 
-  const rfqItems = targetRfq.extractedEntities || targetRfq.lineItems || [];
   const rfqQty = rfqItems.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0) || 1;
 
   const emailText = [message.bodyText, message.textBody, message.text, message.subject].filter(Boolean).join('\n');
@@ -750,6 +756,32 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
     };
   }
 
+  // Email bids are supported only for RFQs that have at most ten items.
+  if (itemCount > 10) {
+    logger.warn(
+      `RFQ ${targetRfq.rfqNumber} has ${itemCount} items (>10 items threshold). Directing vendor ${vendorRecord.name} to Vendor Portal for Excel upload.`,
+      { rfqNumber: targetRfq.rfqNumber, itemCount, vendorEmail: message.fromAddress },
+      'EMAIL_GATEWAY'
+    );
+
+    try {
+      await mailerService.sendComplexRfqPortalRedirectEmail(message.fromAddress, {
+        rfq: targetRfq,
+        vendorName: vendorRecord.name,
+        itemCount,
+      });
+    } catch (mailErr) {
+      logger.error('Failed to send complex RFQ portal redirect email', mailErr, 'EMAIL_GATEWAY');
+    }
+
+    return {
+      status: INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED,
+      detail: `RFQ ${targetRfq.rfqNumber} has ${itemCount} line items (>10 limit for email bidding). Vendor directed to Procucev Portal for Excel template upload.`,
+      message,
+      rfq: targetRfq,
+    };
+  }
+
   let unitPriceNum = Number(extraction.unitPrice);
   if ((!extraction.unitPrice || isNaN(unitPriceNum) || unitPriceNum <= 0) && Number(extraction.totalPrice) > 0) {
     extraction.unitPrice = Math.round(Number(extraction.totalPrice) / rfqQty);
@@ -799,34 +831,6 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
         .replace('{rfqNumber}', targetRfq.rfqNumber)
         .replace('{vendorName}', vendorRecord.name)
         .replace('{reason}', 'Missing mandatory unit price'),
-      message,
-      rfq: targetRfq,
-    };
-  }
-
-  // Requirement 3: Conditional Email & Portal Bidding
-  // For RFQs with >10 items, direct vendors to the portal for Excel-based quotation upload.
-  const itemCount = Array.isArray(targetRfq.extractedEntities) ? targetRfq.extractedEntities.length : 0;
-  if (itemCount > 10) {
-    logger.warn(
-      `RFQ ${targetRfq.rfqNumber} has ${itemCount} items (>10 items threshold). Directing vendor ${vendorRecord.name} to Vendor Portal for Excel upload.`,
-      { rfqNumber: targetRfq.rfqNumber, itemCount, vendorEmail: message.fromAddress },
-      'EMAIL_GATEWAY'
-    );
-
-    try {
-      await mailerService.sendComplexRfqPortalRedirectEmail(message.fromAddress, {
-        rfq: targetRfq,
-        vendorName: vendorRecord.name,
-        itemCount,
-      });
-    } catch (mailErr) {
-      logger.error('Failed to send complex RFQ portal redirect email', mailErr, 'EMAIL_GATEWAY');
-    }
-
-    return {
-      status: INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED,
-      detail: `RFQ ${targetRfq.rfqNumber} has ${itemCount} line items (>10 limit for email bidding). Vendor directed to Procucev Portal for Excel template upload.`,
       message,
       rfq: targetRfq,
     };

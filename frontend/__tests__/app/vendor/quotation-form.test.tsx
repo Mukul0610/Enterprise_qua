@@ -10,6 +10,7 @@ import "@testing-library/jest-dom";
 import QuotationForm from "@/app/vendor/quotation-form";
 import { AppProvider, useApp } from "@/lib/store";
 import { authClient } from "@/lib/authClient";
+import * as XLSX from "xlsx";
 
 const mockRouterPush = jest.fn();
 jest.mock("next/navigation", () => ({
@@ -707,6 +708,24 @@ describe("QuotationForm Comprehensive Suite", () => {
 
     const itemPriceInputs = screen.getAllByLabelText(/Rate for/i);
     expect(itemPriceInputs).toHaveLength(2);
+
+    const worksheet = XLSX.utils.json_to_sheet([
+      { "Item ID": "li-1", Item: "Centrifugal Pump 15HP", "Rate (INR)": 1000 },
+      { "Item ID": "li-2", Item: "Mounting Base Plate", "Rate (INR)": 200 },
+    ]);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, "Priced RFQ");
+    const pricedWorkbook = XLSX.write(workbook, { bookType: "xlsx", type: "array" });
+    const pricedFile = new File([pricedWorkbook], "priced-rfq.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    });
+    const uploadButton = screen.getByRole("button", { name: /Upload Priced Excel/i });
+    const excelInput = uploadButton.parentElement?.querySelector('input[type="file"]');
+    expect(excelInput).not.toBeNull();
+    fireEvent.change(excelInput!, { target: { files: [pricedFile] } });
+    await waitFor(() => expect(itemPriceInputs[0]).toHaveValue(1000));
+    expect(itemPriceInputs[1]).toHaveValue(200);
+
     fireEvent.change(itemPriceInputs[0], { target: { value: "1000" } });
     fireEvent.change(itemPriceInputs[1], { target: { value: "200" } });
 
@@ -738,6 +757,27 @@ describe("QuotationForm Comprehensive Suite", () => {
       { lineItemId: "li-2", itemName: "Mounting Base Plate", quantity: 4, unitPrice: 200, totalPrice: 800 },
     ]);
     expect(body.totalPrice).toBe(2800); // 2000 + 800
+  });
+
+  test("displays small supporting-document sizes in KB instead of rounding them to 0.0 MB", async () => {
+    renderWithProvider(
+      <QuotationFormCustomWrapper onBack={jest.fn()} withSession customSubscription="select" />,
+    );
+
+    const submitBtns = await waitFor(() => {
+      const btns = screen.getAllByRole("button", { name: /Submit Quote$/i });
+      expect(btns.length).toBeGreaterThan(0);
+      return btns;
+    });
+    fireEvent.click(submitBtns[0]);
+
+    const file = new File(["x".repeat(2048)], "supporting-document.pdf", { type: "application/pdf" });
+    const fileInput = screen.getByText(/Bid Documents/i).parentElement?.querySelector('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    fireEvent.change(fileInput!, { target: { files: [file] } });
+
+    expect(screen.getByText("(2.0 KB)")).toBeInTheDocument();
+    expect(screen.queryByText("(0.0 MB)")).not.toBeInTheDocument();
   });
 
   test("shows an error toast and keeps the modal open when quote submission fails", async () => {
@@ -1390,4 +1430,3 @@ describe("QuotationForm Comprehensive Suite", () => {
     }
   });
 });
-

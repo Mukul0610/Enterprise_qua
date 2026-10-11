@@ -1315,6 +1315,43 @@ describe('Store Service & Business Operations', () => {
       expect(assignedIds).toContain(procucevVendor.id);
       expect(assignedIds).not.toContain(privateVendor.id);
     });
+
+    test('mode_2 excludes another buyer private vendors while preserving own and network vendors', () => {
+      const buyer = storeService.addBuyerAccount({
+        organizationName: 'Mode 2 Buyer',
+        corporateEmail: 'mode2-buyer@ex.com',
+      });
+      const ownVendor = storeService.addVendor({
+        name: 'Own Private Vendor',
+        majorCategory: 'Mode 2 Category',
+        buyerId: buyer.id,
+        source: 'buyer_uploaded',
+      });
+      const otherBuyerVendor = storeService.addVendor({
+        name: 'Other Private Vendor',
+        majorCategory: 'Mode 2 Category',
+        buyerId: 'different-buyer',
+        source: 'buyer_uploaded',
+      });
+      const networkVendor = storeService.addVendor({
+        name: 'Network Vendor',
+        majorCategory: 'Mode 2 Category',
+        source: 'procucev_network',
+      });
+
+      const rfq = storeService.createRFQ({
+        title: 'Buyer-private sourcing',
+        category: 'Mode 2 Category',
+        sourcingMode: 'mode_2',
+      }, buyer);
+      const assignedIds = rfq.assignedVendors.map((vendor) => vendor.id);
+
+      expect(assignedIds).toContain(ownVendor.id);
+      expect(assignedIds).toContain(networkVendor.id);
+      expect(assignedIds).not.toContain(otherBuyerVendor.id);
+      expect(storeService.candidateVendorsForRFQ(rfq).map((vendor) => vendor.id))
+        .not.toContain(otherBuyerVendor.id);
+    });
   });
 
   describe('inviteVendorsToRFQ (category manager invite flow)', () => {
@@ -1378,6 +1415,48 @@ describe('Store Service & Business Operations', () => {
       expect(result.invitedCount).toBe(0);
     });
 
+    test('rejects invitations to another buyer private vendor but permits this buyer private vendor', async () => {
+      const buyer = storeService.addBuyerAccount({
+        organizationName: 'Invite Owner Buyer',
+        corporateEmail: 'invite-owner@ex.com',
+      });
+      const rfq = storeService.createRFQ({
+        title: 'Private roster invite',
+        category: 'Private Invite Category',
+        sourcingMode: 'mode_3',
+      }, buyer);
+      const ownVendor = storeService.addVendor({
+        name: 'Owned Private Vendor',
+        email: 'owned-private@ex.com',
+        majorCategory: 'Private Invite Category',
+        buyerId: buyer.id,
+        source: 'buyer_uploaded',
+      });
+      const otherBuyerVendor = storeService.addVendor({
+        name: 'Foreign Private Vendor',
+        email: 'foreign-private@ex.com',
+        majorCategory: 'Private Invite Category',
+        buyerId: 'different-buyer',
+        source: 'buyer_uploaded',
+      });
+
+      const result = await storeService.inviteVendorsToRFQ(
+        rfq.id,
+        [ownVendor.id, otherBuyerVendor.id],
+        'cm@ex.com'
+      );
+
+      expect(result.invitedCount).toBe(1);
+      expect(result.excludedCount).toBe(1);
+      expect(result.excludedVendors).toEqual([
+        expect.objectContaining({ id: otherBuyerVendor.id }),
+      ]);
+      expect(result.updatedRFQ.assignedVendors.map((vendor) => vendor.id)).toContain(ownVendor.id);
+      expect(result.updatedRFQ.assignedVendors.map((vendor) => vendor.id)).not.toContain(otherBuyerVendor.id);
+      expect(inviteEmailSpy).toHaveBeenCalledTimes(1);
+      expect(inviteEmailSpy).toHaveBeenCalledWith(ownVendor.email, expect.any(Object));
+    });
+
     test('invites a vendor: grants access, fires the fake chaser feed, a real notification, a real email, and an audit entry', async () => {
       const vendor = storeService.addVendor({ name: 'Invite Flow Vendor', email: 'inviteflow@ex.com', majorCategory: 'Invite-Flow-Cat' });
       const rfq = storeService.createRFQ({ title: 'Invite Flow RFQ', category: 'Invite-Flow-Cat' , sourcingMode: 'mode_3' });
@@ -1421,7 +1500,10 @@ describe('Store Service & Business Operations', () => {
     test('vendorIds that is not an array is treated as empty — invitedCount 0', async () => {
       const rfq = storeService.createRFQ({ title: 'Non-Array Invite RFQ', category: 'Non-Array-Cat' , sourcingMode: 'mode_3' });
       const result = await storeService.inviteVendorsToRFQ(rfq.id, null, 'cm@ex.com');
-      expect(result).toEqual({ updatedRFQ: rfq, invitedCount: 0 });
+      expect(result.updatedRFQ).toEqual(rfq);
+      expect(result.invitedCount).toBe(0);
+      expect(result.excludedCount).toBe(0);
+      expect(result.excludedVendors).toEqual([]);
     });
 
     test('defaults the audit actor when no actorEmail is given', async () => {

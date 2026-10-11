@@ -113,7 +113,20 @@ function withStoredValue(options: string[], value: string): string[] {
  * For Version 0, Version 2, and Version 3, it displays the actual number of Procucev
  * network vendors associated with that RFQ version based on the backend response.
  */
-export function resolveConfirmationVendorCount(rfq: any): number {
+type ConfirmationVendor = string | {
+  id?: string;
+  name?: string;
+  source?: string;
+  addedByBuyerCompany?: boolean;
+};
+
+interface ConfirmationRFQ {
+  sourcingMode?: string;
+  procucevVendorCount?: number;
+  assignedVendors?: ConfirmationVendor[];
+}
+
+export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | undefined): number {
   if (!rfq) return 0;
   const mode = rfq.sourcingMode;
   const isNetworkMode =
@@ -121,18 +134,21 @@ export function resolveConfirmationVendorCount(rfq: any): number {
     mode === 'mode_2' || mode === 'v2' || mode === 'version_2' ||
     mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
 
-  if (isNetworkMode && typeof rfq.procucevVendorCount === 'number') {
-    return rfq.procucevVendorCount;
-  }
-  if (typeof rfq.procucevVendorCount === 'number') {
-    return rfq.procucevVendorCount;
-  }
+  if (
+    isNetworkMode &&
+    typeof rfq.procucevVendorCount === 'number' &&
+    Number.isFinite(rfq.procucevVendorCount)
+  ) return Math.max(0, rfq.procucevVendorCount);
+
   if (Array.isArray(rfq.assignedVendors)) {
-    if (mode === 'mode_0' || mode === 'v0' || mode === 'version_0') {
-      const pCount = rfq.assignedVendors.filter(isProcucevVendor).length;
-      return pCount > 0 ? pCount : rfq.assignedVendors.length;
+    if (isNetworkMode) {
+      return rfq.assignedVendors.filter((vendor) =>
+        isProcucevVendor(typeof vendor === 'string' ? { id: vendor } : vendor)
+      ).length;
     }
-    return rfq.assignedVendors.length;
+    if (mode === 'mode_1' || mode === 'v1' || mode === 'version_1') {
+      return rfq.assignedVendors.length;
+    }
   }
   return 0;
 }

@@ -1130,6 +1130,13 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       // Version 0: Procucev network vendors
       expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_0', procucevVendorCount: 7 })).toBe(7);
       expect(resolveConfirmationVendorCount({ sourcingMode: 'v0', procucevVendorCount: 4 })).toBe(4);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          procucevVendorCount: 0,
+          assignedVendors: [{ id: 'pv-existing', source: 'procucev_network' }],
+        })
+      ).toBe(0);
 
       // Version 2: Hybrid sourcing plan Procucev network vendors
       expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_2', procucevVendorCount: 15 })).toBe(15);
@@ -1147,7 +1154,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
         })
       ).toBe(2);
 
-      // Fallback for Version 0 when procucevVendorCount not explicit: filters Procucev vendors
+      // Fallback for network sourcing modes filters out buyer-owned vendors.
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_0',
@@ -1158,6 +1165,28 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
           ],
         })
       ).toBe(2);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_2',
+          assignedVendors: [
+            { id: 'pv-3', source: 'procucev_network' },
+            { id: 'v-buyer-2', source: 'buyer_uploaded' },
+          ],
+        })
+      ).toBe(1);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_3',
+          assignedVendors: [{ id: 'v-buyer-3', source: 'buyer_uploaded' }],
+        })
+      ).toBe(0);
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_1',
+          procucevVendorCount: 99,
+          assignedVendors: [{ id: 'pv-private-1' }],
+        })
+      ).toBe(1);
 
       // Null, empty, or missing rfq returns 0
       expect(resolveConfirmationVendorCount(null)).toBe(0);
@@ -1246,6 +1275,43 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       const countEl = screen.getByTestId('confirmation-vendor-count');
       expect(countEl).toHaveTextContent('3');
       expect(screen.queryByText('1+ Supplier')).not.toBeInTheDocument();
+    });
+
+    it('displays the backend vendor count for Version 2 on the submitted RFQ', async () => {
+      mockCreateRFQ.mockResolvedValueOnce({
+        success: true,
+        rfq: {
+          ...mockCreatedRFQ(),
+          sourcingMode: 'mode_2',
+          procucevVendorCount: 11,
+        },
+      });
+
+      renderWizard();
+
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder), {
+        target: { value: 'Navi Mumbai Plant' },
+      });
+      fireEvent.change(screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder), {
+        target: { value: '400701' },
+      });
+
+      const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.itemPlaceholder), {
+        target: { value: 'Precision Industrial Valve' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), {
+        target: { value: '8' },
+      });
+      fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), {
+        target: { value: 'Nos' },
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+      await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
+      expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
+      expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('11');
     });
   });
 
