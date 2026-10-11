@@ -458,6 +458,10 @@ async function changePassword({ userUuid, email, currentPassword, newPassword, i
     throw new Error(AUTH_MESSAGES.CHANGE_PASSWORD_WRITE_FAILED);
   }
 
+  if (user.role === 'vendor') {
+    storeService.updateVendor(user.email, { tempPassword: null });
+  }
+
   logger.audit(`Password changed for ${user.email}`, user.email, { role: user.role, ipAddress });
   storeService.addAuditLog({
     userEmail: user.email,

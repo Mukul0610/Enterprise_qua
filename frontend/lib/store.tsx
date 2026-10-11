@@ -1446,12 +1446,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return revisionRecord;
   };
 
-  // Buyer Vendor Management — a buyer adding one vendor they deal with
-  // directly. Persists through the real POST /api/vendors endpoint (buyer
-  // role, server-scoped to the buyer's own account); state is only updated
-  // once the backend confirms the write, and nothing here claims an email
-  // was sent, since this endpoint never sends one (unlike the category
-  // manager's bulk-import path, which does dispatch a real onboarding email).
+  // Buyer Vendor Management — persists the vendor and waits for backend
+  // onboarding so the success message accurately reflects credential delivery.
   const addBuyerVendor = async (vendor: Omit<VendorEntry, 'id'>): Promise<VendorEntry | null> => {
     let res: Response;
     try {
@@ -1469,7 +1465,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
 
-    let body: { success?: boolean; data?: VendorEntry; error?: string } = {};
+    let body: { success?: boolean; data?: VendorEntry; error?: string; warning?: string } = {};
     try {
       body = await res.json();
     } catch {
@@ -1496,7 +1492,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       newV.name
     );
     addAuditLog(`Added vendor ${newV.name} (${newV.email})`);
-    showToast('Vendor Added', `${newV.name} has been added to your vendor directory.`, 'success');
+    if (newV.onboardingEmailStatus === 'failed') {
+      showToast(
+        'Vendor Added — Credentials Email Failed',
+        body.warning || 'The vendor was added, but their login credentials could not be delivered. Please contact support to resend the invitation.',
+        'warning'
+      );
+    } else if (newV.onboardingEmailStatus === 'account_exists') {
+      showToast('Vendor Added', `${newV.name} already has a Procucev login; no new credentials were sent.`, 'success');
+    } else {
+      showToast(
+        'Vendor Added',
+        `${newV.name} was added. Login credentials were sent to ${newV.email} with instructions to change the temporary password at first login.`,
+        'success'
+      );
+    }
 
     return newV;
   };

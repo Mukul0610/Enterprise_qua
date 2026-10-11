@@ -1666,15 +1666,16 @@ function buildVendorSelfMappingEmail({ to, recipientName, buyerOrganizationName,
 /** Template C — a plain onboarding notice, with no category claim either way. */
 function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, vendorCode, tempPassword, contactPhone }) {
   const buyer = buyerOrganizationName || 'A buyer on Procucev';
+  const signInUrl = escapeHtml(vendorSignInUrl());
 
   const inner = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
       <p style="font-size: 16px; color: #1e293b; margin-bottom: 20px;">
-        ${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}
+        ${recipientName ? `Dear <strong>${escapeHtml(recipientName)}</strong>,` : 'Hello,'}
       </p>
       
       <p style="font-size: 15px; color: #334155; margin-bottom: 20px; line-height: 1.6;">
-        <strong>${buyer}</strong> has registered your organisation on <strong>Procucev Enterprise</strong>, the platform they use to run sourcing enquiries and manage supplier relationships.
+        <strong>${escapeHtml(buyer)}</strong> has registered your organisation on <strong>Procucev Enterprise</strong>, the platform they use to run sourcing enquiries and manage supplier relationships.
       </p>
       
       <div style="background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 100%); border: 1px solid #bae6fd; border-radius: 12px; padding: 24px; margin: 24px 0;">
@@ -1682,15 +1683,19 @@ function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, 
         <table style="width: 100%; border-collapse: collapse;">
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Email Address</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${to}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(to)}</td>
           </tr>
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Temporary Password</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; background: #fff; padding: 8px 12px; border-radius: 4px; border: 1px solid #cbd5e1;">${tempPassword || 'Set during first login'}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600; background: #fff; padding: 8px 12px; border-radius: 4px; border: 1px solid #cbd5e1;">${escapeHtml(tempPassword || 'Set during first login')}</td>
+          </tr>
+          <tr>
+            <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Login URL</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${signInUrl}</td>
           </tr>
           <tr>
             <td style="padding: 12px 0; color: #64748b; font-size: 13px; font-weight: 600;">Vendor Code</td>
-            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${vendorCode}</td>
+            <td style="padding: 12px 0; color: #0f172a; font-size: 14px; font-weight: 600;">${escapeHtml(vendorCode)}</td>
           </tr>
           ${contactPhone ? `
           <tr>
@@ -1702,16 +1707,16 @@ function buildVendorOnboardingEmail({ to, recipientName, buyerOrganizationName, 
       </div>
       
       <p style="font-size: 15px; color: #334155; margin-bottom: 20px; line-height: 1.6;">
-        Please sign in to review your profile, confirm your supply categories, and start receiving sourcing enquiries from <strong>${buyer}</strong>.
+        Sign in at the URL above using the email address and temporary password provided. On your first login, you must change the temporary password before the vendor dashboard or any other protected page becomes available.
       </p>
       
       <p style="margin: 28px 0;">
-        <a href="${vendorSignInUrl()}" style="background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3);">Sign in to Procucev Portal</a>
+        <a href="${signInUrl}" style="background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%); color: #ffffff; padding: 14px 28px; border-radius: 8px; text-decoration: none; font-weight: bold; display: inline-block; font-size: 15px; box-shadow: 0 4px 6px -1px rgba(2, 132, 199, 0.3);">Sign in to Procucev Portal</a>
       </p>
       
       <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 16px; margin: 24px 0; border-radius: 4px;">
         <p style="font-size: 13px; color: #92400e; margin: 0; line-height: 1.5;">
-          <strong>🔐 Security Notice:</strong> For your security, please change your temporary password after your first login. Your password should be at least 8 characters with a mix of letters, numbers, and special characters.
+          <strong>Security Notice:</strong> Your temporary password is for first-time access only. You will be redirected to the Change Password screen after signing in and must choose a new password before continuing. Your password should be at least 8 characters.
         </p>
       </div>
       

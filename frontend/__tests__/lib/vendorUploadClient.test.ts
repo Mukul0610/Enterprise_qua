@@ -309,6 +309,7 @@ describe('vendorUploadClient', () => {
             missingEmail: 0,
             duplicates: 0,
             failed: 0,
+            onboardingFailed: 0,
             results: [{ rowNumber: 1, status: 'imported' }, { rowNumber: 2, status: 'imported' }],
           },
         }),
@@ -324,6 +325,7 @@ describe('vendorUploadClient', () => {
         missingEmail: 0,
         duplicates: 0,
         failed: 0,
+        onboardingFailed: 0,
         results: [{ rowNumber: 1, status: 'imported' }, { rowNumber: 2, status: 'imported' }],
       });
       expect(onProgress).toHaveBeenCalledTimes(1);
@@ -333,7 +335,7 @@ describe('vendorUploadClient', () => {
       expect(JSON.parse(options.body).vendors).toHaveLength(2);
     });
 
-    test('splits more than 1000 rows into multiple chunk requests', async () => {
+    test('splits uploads into bounded chunks that the backend can provision synchronously', async () => {
       global.fetch = jest.fn().mockImplementation(async (_url, options) => {
         const sent = JSON.parse(options.body).vendors;
         return {
@@ -348,7 +350,7 @@ describe('vendorUploadClient', () => {
       const rows = Array.from({ length: 2250 }, (_, i) => makeRow(i + 1, `row${i}@example.com`));
       const result = await bulkImportVendorRows(rows);
 
-      expect(global.fetch).toHaveBeenCalledTimes(3); // 1000 + 1000 + 250
+      expect(global.fetch).toHaveBeenCalledTimes(150); // 15 vendors per request
       expect(result.total).toBe(2250);
       expect(result.imported).toBe(2250);
     });
@@ -420,7 +422,16 @@ describe('vendorUploadClient', () => {
     test('an empty row list resolves immediately with all-zero totals', async () => {
       global.fetch = jest.fn();
       const result = await bulkImportVendorRows([]);
-      expect(result).toEqual({ sessionId: undefined, total: 0, imported: 0, missingEmail: 0, duplicates: 0, failed: 0, results: [] });
+      expect(result).toEqual({
+        sessionId: undefined,
+        total: 0,
+        imported: 0,
+        missingEmail: 0,
+        duplicates: 0,
+        failed: 0,
+        onboardingFailed: 0,
+        results: [],
+      });
       expect(global.fetch).not.toHaveBeenCalled();
     });
   });

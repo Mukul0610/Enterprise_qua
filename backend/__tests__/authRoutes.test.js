@@ -6,6 +6,7 @@ const authSessionQueries = require('../src/db/authSessionQueries');
 const dbPool = require('../src/db/pool');
 const identityQueries = require('../src/db/identityQueries');
 const mailerService = require('../src/services/mailerService');
+const storeService = require('../src/services/storeService');
 const {
   AUTH_MESSAGES,
   INDIAN_MOBILE_MESSAGE,
@@ -1208,6 +1209,18 @@ describe('Changing your own password', () => {
         NEXT,
         'buyer@procucev.com'
       );
+    });
+
+    test('clears the stored vendor temporary password after a successful password change', async () => {
+      const email = 'first-login-vendor@procucev.com';
+      identityQueries.findUserByEmail.mockResolvedValue(
+        signedInBuyer({ role: 'vendor', email, id: UUID })
+      );
+      const updateVendorSpy = jest.spyOn(storeService, 'updateVendor');
+
+      await call({ email });
+
+      expect(updateVendorSpy).toHaveBeenCalledWith(email, { tempPassword: null });
     });
 
     test.each([

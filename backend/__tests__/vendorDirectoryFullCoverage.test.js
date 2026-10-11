@@ -656,7 +656,12 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
       const res = mockRes();
       const next = jest.fn();
 
-      jest.spyOn(storeService, 'getVendorById').mockReturnValue({ id: 'v1', email: 'vendor@test.com' });
+      jest.spyOn(storeService, 'getVendorById').mockReturnValue({
+        id: 'v1',
+        email: 'vendor@test.com',
+        buyerId: 'buyer-1',
+        tempPassword: 'temporary-pass',
+      });
 
       // Non-owner updating categories -> 403
       await vendorController.updateCategories(
@@ -688,7 +693,7 @@ describe('Vendor Directory, Buyer Isolation & Full Unit Coverage Suite', () => {
       // generateOnboardingEmailPreview: buyer success
       const resEmailBuyer = mockRes();
       await vendorController.generateOnboardingEmailPreview(
-        { user: { role: 'buyer' }, params: { id: 'v1' } },
+        { user: { role: 'buyer', sub: 'buyer-1' }, params: { id: 'v1' } },
         resEmailBuyer,
         next
       );

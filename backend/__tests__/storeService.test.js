@@ -109,7 +109,8 @@ describe('Store Service & Business Operations', () => {
     // controller, now awaits provisionVendorOnboarding explicitly after
     // addVendor returns. These tests call it the same way.
     test('addVendor starts onboardingEmailStatus pending; provisionVendorOnboarding sends a real invite', async () => {
-      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({});
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({ created: true });
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: true });
 
       try {
@@ -128,10 +129,12 @@ describe('Store Service & Business Operations', () => {
           fullName: 'Priya',
           organizationName: 'Invited By Buyer Co',
           createdBy: 'buyer@example.com',
+          resetExisting: false,
         }));
         expect(sendSpy).toHaveBeenCalled();
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('sent');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
@@ -155,9 +158,7 @@ describe('Store Service & Business Operations', () => {
         expect(findSpy).toHaveBeenCalledWith('already-has-login@example.com');
         expect(identitySpy).not.toHaveBeenCalled();
         expect(sendSpy).not.toHaveBeenCalled();
-        // Left exactly as addVendor's own default set it — never touched
-        // again by the (skipped) onboarding path.
-        expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('pending');
+        expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('account_exists');
       } finally {
         findSpy.mockRestore();
         identitySpy.mockRestore();
@@ -166,7 +167,8 @@ describe('Store Service & Business Operations', () => {
     });
 
     test('provisionVendorOnboarding marks the invite failed (not silently pending) when the onboarding email fails to send', async () => {
-      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({});
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({ created: true });
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: false, reason: 'SMTP down' });
 
       try {
@@ -175,12 +177,14 @@ describe('Store Service & Business Operations', () => {
 
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('failed');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
     });
 
     test('provisionVendorOnboarding never sends the onboarding email if the identity account could not be created after retrying (no broken credentials mailed out)', async () => {
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
       const identitySpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockRejectedValue(new Error('ETIMEDOUT'));
       const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: true });
 
@@ -192,6 +196,7 @@ describe('Store Service & Business Operations', () => {
         expect(sendSpy).not.toHaveBeenCalled();
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('failed');
       } finally {
+        findSpy.mockRestore();
         identitySpy.mockRestore();
         sendSpy.mockRestore();
       }
@@ -2420,4 +2425,3 @@ describe('demo RFQ seeding', () => {
     });
   });
 });
-

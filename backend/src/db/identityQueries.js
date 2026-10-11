@@ -733,6 +733,7 @@ async function insertVendorAccount({
   fullName,
   organizationName,
   createdBy = 'vendor-ingestion',
+  resetExisting = true,
 }) {
   if (!pool.hasStorage()) {
     throw new Error(pool.NOT_CONFIGURED_MESSAGE);
@@ -748,7 +749,7 @@ async function insertVendorAccount({
 
   const existing = await findUserByEmail(normalizedEmail);
   if (existing) {
-    if (password) {
+    if (password && resetExisting) {
       await pool.query(
         'update "user" set password = $1, reset_password = true, last_modified_by = $2, last_modified_ts = now() where uuid = $3',
         [password, createdBy, String(existing.id)],
@@ -770,7 +771,11 @@ async function insertVendorAccount({
         );
       }
     }
-    return { created: false, reason: 'ALREADY_EXISTS', user: { ...existing, mobile: normalizedPhone, password } };
+    return {
+      created: false,
+      reason: 'ALREADY_EXISTS',
+      user: resetExisting ? { ...existing, mobile: normalizedPhone, password } : existing,
+    };
   }
 
   const [roleUuid, orgTypeUuid, statusUuid] = await Promise.all([

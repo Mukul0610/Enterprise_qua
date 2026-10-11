@@ -910,6 +910,9 @@ describe('mailerService', () => {
       expect(email.to).toBe('onboard@test.com');
       expect(email.subject).toContain('Welcome to Procucev');
       expect(email.html).toContain('SecretPassword123');
+      expect(email.html).toContain('Login URL');
+      expect(email.html).toContain('/login');
+      expect(email.html).toContain('must change the temporary password');
       expect(email.html).toContain('Mobile Number');
       expect(email.html).toContain('+919876543210');
 

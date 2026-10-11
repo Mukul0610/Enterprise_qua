@@ -273,7 +273,7 @@ describe('VendorUploadModal', () => {
     );
     await screen.findByText('Importing vendors…');
     expect(
-      screen.getByText('1 of 2 processed — 1 imported (0 missing email), 0 duplicate, 0 failed')
+      screen.getByText('1 of 2 processed — 1 imported (0 missing email), 0 duplicate, 0 failed, 0 credential email(s) failed')
     ).toBeInTheDocument();
 
     resolveImport({

@@ -114,6 +114,12 @@ function pickVendorBuyerCreateFields(body) {
 const MAX_VENDOR_PAGE_SIZE = 200;
 const DEFAULT_VENDOR_PAGE_SIZE = 50;
 
+function withoutTemporaryPassword(vendor) {
+  if (!vendor || typeof vendor !== 'object') return vendor;
+  const { tempPassword: _temporaryPassword, ...safeVendor } = vendor;
+  return safeVendor;
+}
+
 async function getVendors(req, res, next) {
   try {
     const user = req.user;
@@ -160,7 +166,7 @@ async function getVendors(req, res, next) {
       return res.json({
         success: true,
         source: 'persisted',
-        data: rows,
+        data: rows.map(withoutTemporaryPassword),
         pagination: { page: pageNumber, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
       });
     }
@@ -189,12 +195,16 @@ async function getVendors(req, res, next) {
       return res.json({
         success: true,
         source: storeService.isHydratedFromDB ? 'persisted' : 'in_memory',
-        data: pageData,
+        data: pageData.map(withoutTemporaryPassword),
         pagination: { page: pageNumber, pageSize, total, totalPages: Math.max(1, Math.ceil(total / pageSize)) },
       });
     }
 
-    res.json({ success: true, source: storeService.isHydratedFromDB ? 'persisted' : 'in_memory', data: vendors });
+    res.json({
+      success: true,
+      source: storeService.isHydratedFromDB ? 'persisted' : 'in_memory',
+      data: vendors.map(withoutTemporaryPassword),
+    });
   } catch (err) {
     logger.error('Error fetching vendors', err, 'VENDOR_CONTROLLER');
     next(err);
@@ -235,7 +245,11 @@ async function getVendorById(req, res, next) {
       logger.warn(`Vendor not found: ${id}`, { id }, 'VENDOR_CONTROLLER');
       return res.status(404).json({ success: false, error: `Vendor with ID ${id} not found.` });
     }
-    res.json({ success: true, source: storeService.isHydratedFromDB ? 'persisted' : 'in_memory', data: vendor });
+    res.json({
+      success: true,
+      source: storeService.isHydratedFromDB ? 'persisted' : 'in_memory',
+      data: withoutTemporaryPassword(vendor),
+    });
   } catch (err) {
     logger.error(`Error fetching vendor ${req.params.id}`, err, 'VENDOR_CONTROLLER');
     next(err);
@@ -314,10 +328,16 @@ async function createVendor(req, res, next) {
     // at all, with nothing surfacing the failure anywhere. This makes the
     // provisioning outcome — success or failure — reflected in `created`
     // before the response is sent.
-    if (created.email) {
-      await storeService.provisionVendorOnboarding(created, req.user && req.user.email);
-    }
-    res.status(201).json({ success: true, data: storeService.getVendorById(created.id, 'all') || created });
+    const onboarding = created.email
+      ? await storeService.provisionVendorOnboarding(created, req.user && req.user.email)
+      : null;
+    const persistedVendor = storeService.getVendorById(created.id, 'all') || created;
+    const vendor = withoutTemporaryPassword(persistedVendor);
+    res.status(201).json({
+      success: true,
+      data: vendor,
+      ...(onboarding?.error ? { warning: onboarding.error } : {}),
+    });
   } catch (err) {
     logger.error('Error creating vendor', err, 'VENDOR_CONTROLLER');
     next(err);
@@ -338,7 +358,7 @@ async function updateVendor(req, res, next) {
     const updates = req.user.role === 'vendor' ? pickVendorSelfEditFields(req.body) : req.body;
     logger.info(`Updating vendor ${id}`, { id, updates }, 'VENDOR_CONTROLLER');
     const updated = storeService.updateVendor(existing.id, updates);
-    res.json({ success: true, data: updated });
+    res.json({ success: true, data: withoutTemporaryPassword(updated) });
   } catch (err) {
     logger.error(`Error updating vendor ${req.params.id}`, err, 'VENDOR_CONTROLLER');
     next(err);
@@ -423,13 +443,16 @@ async function reviseRating(req, res, next) {
   }
 }
 
-function generateOnboardingEmailPreview(req, res, next) {
+async function generateOnboardingEmailPreview(req, res, next) {
   try {
     const { id } = req.params;
     // This preview includes the vendor's real tempPassword — was reachable by
     // anyone who knew a vendor's email, no auth at all. Only the buyer-side
     // roles that actually onboard vendors (or an admin) should see it; a
     // vendor's own temp password isn't something they need via this route.
+    if (!req.user) {
+      return res.status(401).json({ success: false, error: 'Authentication required.' });
+    }
     if (!['buyer', 'category_manager', 'admin'].includes(req.user.role)) {
       return res.status(403).json({ success: false, error: 'You do not have permission to view vendor onboarding credentials.' });
     }
@@ -439,6 +462,7 @@ function generateOnboardingEmailPreview(req, res, next) {
       logger.warn(`Vendor not found for onboarding email: ${id}`, { id }, 'VENDOR_CONTROLLER');
       return res.status(404).json({ success: false, error: `Vendor with ID ${id} not found.` });
     }
+    if (req.user.role === 'buyer' && !(await assertVendorOwnership(req, res, vendor))) return;
     const emailPayload = generateVendorOnboardingEmail(vendor, vendor.isExistingInDatabase, vendor.tempPassword);
     res.json({ success: true, data: emailPayload });
   } catch (err) {
@@ -637,7 +661,7 @@ async function updateCategories(req, res, next) {
 // `bulkInsertVendorsInDB` is one batched multi-row INSERT per chunk, not one
 // query per row, so this cap exists to bound request/response payload size
 // and memory, not to bound database round trips.
-const MAX_BULK_IMPORT_ROWS_PER_REQUEST = 2000;
+const MAX_BULK_IMPORT_ROWS_PER_REQUEST = 15;
 
 async function bulkImportVendors(req, res, next) {
   try {
@@ -725,6 +749,10 @@ async function bulkImportVendors(req, res, next) {
         : { results: [], importedCount: 0, duplicateCount: 0, missingEmailCount: 0 };
 
     const allResults = importResults.sort((a, b) => a.rowNumber - b.rowNumber);
+    const publicResults = allResults.map((result) => {
+      if (!result.vendor) return result;
+      return { ...result, vendor: withoutTemporaryPassword(result.vendor) };
+    });
     const issuesCount = allResults.filter((r) => r.hasIssues).length;
 
     const updatedSession = await domainQueries.incrementBulkImportSessionInDB(sessionId, {
@@ -745,7 +773,8 @@ async function bulkImportVendors(req, res, next) {
         duplicates: duplicateCount,
         issues: issuesCount,
         failed: 0,
-        results: allResults,
+        onboardingFailed: allResults.filter((r) => r.onboardingEmailStatus === 'failed').length,
+        results: publicResults,
         session: updatedSession || session,
       },
     });

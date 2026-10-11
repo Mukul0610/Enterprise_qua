@@ -891,7 +891,7 @@ export interface VendorEntry {
 
   // Database Availability & Onboarding Credentials
   isExistingInDatabase?: boolean;
-  onboardingEmailStatus?: 'sent' | 'pending' | 'delivered';
+  onboardingEmailStatus?: 'sent' | 'pending' | 'delivered' | 'failed' | 'account_exists';
   onboardingEmailDispatchedAt?: string;
   tempPassword?: string;
   firstLoginCompleted?: boolean;
@@ -988,6 +988,8 @@ export interface VendorUploadRowResult {
   errors?: string[];
   reason?: string;
   missingEmail?: boolean;
+  onboardingEmailStatus?: VendorEntry['onboardingEmailStatus'];
+  onboardingError?: string;
 }
 
 /** Aggregate response from one bulk-import chunk request. */
@@ -1000,6 +1002,7 @@ export interface VendorUploadImportResponse {
   missingEmail: number;
   duplicates: number;
   failed: number;
+  onboardingFailed?: number;
   results: VendorUploadRowResult[];
 }
 

@@ -235,7 +235,7 @@ export function downloadVendorUploadTemplate(): void {
 // 1000 rows/chunk against a batched multi-row INSERT (never one query per
 // row server-side) cuts a 634k-row upload down to ~635 requests instead of
 // ~3,200 at the old 200/chunk size.
-const BULK_IMPORT_CHUNK_SIZE = 1000;
+const BULK_IMPORT_CHUNK_SIZE = 15;
 
 /**
  * Sends only the already-valid rows to the backend, in bounded chunks —
@@ -262,6 +262,7 @@ export async function bulkImportVendorRows(
     missingEmail: 0,
     duplicates: 0,
     failed: 0,
+    onboardingFailed: 0,
     results: [],
   };
 
@@ -319,6 +320,7 @@ export async function bulkImportVendorRows(
       aggregate.missingEmail += body.data.missingEmail || 0;
       aggregate.duplicates += body.data.duplicates;
       aggregate.failed += body.data.failed;
+      aggregate.onboardingFailed = (aggregate.onboardingFailed || 0) + (body.data.onboardingFailed || 0);
       aggregate.results.push(...body.data.results);
     }
 

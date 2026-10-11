@@ -7,6 +7,7 @@ const {
   resolveBuyerSourcingMode,
   VENDOR_FREE_CREDITS_LIMIT,
 } = require('../config/constants');
+const crypto = require('crypto');
 const pool = require('../db/pool');
 const domainQueries = require('../db/domainQueries');
 const identityQueries = require('../db/identityQueries');
@@ -182,7 +183,7 @@ class StoreService {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%';
     let password = '';
     for (let i = 0; i < 12; i++) {
-      password += chars.charAt(Math.floor(Math.random() * chars.length));
+      password += chars.charAt(crypto.randomInt(chars.length));
     }
     return password;
   }
@@ -631,14 +632,25 @@ class StoreService {
     // *profile* being created is not the same event as a vendor *identity*
     // being created — this only provisions identity/sends onboarding
     // credentials when there is genuinely no identity account yet.
-    const existingIdentity = await identityQueries.findUserByEmail(vendor.email).catch(() => null);
+    let existingIdentity;
+    try {
+      existingIdentity = await identityQueries.findUserByEmail(vendor.email);
+    } catch (err) {
+      logger.error(`Could not verify identity for vendor ${vendor.email}`, err, 'STORE_SERVICE');
+      this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
+      return {
+        status: 'failed',
+        error: 'The vendor was added, but their login could not be verified. Please contact support to resend the invitation.',
+      };
+    }
     if (existingIdentity) {
       logger.info(
         `Skipped onboarding identity provisioning for ${vendor.email}: an identity account already exists`,
         { vendorId: vendor.id },
         'STORE_SERVICE'
       );
-      return;
+      this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
+      return { status: 'account_exists' };
     }
 
     const tempPassword = this._generateTempPassword();
@@ -647,15 +659,20 @@ class StoreService {
     for (let attempt = 1; attempt <= 2 && !identityCreated; attempt += 1) {
       try {
         // eslint-disable-next-line no-await-in-loop
-        await identityQueries.insertVendorAccount({
+        const result = await identityQueries.insertVendorAccount({
           email: vendor.email,
           password: tempPassword,
           phone: vendor.phone || null,
           fullName: vendor.contactPerson || vendor.name,
           organizationName: vendor.name,
           createdBy: actorEmail || 'buyer-manual-add',
+          resetExisting: false,
         });
-        identityCreated = true;
+        identityCreated = result.created === true;
+        if (!identityCreated) {
+          this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
+          return { status: 'account_exists' };
+        }
       } catch (err) {
         logger.error(
           `Failed to create vendor identity account for ${vendor.email} (attempt ${attempt}/2)`,
@@ -667,9 +684,13 @@ class StoreService {
 
     if (!identityCreated) {
       this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
-      return;
+      return {
+        status: 'failed',
+        error: 'The vendor was added, but their login account could not be created. Please contact support to resend the invitation.',
+      };
     }
 
+    this.updateVendor(vendor.id, { tempPassword });
     const emailPayload = mailerService.buildVendorOnboardingEmail({
       to: vendor.email,
       recipientName: vendor.contactPerson || vendor.name,
@@ -684,13 +705,22 @@ class StoreService {
       if (delivery.sent) {
         this.updateVendor(vendor.id, { onboardingEmailStatus: 'sent', tempPassword });
         logger.info(`Onboarding email sent to ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
+        return { status: 'sent' };
       } else {
         this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
         logger.warn(`Failed to send onboarding email to ${vendor.email}`, { reason: delivery.reason }, 'STORE_SERVICE');
+        return {
+          status: 'failed',
+          error: 'The vendor account was created, but the credentials email could not be delivered. Please contact support to resend the invitation.',
+        };
       }
     } catch (err) {
       this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
       logger.error(`Error sending onboarding email to ${vendor.email}`, err, 'STORE_SERVICE');
+      return {
+        status: 'failed',
+        error: 'The vendor account was created, but the credentials email could not be delivered. Please contact support to resend the invitation.',
+      };
     }
   }
 
@@ -816,29 +846,25 @@ class StoreService {
     // requests by single Worker invocation"), confirmed live.
     const existingUsernames = await identityQueries
       .findExistingUsernames(insertedEmails.filter(Boolean))
-      .catch(() => new Set());
+      .catch((err) => {
+        logger.error('Failed to batch-check vendor identities before bulk onboarding', err, 'STORE_SERVICE');
+        return new Set();
+      });
 
     // insertVendorAccount itself makes several sequential subrequests per
     // call (role/org-type/status resolution + an org lookup + the insert),
     // so firing it for every new row in a large chunk hits the same
     // per-invocation subrequest cap the insert/lookup batching above just
     // fixed — a 1000-new-row chunk alone would need ~5000 more subrequests.
-    // Capped rather than removed: a typical CM/buyer upload chunk (a
-    // realistic mix of duplicates/existing-in-DB rows, not 1000 all-new
-    // synthetic emails) stays exactly as responsive as before for the
-    // common case; only the excess beyond this cap is deferred, left
-    // 'pending' (already the row's default), for a follow-up onboarding
-    // pass rather than crashing the whole request.
-    const MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT = 15;
-    let provisionedThisImport = 0;
-
+    // The controller caps each request at 15 rows, bounding identity
+    // provisioning to a safe number of sequential database operations.
     for (const { rowNumber, vendor } of toInsert) {
       // A null-email row can never hit the ON CONFLICT (email) target, so it
       // always inserts — there is nothing to look up in insertedEmailSet.
       const persisted = !vendor.email || insertedEmailSet.has(vendor.email.toLowerCase());
       if (persisted) {
         this.vendors.unshift(vendor);
-        results.push({
+        const importedResult = {
           rowNumber,
           status: 'imported',
           email: vendor.email,
@@ -846,7 +872,8 @@ class StoreService {
           hasIssues: vendor.hasIssues,
           issues: vendor.issues,
           vendor,
-        });
+        };
+        results.push(importedResult);
 
         if (vendor.email && existingUsernames.has(vendor.email.toLowerCase())) {
           // Same real bug as _provisionVendorOnboarding's comment describes:
@@ -859,52 +886,24 @@ class StoreService {
             { vendorId: vendor.id },
             'STORE_SERVICE'
           );
-        } else if (vendor.email && provisionedThisImport < MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT) {
-          provisionedThisImport += 1;
-          const tempPassword = this._generateTempPassword();
-          // Both handed to waitUntil (via _background) — bare fire-and-forget
-          // here meant Workers could cancel either before it actually ran,
-          // same bug confirmed live in addVendor's own onboarding call (see
-          // that comment). A bulk-imported vendor with no identity account
-          // and no onboarding email is a vendor with no way to ever log in.
-          this._background(
-            identityQueries.insertVendorAccount({
-              email: vendor.email,
-              password: tempPassword,
-              phone: vendor.phone || null,
-              fullName: vendor.contactPerson || vendor.name,
-              organizationName: vendor.name,
-              createdBy: 'vendor-bulk-import',
-            }),
-            `Failed to create vendor identity account for ${vendor.email}`
-          );
-
-          const emailPayload = mailerService.buildVendorOnboardingEmail({
-            to: vendor.email,
-            recipientName: vendor.contactPerson || vendor.name,
-            buyerOrganizationName: 'Procucev Enterprise',
-            vendorCode: vendor.id,
-            tempPassword,
-            contactPhone: vendor.phone,
-          });
-
-          this._background(
-            mailerService.sendVendorIngestionEmail(emailPayload, 'onboarding').then((delivery) => {
-              if (delivery.sent) {
-                this.updateVendor(vendor.id, { onboardingEmailStatus: 'sent', tempPassword });
-                logger.info(`Onboarding email sent to ${vendor.email}`, { vendorId: vendor.id }, 'STORE_SERVICE');
-              } else {
-                logger.warn(`Failed to send onboarding email to ${vendor.email}`, { reason: delivery.reason }, 'STORE_SERVICE');
-              }
-            }),
-            `Error sending onboarding email to ${vendor.email}`
-          );
+          this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
         } else if (vendor.email) {
-          logger.info(
-            `Deferred onboarding provisioning for ${vendor.email}: synchronous cap (${MAX_SYNCHRONOUS_ONBOARDING_PER_IMPORT}) reached for this import`,
-            { vendorId: vendor.id },
-            'STORE_SERVICE'
-          );
+          try {
+            const onboarding = await this.provisionVendorOnboarding(vendor, 'vendor-bulk-import');
+            importedResult.onboardingEmailStatus = onboarding?.status || 'failed';
+            if (onboarding?.error) importedResult.onboardingError = onboarding.error;
+          } catch (err) {
+            logger.error(`Failed to provision login for bulk-imported vendor ${vendor.email}`, err, 'STORE_SERVICE');
+            this.updateVendor(vendor.id, { onboardingEmailStatus: 'failed' });
+            importedResult.onboardingEmailStatus = 'failed';
+            importedResult.onboardingError =
+              'The vendor was added, but their login could not be set up. Please contact support to resend the invitation.';
+          }
+        }
+
+        importedResult.vendor = this.getVendorById(vendor.id) || vendor;
+        if (importedResult.onboardingEmailStatus === undefined) {
+          importedResult.onboardingEmailStatus = importedResult.vendor.onboardingEmailStatus;
         }
       } else {
         results.push({ rowNumber, status: 'duplicate', email: vendor.email, reason: 'A vendor with this email already exists.' });
