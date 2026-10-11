@@ -130,6 +130,7 @@ describe('Store Service & Business Operations', () => {
           organizationName: 'Invited By Buyer Co',
           createdBy: 'buyer@example.com',
           resetExisting: false,
+          resetPasswordRequired: true,
         }));
         expect(sendSpy).toHaveBeenCalled();
         expect(storeService.getVendorById(v.id).onboardingEmailStatus).toBe('sent');

@@ -585,8 +585,8 @@ describe('Authentication against the account records (/api/auth)', () => {
       expect(authService.verifySessionToken(result.token).valid).toBe(true);
     });
 
-    test('new vendor registration requires a password change in its first session', async () => {
-      jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({
+    test('self-registered vendor can use their chosen password without a forced change', async () => {
+      const insertSpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({
         created: true,
         user: {
           id: 'new-vendor-uuid',
@@ -601,8 +601,29 @@ describe('Authentication against the account records (/api/auth)', () => {
       const result = await authService.registerUser({ ...payload, role: 'vendor' }, '::1');
       const session = authService.verifySessionToken(result.token);
 
-      expect(result.user.passwordChangeRequired).toBe(true);
-      expect(session.user.passwordChangeRequired).toBe(true);
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          resetExisting: false,
+          resetPasswordRequired: false,
+        })
+      );
+      expect(result.user.passwordChangeRequired).toBe(false);
+      expect(session.user.passwordChangeRequired).toBe(false);
+    });
+
+    test('self-registration does not sign in an existing vendor identity', async () => {
+      const insertSpy = jest.spyOn(identityQueries, 'insertVendorAccount').mockResolvedValue({
+        created: false,
+        reason: 'ALREADY_EXISTS',
+        user: { id: 'existing-vendor', email: EMAIL, role: 'vendor' },
+      });
+
+      await expect(authService.registerUser({ ...payload, role: 'vendor' }, '::1')).rejects.toThrow(
+        AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS
+      );
+      expect(insertSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ resetExisting: false, resetPasswordRequired: false })
+      );
     });
 
     test('reports a duplicate account rather than signing the caller in', async () => {

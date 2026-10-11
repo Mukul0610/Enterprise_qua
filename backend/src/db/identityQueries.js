@@ -734,6 +734,7 @@ async function insertVendorAccount({
   organizationName,
   createdBy = 'vendor-ingestion',
   resetExisting = true,
+  resetPasswordRequired = true,
 }) {
   if (!pool.hasStorage()) {
     throw new Error(pool.NOT_CONFIGURED_MESSAGE);
@@ -826,7 +827,7 @@ async function insertVendorAccount({
           verification_status, created_ts, last_modified_ts)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                1, 1, 0,
-               1, $11, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
+               $11, $12, strftime('%Y-%m-%dT%H:%M:%fZ','now'), strftime('%Y-%m-%dT%H:%M:%fZ','now'))`,
       [
         userUuid,
         normalizedEmail,
@@ -838,6 +839,7 @@ async function insertVendorAccount({
         orgName,
         orgUuid,
         roleUuid,
+        resetPasswordRequired ? 1 : 0,
         IDENTITY_MASTER_DATA.VERIFICATION_VERIFIED,
       ],
       { d1: true }
@@ -905,8 +907,8 @@ async function insertVendorAccount({
           source_type, verification_status, created_by, created_ts,
           last_modified_by, last_modified_ts)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-               true, false, true, true, true, false, false,
-               $12, $13, $14, now(), $15, now())`,
+               true, false, true, $12, true, false, false,
+               $13, $14, $15, now(), $16, now())`,
       [
         userUuid,
         normalizedEmail,
@@ -919,6 +921,7 @@ async function insertVendorAccount({
         roleUuid,
         statusUuid,
         buildUniqueId(),
+        resetPasswordRequired,
         IDENTITY_MASTER_DATA.SOURCE_TYPE_WEB,
         IDENTITY_MASTER_DATA.VERIFICATION_VERIFIED,
         createdBy,

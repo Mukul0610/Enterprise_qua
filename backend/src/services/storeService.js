@@ -667,6 +667,7 @@ class StoreService {
           organizationName: vendor.name,
           createdBy: actorEmail || 'buyer-manual-add',
           resetExisting: false,
+          resetPasswordRequired: true,
         });
         identityCreated = result.created === true;
         if (!identityCreated) {
