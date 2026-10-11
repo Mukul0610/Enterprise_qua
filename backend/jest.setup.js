@@ -13,15 +13,15 @@ process.env.DATABASE_URL = '';
 // Same reasoning, same mechanism, for the real Gmail API credentials: without
 // this, mailerService.isGmailApiConfigured()/isVendorGmailApiConfigured()
 // come back true in every test process (backend/.env has real values for
-// live use), which silently made emailGatewayService's IMAP-path tests
-// exercise the Gmail API branch instead of the IMAP configuration/fault
-// logic they were actually written to test — 32 failures the moment
-// pollOnce/isConfigured/describeConfigurationFault started checking
-// isGmailApiConfigured() first. Tests that specifically exercise the Gmail
-// API path (mailerService.test.js, emailGateway.test.js's own
-// pollViaGmailApi describe block) set their own values per test via
-// jest.isolateModules, which overrides this default within that scope and
-// is unaffected by it.
+// live use), and the Gmail API is the ONLY inbound/outbound mail transport
+// now (IMAP support was removed — Cloudflare Workers cannot hold an IMAP
+// socket open), so a stray real credential here would let a test actually
+// reach Gmail. Tests that specifically exercise the Gmail API path
+// (mailerService.test.js, emailGateway.test.js's pollViaGmailApi/pollOnce/
+// pollVendorOnce describe blocks) mock the Gmail client getters
+// (mailerService.getGmailOAuthClient/getVendorGmailOAuthClient) and/or
+// isGmailApiConfigured()/isVendorGmailApiConfigured() directly per test via
+// jest.spyOn, which overrides this default and is unaffected by it.
 process.env.GMAIL_CLIENT_ID = '';
 process.env.GMAIL_CLIENT_SECRET = '';
 process.env.GMAIL_REFRESH_TOKEN = '';

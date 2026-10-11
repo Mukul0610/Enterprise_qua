@@ -22,7 +22,6 @@
 //      db/emailGatewayQueries.js for why the flag alone is not enough.
 // ==============================================================================
 
-const { ImapFlow } = require('imapflow');
 const emailIngestionService = require('./emailIngestionService');
 const geminiService = require('./geminiService');
 const rfqIngestionService = require('./rfqIngestionService');
@@ -38,7 +37,6 @@ const {
   VENDOR_EMAIL_GATEWAY_CONFIG,
   EMAIL_GATEWAY_MESSAGES,
   EMAIL_GATEWAY_STATE,
-  EMAIL_GATEWAY_SMTP_PORTS,
   EMAIL_INGESTION_STATUS,
   resolveBuyerSourcingMode,
   SYSTEM_ACTOR_EMAIL,
@@ -118,13 +116,11 @@ function resolveConfig(env = process.env) {
 
   return {
     enabled: String(env.EMAIL_GATEWAY_ENABLED || '').toLowerCase() === 'true',
-    host: (env.EMAIL_GATEWAY_HOST || '').trim(),
-    port: Number(env.EMAIL_GATEWAY_PORT || 993),
-    secure: String(env.EMAIL_GATEWAY_SECURE || 'true').toLowerCase() !== 'false',
-    // IMAP login. An operational credential — this is the account the backend
-    // authenticates as, and it is not what a buyer needs to know.
+    // The Gmail API login — an operational credential, not what a buyer
+    // needs to know. IMAP support was removed: Cloudflare Workers cannot
+    // hold an IMAP socket open, so the Gmail REST API (GMAIL_* in
+    // mailerService) is the only inbound transport.
     user: (env.EMAIL_GATEWAY_USER || '').trim(),
-    password: env.EMAIL_GATEWAY_PASSWORD || '',
     // The Procucev intake address buyers actually send their requisition TO.
     // Kept separate from the IMAP login because the two are different things and
     // routinely differ: mail addressed to an alias or shared mailbox such as
@@ -160,20 +156,10 @@ function resolveVendorConfig(env = process.env) {
         ? env.VENDOR_EMAIL_GATEWAY_ENABLED
         : env.EMAIL_GATEWAY_ENABLED || 'true'
     ).toLowerCase() === 'true',
-    host: (env.VENDOR_EMAIL_GATEWAY_HOST || env.EMAIL_GATEWAY_HOST || 'imap.gmail.com').trim(),
-    port: Number(env.VENDOR_EMAIL_GATEWAY_PORT || env.EMAIL_GATEWAY_PORT || 993),
-    secure: String(
-      env.VENDOR_EMAIL_GATEWAY_SECURE !== undefined
-        ? env.VENDOR_EMAIL_GATEWAY_SECURE
-        : env.EMAIL_GATEWAY_SECURE || 'true'
-    ).toLowerCase() !== 'false',
+    // IMAP support was removed — see resolveConfig()'s comment. The vendor
+    // mailbox is read exclusively via the vendor Gmail REST API identity
+    // (VENDOR_GMAIL_* in mailerService).
     user: (env.VENDOR_EMAIL_GATEWAY_USER || 'srinu20252026@gmail.com').trim(),
-    // No hardcoded fallback — a Gmail App Password is a live credential and
-    // must come from the environment only. An unset password here means the
-    // IMAP connection attempt fails/is skipped, same as any other
-    // unconfigured gateway var, rather than silently authenticating with a
-    // secret baked into source.
-    password: env.VENDOR_EMAIL_GATEWAY_PASSWORD || '',
     address: (
       env.VENDOR_EMAIL_GATEWAY_ADDRESS ||
       env.VENDOR_EMAIL_GATEWAY_USER ||
@@ -207,66 +193,21 @@ function isConfigured(config = resolveConfig()) {
   // Each mailbox has its own Gmail API identity (buyer: GMAIL_*, vendor:
   // VENDOR_GMAIL_*) — checking the wrong one would report the vendor
   // gateway as configured just because the buyer's Gmail API happens to be
-  // set up, or vice versa.
-  const gmailApiConfigured = config.isVendorMailbox
+  // set up, or vice versa. The Gmail REST API is the only transport now
+  // (IMAP support removed — see resolveConfig()'s comment).
+  return config.isVendorMailbox
     ? mailerService.isVendorGmailApiConfigured()
     : mailerService.isGmailApiConfigured();
-  if (gmailApiConfigured) return true;
-  return !!(config.host && config.user && config.password);
 }
 
 /**
- * Catch the misconfiguration that cannot be diagnosed from the socket error.
- *
- * Pointing this at an SMTP host or port fails with
- * `SSL routines::wrong version number`, which says nothing about the cause. The
- * check happens before connecting so the panel can name the wrong variable.
- *
- * Returns a message, or null when the combination looks sane.
+ * Catch a misconfiguration that cannot be diagnosed from the API error.
+ * Returns a message, or null when nothing is obviously wrong. Reserved for
+ * a future Gmail-API-specific check (e.g. insufficient scope); nothing to
+ * catch here today since isConfigured() already reports missing credentials.
  */
-function describeConfigurationFault(config = resolveConfig()) {
-  // The Gmail API path never opens an IMAP socket at all, so none of the
-  // IMAP-specific misconfiguration checks below apply to it.
-  const gmailApiConfigured = config.isVendorMailbox
-    ? mailerService.isVendorGmailApiConfigured()
-    : mailerService.isGmailApiConfigured();
-  if (gmailApiConfigured) return null;
-  if (/^smtp\./i.test(config.host)) {
-    return EMAIL_GATEWAY_MESSAGES.SMTP_HOST_CONFIGURED.replace('{host}', config.host);
-  }
-  if (EMAIL_GATEWAY_SMTP_PORTS.includes(config.port)) {
-    return EMAIL_GATEWAY_MESSAGES.SMTP_PORT_CONFIGURED.replace('{port}', String(config.port));
-  }
+function describeConfigurationFault() {
   return null;
-}
-
-/**
- * Translate a connection failure into something actionable.
- *
- * The raw errors here are OpenSSL and IMAP protocol text — a stack trace
- * mentioning `SSL routines` tells the reader nothing about which environment
- * variable is wrong. The original message is still logged; only the panel gets
- * this version.
- */
-function describeConnectionError(err) {
-  const message = String((err && err.message) || '');
-
-  if (/wrong version number|packet length too long|record layer/i.test(message)) {
-    return EMAIL_GATEWAY_MESSAGES.TLS_VERSION_MISMATCH;
-  }
-  if (/AUTHENTICATIONFAILED|Invalid credentials|Username and Password not accepted|LOGIN failed/i.test(message)) {
-    return EMAIL_GATEWAY_MESSAGES.AUTH_REJECTED;
-  }
-  if (/ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(message)) {
-    return EMAIL_GATEWAY_MESSAGES.HOST_UNRESOLVED;
-  }
-  if (/ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ECONNRESET|timed out/i.test(message)) {
-    return EMAIL_GATEWAY_MESSAGES.HOST_UNREACHABLE;
-  }
-  if (/certificate|CERT_|self.signed|altname/i.test(message)) {
-    return EMAIL_GATEWAY_MESSAGES.CERTIFICATE_REJECTED;
-  }
-  return EMAIL_GATEWAY_MESSAGES.CONNECTION_FAILED_FALLBACK;
 }
 
 /**
@@ -1440,319 +1381,23 @@ async function pollVendorViaGmailApi(config = resolveVendorConfig()) {
 }
 
 /**
- * Read the mailbox once and ingest whatever is new.
+ * Read the mailbox once and ingest whatever is new, via the Gmail REST API.
  *
- * Only unseen messages are fetched, and only up to `maxPerPoll` per run so a
- * backlog cannot spend an unbounded amount of time (and Gemini quota) in one
- * pass — the remainder is picked up next tick.
- *
- * A message is marked \Seen only after its outcome is in the ledger. Doing it the
- * other way round would lose the requisition entirely if the ledger write failed.
- *
- * Overlapping runs are refused rather than queued: a slow extraction should not
- * cause two passes to fetch the same unseen message concurrently.
+ * IMAP support was removed: Cloudflare Workers cannot hold an IMAP socket
+ * open, so pollViaGmailApi() (defined above) is the only inbound transport
+ * now — this is a thin, named entry point kept for callers/tests that poll
+ * the buyer inbox specifically.
  */
 async function pollOnce(config = resolveConfig()) {
-  if (pollInFlight(runtime)) {
-    logger.warn('Email gateway poll skipped: previous buyer poll still in flight', { isPolling: runtime.isPolling, startedAt: runtime.pollStartedAt, ageMs: Date.now() - runtime.pollStartedAt, now: Date.now() }, 'EMAIL_GATEWAY');
-    return { skipped: true, reason: EMAIL_GATEWAY_MESSAGES.POLL_ALREADY_RUNNING };
-  }
-  // Prefer the Gmail API whenever it's configured — see pollViaGmailApi's
-  // own comment for why IMAP can't be relied on from Workers at all. IMAP
-  // stays as the fallback for a non-Workers deployment (local dev / Render)
-  // with no Gmail API credentials set up.
-  if (mailerService.isGmailApiConfigured()) {
-    return emailGateway.pollViaGmailApi(config);
-  }
-  if (!isConfigured(config)) {
-    return { skipped: true, reason: EMAIL_GATEWAY_MESSAGES.NOT_CONFIGURED };
-  }
-
-  // Refused before opening a socket: the failure is already certain, and the
-  // socket error it would produce names none of the offending variables.
-  const configurationFault = describeConfigurationFault(config);
-  if (configurationFault) {
-    runtime.lastError = configurationFault;
-    logger.error(
-      'Email gateway is misconfigured and was not contacted',
-      new Error(configurationFault),
-      'EMAIL_GATEWAY'
-    );
-    return { skipped: true, reason: configurationFault };
-  }
-
-  runtime.isPolling = true;
-  runtime.pollStartedAt = Date.now();
-  logger.info('Buyer poll lock SET', { site: 'pollOnce', startedAt: runtime.pollStartedAt }, 'EMAIL_GATEWAY');
-  runtime.consideredThisRun = 0;
-  runtime.ingestedThisRun = 0;
-  const startedAt = Date.now();
-  const outcomes = [];
-
-  const client = new emailGateway.ImapFlow({
-    host: config.host,
-    port: config.port,
-    secure: config.secure,
-    auth: { user: config.user, pass: config.password },
-    // The library logs every protocol frame at info level otherwise, which buries
-    // app.log and would include message headers.
-    logger: false,
-  });
-
-  if (typeof client.on === 'function') {
-    client.on('error', (err) => {
-      logger.warn(
-        `IMAP client socket notice: ${err ? err.message : 'Unknown'}`,
-        { code: err && err.code, connId: err && err._connId },
-        'EMAIL_GATEWAY'
-      );
-    });
-  }
-
-  try {
-    await client.connect();
-    runtime.lastConnectedAt = new Date().toISOString();
-    const lock = await client.getMailboxLock(config.mailbox);
-    try {
-      // Bounded by when the gateway started watching, not just by the unseen
-      // flag. A real mailbox has a backlog — the account this was first pointed at
-      // had 110 unread messages — and without this bound the gateway would work
-      // through years of unrelated mail, spend its per-poll budget on it, and
-      // never reach the requisition that just arrived.
-      const unseenUids = await client.search({ seen: false, since: new Date(runtime.watchingSince) });
-      const batch = (unseenUids || []).slice(0, config.maxPerPoll);
-
-      for (const uid of batch) {
-        runtime.consideredThisRun += 1;
-        let messageId = null;
-        try {
-          const fetched = await client.fetchOne(String(uid), { source: true, envelope: true });
-          if (!fetched || !fetched.source) {
-            outcomes.push({ uid, status: INGESTION_OUTCOME.UNREADABLE });
-            continue;
-          }
-          messageId = fetched.envelope && fetched.envelope.messageId ? fetched.envelope.messageId : null;
-          const dedupeKey = messageId || `uid-${uid}@${config.mailbox}`;
-
-          // Ours is the authoritative dedupe check; see emailGatewayQueries.
-          if (await emailGatewayQueries.hasProcessed(dedupeKey)) {
-            await client.messageFlagsAdd(String(uid), ['\\Seen']);
-            outcomes.push({ uid, messageId: dedupeKey, status: EMAIL_GATEWAY_MESSAGES.ALREADY_PROCESSED });
-            continue;
-          }
-
-          const result = await emailGateway.processMessage(fetched.source, config);
-          const resolvedMessageId =
-            messageId || (result.message && result.message.messageId) || `uid-${uid}@${config.mailbox}`;
-
-          await emailGatewayQueries.recordProcessed({
-            messageId: resolvedMessageId,
-            status: result.status,
-            detail: result.detail,
-            fromAddress: result.message ? result.message.fromAddress : null,
-            subject: result.message ? result.message.subject : null,
-            rfqId: result.rfq ? result.rfq.id : null,
-            rfqNumber:
-              result.rfqs && result.rfqs.length > 1
-                ? result.rfqs.map((r) => r.rfqNumber).join(', ')
-                : result.rfq
-                ? result.rfq.rfqNumber
-                : null,
-          });
-
-          if (
-            result.status === INGESTION_OUTCOME.INGESTED ||
-            result.status === INGESTION_OUTCOME.QUOTE_INGESTED
-          ) {
-            runtime.ingestedThisRun += 1;
-          }
-          await client.messageFlagsAdd(String(uid), ['\\Seen']).catch(() => {});
-          outcomes.push({ uid, messageId: resolvedMessageId, status: result.status });
-        } catch (err) {
-          logger.error('Inbound message could not be processed', err, 'EMAIL_GATEWAY');
-          if (messageId) {
-            await emailGatewayQueries.recordProcessed({
-              messageId,
-              status: INGESTION_OUTCOME.FAILED,
-              detail: err.message,
-            });
-          }
-          outcomes.push({ uid, messageId, status: INGESTION_OUTCOME.FAILED });
-        }
-      }
-
-      runtime.lastError = null;
-      return {
-        skipped: false,
-        considered: runtime.consideredThisRun,
-        ingested: runtime.ingestedThisRun,
-        pending: Math.max((unseenUids || []).length - batch.length, 0),
-        outcomes,
-      };
-    } finally {
-      lock.release();
-    }
-  } catch (err) {
-    // A connection or authentication failure. Reported through status rather than
-    // thrown, so the panel can explain it and the interval keeps trying. The raw
-    // OpenSSL/IMAP text goes to the log; the panel gets the actionable version.
-    runtime.lastError = err.message;
-    logger.error(`Email gateway poll failed: ${err.message}`, err, 'EMAIL_GATEWAY');
-    return { skipped: false, error: err.message, considered: runtime.consideredThisRun, outcomes };
-  } finally {
-    try {
-      await client.logout();
-    } catch {
-      // Already disconnected; nothing useful to do.
-    }
-    runtime.isPolling = false;
-    runtime.lastPollAt = new Date().toISOString();
-    runtime.lastPollDurationMs = Date.now() - startedAt;
-  }
+  return emailGateway.pollViaGmailApi(config);
 }
 
 /**
- * Begin polling on an interval.
- *
- * The first backend background task, so it is deliberately conservative: it
- * refuses to start twice, does nothing when unconfigured or disabled, and unrefs
- * the timer so it can never hold the process open on shutdown.
- */
-/**
- * Read the vendor mailbox (srinu20252026@gmail.com) once and ingest vendor quote replies.
+ * Read the vendor mailbox once and ingest vendor quote replies, via the
+ * vendor Gmail REST API identity. Same reasoning as pollOnce() above.
  */
 async function pollVendorOnce(config = resolveVendorConfig()) {
-  if (pollInFlight(vendorRuntime)) {
-    logger.warn('Vendor email gateway poll skipped: previous poll still in flight', { isPolling: vendorRuntime.isPolling, startedAt: vendorRuntime.pollStartedAt, ageMs: Date.now() - vendorRuntime.pollStartedAt, now: Date.now() }, 'EMAIL_GATEWAY');
-    return { skipped: true, reason: EMAIL_GATEWAY_MESSAGES.POLL_ALREADY_RUNNING };
-  }
-  if (!isConfigured(config)) {
-    return { skipped: true, reason: EMAIL_GATEWAY_MESSAGES.NOT_CONFIGURED };
-  }
-
-  const configurationFault = describeConfigurationFault(config);
-  if (configurationFault) {
-    vendorRuntime.lastError = configurationFault;
-    logger.error(
-      'Vendor email gateway is misconfigured and was not contacted',
-      new Error(configurationFault),
-      'EMAIL_GATEWAY'
-    );
-    return { skipped: true, reason: configurationFault };
-  }
-
-  vendorRuntime.isPolling = true;
-  vendorRuntime.pollStartedAt = Date.now();
-  logger.info('Vendor poll lock SET', { site: 'pollVendorOnce', startedAt: vendorRuntime.pollStartedAt }, 'EMAIL_GATEWAY');
-  vendorRuntime.consideredThisRun = 0;
-  vendorRuntime.ingestedThisRun = 0;
-  const startedAt = Date.now();
-  const outcomes = [];
-
-  const client = new emailGateway.ImapFlow({
-    host: config.host,
-    port: config.port,
-    secure: config.secure,
-    auth: { user: config.user, pass: config.password },
-    logger: false,
-  });
-
-  if (typeof client.on === 'function') {
-    client.on('error', (err) => {
-      logger.warn(
-        `Vendor IMAP client socket notice: ${err ? err.message : 'Unknown'}`,
-        { code: err && err.code, connId: err && err._connId },
-        'EMAIL_GATEWAY'
-      );
-    });
-  }
-
-  try {
-    await client.connect();
-    vendorRuntime.lastConnectedAt = new Date().toISOString();
-    const lock = await client.getMailboxLock(config.mailbox);
-    try {
-      const unseenUids = await client.search({ seen: false, since: new Date(vendorRuntime.watchingSince) });
-      const batch = (unseenUids || []).slice(0, config.maxPerPoll);
-
-      for (const uid of batch) {
-        vendorRuntime.consideredThisRun += 1;
-        let messageId = null;
-        try {
-          const fetched = await client.fetchOne(String(uid), { source: true, envelope: true });
-          if (!fetched || !fetched.source) {
-            outcomes.push({ uid, status: INGESTION_OUTCOME.UNREADABLE });
-            continue;
-          }
-          messageId = fetched.envelope && fetched.envelope.messageId ? fetched.envelope.messageId : null;
-          const dedupeKey = messageId || `uid-${uid}@vendor-${config.mailbox}`;
-
-          if (await emailGatewayQueries.hasProcessed(dedupeKey)) {
-            await client.messageFlagsAdd(String(uid), ['\\Seen']);
-            outcomes.push({ uid, messageId: dedupeKey, status: EMAIL_GATEWAY_MESSAGES.ALREADY_PROCESSED });
-            continue;
-          }
-
-          const result = await emailGateway.processMessage(fetched.source, config);
-          const resolvedMessageId =
-            messageId || (result.message && result.message.messageId) || `uid-${uid}@vendor-${config.mailbox}`;
-
-          await emailGatewayQueries.recordProcessed({
-            messageId: resolvedMessageId,
-            status: result.status,
-            detail: result.detail,
-            fromAddress: result.message ? result.message.fromAddress : null,
-            subject: result.message ? result.message.subject : null,
-            rfqId: result.rfq ? result.rfq.id : null,
-            rfqNumber: result.rfq ? result.rfq.rfqNumber : null,
-          });
-
-          if (
-            result.status === INGESTION_OUTCOME.INGESTED ||
-            result.status === INGESTION_OUTCOME.QUOTE_INGESTED
-          ) {
-            vendorRuntime.ingestedThisRun += 1;
-          }
-          await client.messageFlagsAdd(String(uid), ['\\Seen']).catch(() => {});
-          outcomes.push({ uid, messageId: resolvedMessageId, status: result.status });
-        } catch (err) {
-          logger.error('Inbound vendor message could not be processed', err, 'EMAIL_GATEWAY');
-          if (messageId) {
-            await emailGatewayQueries.recordProcessed({
-              messageId,
-              status: INGESTION_OUTCOME.FAILED,
-              detail: err.message,
-            });
-          }
-          outcomes.push({ uid, messageId, status: INGESTION_OUTCOME.FAILED });
-        }
-      }
-
-      vendorRuntime.lastError = null;
-      return {
-        skipped: false,
-        considered: vendorRuntime.consideredThisRun,
-        ingested: vendorRuntime.ingestedThisRun,
-        pending: Math.max((unseenUids || []).length - batch.length, 0),
-        outcomes,
-      };
-    } finally {
-      lock.release();
-    }
-  } catch (err) {
-    vendorRuntime.lastError = err.message;
-    logger.error(`Vendor email gateway poll failed: ${err.message}`, err, 'EMAIL_GATEWAY');
-    return { skipped: false, error: err.message, considered: vendorRuntime.consideredThisRun, outcomes };
-  } finally {
-    try {
-      await client.logout();
-    } catch {
-      // Already disconnected
-    }
-    vendorRuntime.isPolling = false;
-    vendorRuntime.lastPollAt = new Date().toISOString();
-    vendorRuntime.lastPollDurationMs = Date.now() - startedAt;
-  }
+  return emailGateway.pollVendorViaGmailApi(config);
 }
 
 /**
@@ -1779,7 +1424,7 @@ function startBuyerPolling(config = resolveConfig()) {
 
   logger.info(
     `Buyer email ingestion gateway watching ${config.user} every ${Math.round(config.pollIntervalMs / 1000)}s`,
-    { mailbox: config.mailbox, host: config.host },
+    { mailbox: config.mailbox },
     'EMAIL_GATEWAY'
   );
   return { started: true, pollIntervalMs: config.pollIntervalMs };
@@ -1809,7 +1454,7 @@ function startVendorPolling(config = resolveVendorConfig()) {
 
   logger.info(
     `Vendor quotation gateway watching ${config.user} every ${Math.round(config.pollIntervalMs / 1000)}s`,
-    { mailbox: config.mailbox, host: config.host },
+    { mailbox: config.mailbox },
     'EMAIL_GATEWAY'
   );
   return { started: true, pollIntervalMs: config.pollIntervalMs };
@@ -1938,7 +1583,6 @@ async function getStatus() {
     gatewayAddress: config.address || null,
     mailboxUser: config.user || null,
     mailbox: config.mailbox,
-    host: config.host || null,
     pollIntervalMs: config.pollIntervalMs,
     allowedSenders: config.allowedSenders,
     allowedDomains: config.allowedDomains,
@@ -1958,7 +1602,6 @@ async function getStatus() {
       gatewayAddress: vendorConfig.address || null,
       mailboxUser: vendorConfig.user || null,
       mailbox: vendorConfig.mailbox,
-      host: vendorConfig.host || null,
       pollIntervalMs: vendorConfig.pollIntervalMs,
       watchingSince: vendorRuntime.watchingSince,
       lastPollAt: vendorRuntime.lastPollAt,
@@ -1980,7 +1623,6 @@ const emailGateway = {
   resolveVendorConfig,
   isConfigured,
   describeConfigurationFault,
-  describeConnectionError,
   resolveConnectionState,
   resolveSenderAuthorisation,
   resolveBuyerRegisteredLocation,
@@ -1999,7 +1641,6 @@ const emailGateway = {
   startVendorPolling,
   stopPolling,
   getStatus,
-  ImapFlow,
 };
 
 module.exports = emailGateway;

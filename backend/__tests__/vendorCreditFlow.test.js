@@ -483,24 +483,21 @@ Remarks: Post-upgrade quotation
   });
 
   describe('Gateway Polling Flags on CREDITS_EXHAUSTED', () => {
-    test('pollVendorOnce marks seen on CREDITS_EXHAUSTED without incrementing ingested count', async () => {
-      const flagged = [];
-      const fakeClient = {
-        connect: jest.fn().mockResolvedValue(true),
-        getMailboxLock: jest.fn().mockResolvedValue({ release: jest.fn() }),
-        search: jest.fn().mockResolvedValue([999]),
-        fetchOne: jest.fn().mockResolvedValue({
-          source: Buffer.from('From: vendor@ex.com\n\nMsg', 'utf8'),
-          envelope: { messageId: '<credits-exhausted-seen-uid@ex.com>' },
-        }),
-        messageFlagsAdd: jest.fn(async (uid, flags) => {
-          flagged.push([uid, flags]);
-          return true;
-        }),
-        logout: jest.fn().mockResolvedValue(true),
-      };
-
-      emailGatewayService.ImapFlow = jest.fn(() => fakeClient);
+    test('pollVendorOnce marks read on CREDITS_EXHAUSTED without incrementing ingested count', async () => {
+      const googleapis = require('googleapis');
+      jest.spyOn(mailerService, 'getVendorGmailOAuthClient').mockReturnValue({});
+      const modify = jest.fn().mockResolvedValue({});
+      jest.spyOn(googleapis.google, 'gmail').mockReturnValue({
+        users: {
+          messages: {
+            list: jest.fn().mockResolvedValue({ data: { messages: [{ id: 'credits-exhausted-seen-uid' }] } }),
+            get: jest.fn().mockResolvedValue({
+              data: { raw: Buffer.from('From: vendor@ex.com\n\nMsg', 'utf8').toString('base64url') },
+            }),
+            modify,
+          },
+        },
+      });
       jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(false);
       jest.spyOn(emailGatewayQueries, 'recordProcessed').mockResolvedValue(true);
       jest.spyOn(emailGatewayService, 'processMessage').mockResolvedValue({
@@ -510,55 +507,53 @@ Remarks: Post-upgrade quotation
         rfq: testRfqs[0],
       });
 
-      const config = emailGatewayService.resolveVendorConfig({
-        VENDOR_EMAIL_GATEWAY_ENABLED: 'true',
-        VENDOR_EMAIL_GATEWAY_HOST: 'imap.gmail.com',
-        VENDOR_EMAIL_GATEWAY_USER: 'test@gmail.com',
-        VENDOR_EMAIL_GATEWAY_PASSWORD: 'pass',
-      });
+      const config = emailGatewayService.resolveVendorConfig({ VENDOR_EMAIL_GATEWAY_ENABLED: 'true' });
 
       const res = await emailGatewayService.pollVendorOnce(config);
       expect(res.skipped).toBe(false);
       expect(res.ingested).toBe(0);
-      expect(fakeClient.messageFlagsAdd).toHaveBeenCalledWith('999', ['\\Seen']);
+      expect(modify).toHaveBeenCalledWith({
+        userId: 'me',
+        id: 'credits-exhausted-seen-uid',
+        requestBody: { removeLabelIds: ['UNREAD'] },
+      });
     });
 
-    test('pollVendorOnce records UNREADABLE when fetched message has no source', async () => {
-      const fakeClient = {
-        connect: jest.fn().mockResolvedValue(true),
-        getMailboxLock: jest.fn().mockResolvedValue({ release: jest.fn() }),
-        search: jest.fn().mockResolvedValue([888]),
-        fetchOne: jest.fn().mockResolvedValue({ source: null }),
-        messageFlagsAdd: jest.fn().mockResolvedValue(true),
-        logout: jest.fn().mockResolvedValue(true),
-      };
-
-      emailGatewayService.ImapFlow = jest.fn(() => fakeClient);
-      const config = emailGatewayService.resolveVendorConfig({
-        VENDOR_EMAIL_GATEWAY_ENABLED: 'true',
-        VENDOR_EMAIL_GATEWAY_HOST: 'imap.gmail.com',
-        VENDOR_EMAIL_GATEWAY_USER: 'test@gmail.com',
-        VENDOR_EMAIL_GATEWAY_PASSWORD: 'pass',
+    test('pollVendorOnce records UNREADABLE when the fetched message has no raw body', async () => {
+      const googleapis = require('googleapis');
+      jest.spyOn(mailerService, 'getVendorGmailOAuthClient').mockReturnValue({});
+      jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(false);
+      jest.spyOn(googleapis.google, 'gmail').mockReturnValue({
+        users: {
+          messages: {
+            list: jest.fn().mockResolvedValue({ data: { messages: [{ id: 'no-source-uid' }] } }),
+            get: jest.fn().mockResolvedValue({ data: {} }),
+            modify: jest.fn().mockResolvedValue({}),
+          },
+        },
       });
+
+      const config = emailGatewayService.resolveVendorConfig({ VENDOR_EMAIL_GATEWAY_ENABLED: 'true' });
 
       const res = await emailGatewayService.pollVendorOnce(config);
       expect(res.outcomes[0].status).toBe(INGESTION_OUTCOME.UNREADABLE);
     });
 
-    test('pollOnce marks seen on CREDITS_EXHAUSTED without incrementing ingested count', async () => {
-      const fakeClient = {
-        connect: jest.fn().mockResolvedValue(true),
-        getMailboxLock: jest.fn().mockResolvedValue({ release: jest.fn() }),
-        search: jest.fn().mockResolvedValue([777]),
-        fetchOne: jest.fn().mockResolvedValue({
-          source: Buffer.from('From: vendor@ex.com\n\nMsg', 'utf8'),
-          envelope: { messageId: '<buyer-seen-poll-uid@ex.com>' },
-        }),
-        messageFlagsAdd: jest.fn().mockResolvedValue(true),
-        logout: jest.fn().mockResolvedValue(true),
-      };
-
-      emailGatewayService.ImapFlow = jest.fn(() => fakeClient);
+    test('pollOnce marks read on CREDITS_EXHAUSTED without incrementing ingested count', async () => {
+      const googleapis = require('googleapis');
+      jest.spyOn(mailerService, 'getGmailOAuthClient').mockReturnValue({});
+      const modify = jest.fn().mockResolvedValue({});
+      jest.spyOn(googleapis.google, 'gmail').mockReturnValue({
+        users: {
+          messages: {
+            list: jest.fn().mockResolvedValue({ data: { messages: [{ id: 'buyer-seen-poll-uid' }] } }),
+            get: jest.fn().mockResolvedValue({
+              data: { raw: Buffer.from('From: vendor@ex.com\n\nMsg', 'utf8').toString('base64url') },
+            }),
+            modify,
+          },
+        },
+      });
       jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(false);
       jest.spyOn(emailGatewayQueries, 'recordProcessed').mockResolvedValue(true);
       jest.spyOn(emailGatewayService, 'processMessage').mockResolvedValue({
@@ -568,17 +563,16 @@ Remarks: Post-upgrade quotation
         rfq: testRfqs[0],
       });
 
-      const config = emailGatewayService.resolveConfig({
-        EMAIL_GATEWAY_ENABLED: 'true',
-        EMAIL_GATEWAY_HOST: 'imap.gmail.com',
-        EMAIL_GATEWAY_USER: 'test@gmail.com',
-        EMAIL_GATEWAY_PASSWORD: 'pass',
-      });
+      const config = emailGatewayService.resolveConfig({ EMAIL_GATEWAY_ENABLED: 'true' });
 
       const res = await emailGatewayService.pollOnce(config);
       expect(res.skipped).toBe(false);
       expect(res.ingested).toBe(0);
-      expect(fakeClient.messageFlagsAdd).toHaveBeenCalledWith('777', ['\\Seen']);
+      expect(modify).toHaveBeenCalledWith({
+        userId: 'me',
+        id: 'buyer-seen-poll-uid',
+        requestBody: { removeLabelIds: ['UNREAD'] },
+      });
     });
   });
 });
