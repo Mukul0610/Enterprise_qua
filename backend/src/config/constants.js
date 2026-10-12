@@ -713,9 +713,14 @@ const ZOHO_CONFIG = new Proxy({}, {
 // amount a payment request can actually charge. 'premium' is free/auto-granted
 // and never reaches this table. INR chosen to match Zoho's `currency=INR`
 // paymentlinks contract the reference app uses.
+//
+// Base (pre-GST) amount, chosen so computeZohoPlanAmount's 18% GST add-on
+// lands on the real annual offer price shown on the card (Connect ₹7,499,
+// Select ₹14,999) — e.g. 6355.08 * 1.18 = 7498.99, a one-paisa rounding
+// artifact of back-calculating a GST-inclusive sticker price.
 const ZOHO_SUBSCRIPTION_PRICING = {
-  connect: 2,
-  select: 5,
+  connect: 6355.08,
+  select: 12711.02,
 };
 
 /** GST-inclusive amount Zoho actually charges for a plan, 2dp, or null if the plan isn't payable. */
@@ -728,10 +733,14 @@ function computeZohoPlanAmount(planId) {
 // Same gap on the buyer side: BUYER_SUBSCRIPTION_PLANS above only carries a
 // display price ('$199' etc.). 'free_trial' is free/instant and never reaches
 // this table — only the three paid tiers are real Zoho charges.
+//
+// Base (pre-GST) amount, back-calculated so the 18% GST add-on lands on the
+// real annual offer price shown on the card (V1 ₹14,999, V2 ₹19,999,
+// V3 ₹24,999) — V2 lands at ₹19,999.01, a one-paisa rounding artifact.
 const ZOHO_BUYER_SUBSCRIPTION_PRICING = {
-  version_1: 2,
-  version_2: 5,
-  version_3: 8,
+  version_1: 12711.02,
+  version_2: 16948.31,
+  version_3: 21185.59,
 };
 
 /** GST-inclusive amount Zoho actually charges for a buyer plan, 2dp, or null if the plan isn't payable. */
