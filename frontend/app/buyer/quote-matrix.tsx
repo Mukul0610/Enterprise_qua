@@ -17,13 +17,11 @@ import {
   Clock,
   Layers,
   FileCheck,
-  Award,
   ChevronDown,
   ArrowLeft,
   IndianRupee,
   AlertCircle,
   Search,
-  Info,
   Lock,
   Mail,
   Download,
@@ -327,74 +325,6 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                       <span className="text-[10px] text-slate-400 dark:text-gray-400 block mt-0.5">Direct site delivery</span>
                     </td>
                   ))}
-                </tr>
-
-                {/* AI Quality / Match Score */}
-                <tr className="hover:bg-slate-50/80 dark:hover:bg-gray-800/20">
-                  <td className="p-4 font-bold text-slate-800 dark:text-gray-200">
-                    <div className="flex items-center gap-1.5">
-                      <Award size={15} className="text-purple-600 dark:text-purple-400 shrink-0" />
-                      <span>AI Quality / Match Score</span>
-                      <div className="relative group cursor-pointer inline-flex items-center ml-1">
-                        <Info size={14} className="text-slate-400 hover:text-purple-600 dark:hover:text-purple-400 transition-colors" />
-                        <div className="absolute left-0 bottom-full mb-2 hidden group-hover:block z-50 w-64 p-3 bg-slate-900 text-white text-[11px] rounded-lg shadow-xl border border-slate-700 pointer-events-none">
-                          <p className="font-bold text-purple-300 mb-1">Parametric Match Scoring:</p>
-                          <ul className="space-y-1 text-slate-300">
-                            <li>• <strong className="text-white">Price (45%):</strong> Compares against lowest quote</li>
-                            <li>• <strong className="text-white">Lead Time (30%):</strong> Faster delivery earns higher score</li>
-                            <li>• <strong className="text-white">Warranty (25%):</strong> Extended coverage years</li>
-                          </ul>
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-                  {quotes.map((q) => {
-                    const pricePts = q.scoreBreakdown ? q.scoreBreakdown.price.weighted : (q.isBestPrice ? 45 : 36);
-                    const leadPts = q.scoreBreakdown ? q.scoreBreakdown.leadTime.weighted : Math.round(Math.max(0, 100 - q.leadTimeDays * 2) * 0.3);
-                    const warPts = q.scoreBreakdown ? q.scoreBreakdown.warranty.weighted : Math.round(Math.min(100, 50 + q.warrantyYears * 10) * 0.25);
-                    const displayScore = q.aiMatchScore;
-
-                    return (
-                      <td
-                        key={q.vendorId}
-                        className={`p-4 ${q.isPreferred ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-x-2 border-indigo-600 dark:border-indigo-500' : ''}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <span
-                            className={`text-base font-black mono ${
-                              displayScore >= 90
-                                ? 'text-emerald-600 dark:text-emerald-400'
-                                : displayScore >= 80
-                                ? 'text-sky-600 dark:text-cyan-400'
-                                : 'text-amber-600 dark:text-amber-400'
-                            }`}
-                          >
-                            {displayScore}%
-                          </span>
-                          {q.isPreferred && (
-                            <span className="text-[10px] font-bold text-indigo-700 dark:text-indigo-300 uppercase">
-                              (Preferred)
-                            </span>
-                          )}
-                        </div>
-                        <div className="w-full bg-slate-200 dark:bg-gray-800 rounded-full h-1.5 mt-1.5 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${
-                              displayScore >= 90 ? 'bg-emerald-500' : 'bg-indigo-500'
-                            }`}
-                            style={{ width: `${displayScore}%` }}
-                          />
-                        </div>
-                        <div className="flex items-center gap-1 text-[10px] text-slate-500 dark:text-gray-400 mt-1.5 font-mono">
-                          <span title="Price Score (Max 45)">P: {pricePts}</span>
-                          <span>•</span>
-                          <span title="Lead Time Score (Max 30)">L: {leadPts}</span>
-                          <span>•</span>
-                          <span title="Warranty Score (Max 25)">W: {warPts}</span>
-                        </div>
-                      </td>
-                    );
-                  })}
                 </tr>
 
                 {/* Technical Compliance */}

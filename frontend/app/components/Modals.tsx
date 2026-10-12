@@ -552,6 +552,29 @@ export function RFQFollowUpDeepDiveModal({ isOpen, onClose, rfq }: RFQFollowUpDe
     sms: v.sms || { status: 'pending' as const, lastAttempt: 'Not yet dispatched' },
   }));
 
+  // Vendor type shown per row:
+  //  - "Buyer Vendors": a vendor the buyer explicitly added to this RFQ (present
+  //    on rfq.assignedVendors, matched by id or name).
+  //  - "Procucev Vendors": vendors sourced from the Procucev network, which is
+  //    what a V2 (Hybrid) or V3 (Autonomous) RFQ expands into when the buyer's
+  //    own roster is insufficient. Any follow-up vendor on a V2/V3 RFQ that is
+  //    not on the buyer's assigned list is a Procucev network vendor.
+  // V0/V1 RFQs circulate to the buyer's own roster only, so their vendors are
+  // Buyer Vendors regardless.
+  const isHybridOrAutonomous = rfq.sourcingMode === 'mode_2' || rfq.sourcingMode === 'mode_3';
+  const assignedVendorKeys = new Set(
+    (rfq.assignedVendors || []).flatMap((av) =>
+      [av.id, av.name].filter((k): k is string => !!k).map((k) => k.trim().toLowerCase())
+    )
+  );
+  const vendorTypeFor = (v: VendorFollowUpRecord): 'procucev' | 'buyer' => {
+    const addedByBuyer =
+      assignedVendorKeys.has((v.vendorId || '').trim().toLowerCase()) ||
+      assignedVendorKeys.has((v.vendorName || '').trim().toLowerCase());
+    if (addedByBuyer) return 'buyer';
+    return isHybridOrAutonomous ? 'procucev' : 'buyer';
+  };
+
   const filteredVendors = vendors.filter((v) => {
     if (activeChannelTab === 'all') return true;
     if (activeChannelTab === 'call') return v.call.status !== 'failed';
@@ -803,6 +826,21 @@ export function RFQFollowUpDeepDiveModal({ isOpen, onClose, rfq }: RFQFollowUpDe
                       {vendor.phone && vendor.phone !== 'N/A' && (
                         <span className="text-slate-500 dark:text-gray-400 text-xs mono">({vendor.phone})</span>
                       )}
+                      {(() => {
+                        const vendorType = vendorTypeFor(vendor);
+                        return (
+                          <span
+                            data-testid={`vendor-type-${vendor.vendorId}`}
+                            className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold border ${
+                              vendorType === 'procucev'
+                                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800'
+                                : 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-cyan-300 border-sky-200 dark:border-cyan-800'
+                            }`}
+                          >
+                            {vendorType === 'procucev' ? 'Procucev Vendors' : 'Buyer Vendors'}
+                          </span>
+                        );
+                      })()}
                       <span
                         className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold ${
                           vendor.overallStatus === 'Responded' || vendor.bidStatus === 'Submitted'

@@ -101,6 +101,19 @@ export function resolveBuyerSourcingMode(
 }
 
 /**
+ * Short RFQ version tag for a sourcing mode: mode_0 → "V0" … mode_3 → "V3".
+ *
+ * The version and the sourcing mode are the same concept (see SOURCING_MODES,
+ * whose codes read "Version 0".."Version 3"), so the tag is derived from the
+ * mode's trailing digit rather than stored separately. Used as a compact
+ * identifier beside the RFQ number on the operational kanban.
+ */
+export function rfqVersionLabel(mode?: SourcingMode | null): string {
+  const digit = typeof mode === 'string' ? mode.replace('mode_', '') : '';
+  return /^[0-9]+$/.test(digit) ? `V${digit}` : 'V0';
+}
+
+/**
  * Mirrors backend/src/controllers/rfqController.js's SUBSCRIPTION_MODE_ENTITLEMENTS
  * exactly: each paid tier adds one mode on top of the last. The backend already
  * enforces this on POST /api/rfqs (a request for an un-entitled mode 403s), so

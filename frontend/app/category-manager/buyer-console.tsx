@@ -15,6 +15,7 @@ import {
   Layers,
   ArrowRight,
   ChevronDown,
+  Phone,
 } from 'lucide-react';
 import CompanyHoverTooltip from '@/app/components/CompanyHoverTooltip';
 
@@ -78,6 +79,7 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
         id: account.id,
         name: displayName,
         email: account.corporateEmail,
+        phone: account.mobileNumber || '',
         company: displayCompany,
         logoLetter: displayCompany.charAt(0).toUpperCase(),
         logoBg: style.bg,
@@ -323,6 +325,10 @@ export default function BuyerConsole({ onNavigateToMatrix, onNavigateToEvaluatio
                     <div>
                       <h4 className="font-bold text-slate-900 dark:text-white text-xs">{b.name}</h4>
                       <p className="text-[10px] text-slate-400 dark:text-gray-500">{b.email}</p>
+                      <p className="text-[10px] text-slate-500 dark:text-gray-400 flex items-center gap-1 mt-0.5 font-mono">
+                        <Phone size={10} className="text-indigo-500 shrink-0" />
+                        {b.phone ? b.phone : <span className="italic text-slate-400 dark:text-gray-600 font-sans">No phone on record</span>}
+                      </p>
 
                       <div className="flex items-center gap-1.5 mt-1.5">
                         <span className={`w-4 h-4 rounded ${b.logoBg} font-mono font-bold text-[8px] flex items-center justify-center shrink-0`}>

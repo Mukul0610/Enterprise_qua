@@ -546,15 +546,44 @@ export default function VendorUploadModal({ isOpen, onClose, onImportComplete }:
             </div>
           )}
 
-          {step === 'result' && importResult && (
+          {step === 'result' && importResult && (() => {
+            // Status is derived from the real import outcome so the headline can
+            // never claim success when nothing was imported (e.g. every record
+            // was a duplicate). "Completed" means every row imported; "Partially
+            // Completed" means some imported and some did not; "No Vendors
+            // Imported" / "Upload Failed" means zero rows imported.
+            const outcome =
+              importResult.imported === 0
+                ? importResult.duplicates > 0 && importResult.failed === 0
+                  ? 'none_duplicates'
+                  : 'failed'
+                : importResult.imported < rows.length
+                ? 'partial'
+                : 'completed';
+            const outcomeTitle =
+              outcome === 'completed'
+                ? 'Upload Completed'
+                : outcome === 'partial'
+                ? 'Upload Partially Completed'
+                : outcome === 'none_duplicates'
+                ? 'No Vendors Imported'
+                : 'Upload Failed';
+            return (
             <div className="space-y-4">
               <div className="p-4 rounded-xl border border-slate-200 dark:border-gray-800 bg-slate-50/60 dark:bg-gray-950/40 text-center space-y-1">
-                {importResult.imported > 0 ? (
+                {outcome === 'completed' ? (
                   <CheckCircle2 size={28} className="mx-auto text-emerald-500" />
+                ) : outcome === 'partial' ? (
+                  <AlertTriangle size={28} className="mx-auto text-amber-500" />
                 ) : (
                   <XCircle size={28} className="mx-auto text-rose-500" />
                 )}
-                <h3 className="text-sm font-black text-slate-900 dark:text-white">Upload Completed</h3>
+                <h3 className="text-sm font-black text-slate-900 dark:text-white">{outcomeTitle}</h3>
+                {outcome === 'none_duplicates' && (
+                  <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                    All {rows.length} record(s) already exist as vendors — nothing new was imported.
+                  </p>
+                )}
                 <p className="text-[11px] text-slate-500 dark:text-gray-400">
                   Total: {rows.length} · Imported: {importResult.imported} · Failed: {importResult.failed} · Duplicates:{' '}
                   {importResult.duplicates}
@@ -589,7 +618,8 @@ export default function VendorUploadModal({ isOpen, onClose, onImportComplete }:
                 </button>
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
       </div>
     </div>

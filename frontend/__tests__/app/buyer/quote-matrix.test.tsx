@@ -348,7 +348,7 @@ describe('QuoteMatrix Component Tests', () => {
       expect(optionValues).toEqual(['rfq-1', 'rfq-2']);
     });
 
-    test('renders parametric score breakdown when scoreBreakdown is present on quote', () => {
+    test('does not render the AI Quality / Match Score section (removed from vendor comparison)', () => {
       const rfqWithBreakdown = {
         ...mockRFQs[0],
         quotes: [
@@ -376,10 +376,10 @@ describe('QuoteMatrix Component Tests', () => {
       });
 
       render(<QuoteMatrix onBackToDashboard={mockOnBackToDashboard} />);
-      expect(screen.getByText('70%')).toBeInTheDocument();
-      expect(screen.getByText('P: 45')).toBeInTheDocument();
-      expect(screen.getByText('L: 0')).toBeInTheDocument();
-      expect(screen.getByText('W: 25')).toBeInTheDocument();
+      expect(screen.queryByText('AI Quality / Match Score')).not.toBeInTheDocument();
+      expect(screen.queryByText('P: 45')).not.toBeInTheDocument();
+      expect(screen.queryByText('L: 0')).not.toBeInTheDocument();
+      expect(screen.queryByText('W: 25')).not.toBeInTheDocument();
     });
 
     test('renders source badges correctly for both Portal and Email quotes', () => {

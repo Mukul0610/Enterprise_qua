@@ -2806,3 +2806,14 @@ at error (lib/store.tsx:593:15)
 at refreshFromDB (lib/store.tsx:643:9)
 [CI failure log on Frontend Build, Lint, Typecheck & Coverage -> Run Frontend Unit Tests & 90% Coverage Gate]
 
+
+## 2026-10-12
+
+can you implement this easy task and dont create workflow and only direct code and without plan direct implement this and complete this as soon possible
+
+1. The Category Manager should be able to invite a single vendor or multiple vendors in bulk from the All RFQs section. The Invite Vendors button should support individual selection, multiple selection, and Select All options. Ensure invitations work correctly while preserving existing functionality and access permissions.
+2. In Vendor Follow-Up, RFQs related to V2, V3 should display the vendor type as Procucev Vendors, while vendors added by the buyer should display as Buyer Vendors. Ensure the vendor type is correctly identified and displayed based on the RFQ source.
+3. Display the RFQ version (v0/V1/V2/v3) on the left side of the RFQ number in the Operational Monitoring Kanban. Ensure the version is clearly visible for easy identification.
+4. Display the buyer's phone number in the Category Manager's Buyer RFQ Console under the buyer details section. Ensure the phone number is clearly visible and correctly mapped to the respective buyer.
+5. In category manager - Bulk Vendor Upload Status: When uploading vendor data, the system displays "Upload Completed" with a red X icon even when all records are duplicates and zero vendors are imported. The status message should accurately reflect the upload result, displaying "No Vendors Imported" or "Upload Failed" when no records are imported, and "Upload Partially Completed" when only some records are imported successfully.
+7. Please remove the AI Quality / Match Score section from the Vendor Comparison page, including the percentage score, progress bar, and parameter breakdown (P, L, W).

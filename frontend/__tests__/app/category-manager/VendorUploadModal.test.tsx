@@ -285,7 +285,7 @@ describe('VendorUploadModal', () => {
       results: [{ rowNumber: 2, status: 'imported' }],
     });
 
-    await screen.findByText('Upload Completed');
+    await screen.findByText('Upload Partially Completed');
     expect(screen.getByText('Total: 2 · Imported: 1 · Failed: 0 · Duplicates: 0')).toBeInTheDocument();
     expect(mockRefreshFromDB).toHaveBeenCalledTimes(1);
     expect(onImportComplete).toHaveBeenCalledTimes(1);
@@ -310,7 +310,7 @@ describe('VendorUploadModal', () => {
     await screen.findByText('vendors.xlsx');
     fireEvent.click(screen.getByText('Import 1 Vendor'));
 
-    await screen.findByText('Upload Completed');
+    await screen.findByText('No Vendors Imported');
     expect(mockRefreshFromDB).not.toHaveBeenCalled();
     expect(onImportComplete).not.toHaveBeenCalled();
     expect(screen.getByText('Download Error Report')).toBeInTheDocument();
@@ -342,7 +342,7 @@ describe('VendorUploadModal', () => {
     pickFile(new File(['x'], 'vendors.xlsx'));
     await screen.findByText('vendors.xlsx');
     fireEvent.click(screen.getByText('Import 1 Vendor'));
-    await screen.findByText('Upload Completed');
+    await screen.findByText('No Vendors Imported');
 
     fireEvent.click(screen.getByText('Download Error Report'));
     expect(clickSpy).toHaveBeenCalled();
@@ -453,7 +453,7 @@ describe('VendorUploadModal', () => {
     pickFile(new File(['x'], 'vendors.xlsx'));
     await screen.findByText('vendors.xlsx');
     fireEvent.click(screen.getByText('Import 1 Vendor'));
-    await screen.findByText('Upload Completed');
+    await screen.findByText('Upload Failed');
 
     expect(() => fireEvent.click(screen.getByText('Download Error Report'))).not.toThrow();
 

@@ -18,7 +18,7 @@ import {
   X,
   FileText,
 } from 'lucide-react';
-import { SOURCING_MODES, formatIndianDateTime } from '@/lib/constants';
+import { SOURCING_MODES, formatIndianDateTime, rfqVersionLabel } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { RFQEditModal } from '@/app/buyer/RFQEditModal';
 
@@ -312,7 +312,16 @@ export default function KanbanBoard({
                   className="p-3.5 rounded-xl bg-white dark:bg-gray-900/90 border border-slate-200 dark:border-gray-800 hover:border-slate-300 dark:hover:border-gray-700 transition-all text-xs space-y-2 shadow-xs"
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-bold text-slate-900 dark:text-white mono">{rfq.rfqNumber}</span>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        data-testid={`rfq-version-${rfq.rfqNumber}`}
+                        title={SOURCING_MODES.find((m) => m.id === rfq.sourcingMode)?.name || rfqVersionLabel(rfq.sourcingMode)}
+                        className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-black tracking-wide bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-300 border border-slate-200 dark:border-gray-700"
+                      >
+                        {rfqVersionLabel(rfq.sourcingMode)}
+                      </span>
+                      <span className="font-bold text-slate-900 dark:text-white mono truncate">{rfq.rfqNumber}</span>
+                    </span>
                     {modeBadge(rfq.sourcingMode)}
                   </div>
                   <p className="text-slate-700 dark:text-gray-300 text-[11px] truncate" title={rfq.title}>
@@ -415,7 +424,16 @@ export default function KanbanBoard({
                 className="p-3.5 rounded-xl bg-white dark:bg-gray-900/90 border border-indigo-200 dark:border-indigo-500/30 hover:border-indigo-400 dark:hover:border-indigo-500/60 transition-all text-xs space-y-3 shadow-xs"
               >
                 <div className="flex items-center justify-between">
-                  <span className="font-bold text-slate-900 dark:text-white mono">{rfq.rfqNumber}</span>
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      data-testid={`rfq-version-${rfq.rfqNumber}`}
+                      title={SOURCING_MODES.find((m) => m.id === rfq.sourcingMode)?.name || rfqVersionLabel(rfq.sourcingMode)}
+                      className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-black tracking-wide bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-300 border border-slate-200 dark:border-gray-700"
+                    >
+                      {rfqVersionLabel(rfq.sourcingMode)}
+                    </span>
+                    <span className="font-bold text-slate-900 dark:text-white mono truncate">{rfq.rfqNumber}</span>
+                  </span>
                   {rfq.chasingActive ? (
                     <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 dark:bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-500/30 flex items-center gap-1">
                       <span className="live-dot" /> Multi-Channel: Active
@@ -518,7 +536,16 @@ export default function KanbanBoard({
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-900 dark:text-white mono">{rfq.rfqNumber}</span>
+                    <span className="flex items-center gap-1.5 min-w-0">
+                      <span
+                        data-testid={`rfq-version-${rfq.rfqNumber}`}
+                        title={SOURCING_MODES.find((m) => m.id === rfq.sourcingMode)?.name || rfqVersionLabel(rfq.sourcingMode)}
+                        className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-black tracking-wide bg-slate-100 dark:bg-gray-800 text-slate-600 dark:text-gray-300 border border-slate-200 dark:border-gray-700"
+                      >
+                        {rfqVersionLabel(rfq.sourcingMode)}
+                      </span>
+                      <span className="font-bold text-slate-900 dark:text-white mono truncate">{rfq.rfqNumber}</span>
+                    </span>
                     <span className={`badge ${SCORED_STATUS_TONE[rfq.status]} text-[10px]`}>{rfq.status}</span>
                   </div>
                   <p className="text-slate-700 dark:text-gray-300 text-[11px] truncate">
