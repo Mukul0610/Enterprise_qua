@@ -539,6 +539,20 @@ async function createRFQ(req, res, next) {
 
     const created = storeService.createRFQ({ ...body, extractedEntities: lineItems, aiSummary }, requestingBuyerAccount);
 
+    // createRFQ counts matched Procucev vendors against the capped in-memory
+    // vendor subset, which undercounts (often to 0) once the directory grows
+    // past the bootstrap page — the cause of the RFQ success popup showing
+    // "0" matched Procucev vendors for V2/V3. Recompute from the database so
+    // the popup's "Mode & Vendors" figure reflects the whole directory.
+    try {
+      const dbCount = await storeService.resolveProcucevVendorCountFromDB(created);
+      if (typeof dbCount === 'number' && dbCount > (created.procucevVendorCount || 0)) {
+        created.procucevVendorCount = dbCount;
+      }
+    } catch (err) {
+      logger.warn('Could not resolve DB-backed Procucev vendor count', { error: err.message }, 'RFQ_CONTROLLER');
+    }
+
     // Dispatch real email notification to target gateway address (e.g. RFQ@procucev.com)
     if (body.source === 'email_gateway' || body.targetGatewayEmail) {
       const recipientEmail = body.targetGatewayEmail || 'RFQ@procucev.com';

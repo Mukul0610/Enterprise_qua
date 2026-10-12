@@ -161,6 +161,28 @@ export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | und
   return 0;
 }
 
+/**
+ * Every alias the backend may send for V2 (Hybrid) and V3 (Autonomous) — the
+ * only two versions that expand an RFQ into the Procucev network. Single source
+ * of truth for both the exported helper and the inline modal check.
+ */
+export const V2_V3_SOURCING_MODES: readonly string[] = [
+  'mode_2',
+  'v2',
+  'version_2',
+  'mode_3',
+  'v3',
+  'version_3',
+];
+
+/**
+ * Whether a sourcing mode is V2 (Hybrid) or V3 (Autonomous) — the only versions
+ * for which a dedicated "Procucev Vendors" count is meaningful.
+ */
+export function isV2OrV3SourcingMode(mode: string | null | undefined): boolean {
+  return V2_V3_SOURCING_MODES.includes(String(mode || ''));
+}
+
 interface IngestionWizardProps {
   onComplete: () => void;
   onCancel: () => void;
@@ -2836,6 +2858,25 @@ export default function IngestionWizard({
                   {resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
+              {/* Dedicated Procucev network vendor count — only V2 (Hybrid) and
+                  V3 (Autonomous) expand into the Procucev network, so this box
+                  is meaningful only for those versions and is hidden otherwise. */}
+              {V2_V3_SOURCING_MODES.includes(String(confirmationRfq.sourcingMode || '')) && (
+                <div
+                  data-testid="confirmation-procucev-vendor-box"
+                  className="p-3 bg-emerald-50/60 dark:bg-emerald-950/30 rounded-xl border border-emerald-200/60 dark:border-emerald-800/50"
+                >
+                  <span className="text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 block uppercase tracking-wider">
+                    Procucev Vendors
+                  </span>
+                  <span
+                    data-testid="confirmation-procucev-vendor-count"
+                    className="text-xs font-bold text-emerald-700 dark:text-emerald-300 font-mono"
+                  >
+                    {resolveConfirmationVendorCount(confirmationRfq)}
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center justify-center gap-3 pt-4 border-t border-slate-200 dark:border-gray-800">

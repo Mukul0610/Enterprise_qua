@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import IngestionWizard, { resolveConfirmationVendorCount } from '@/app/buyer/ingestion-wizard';
+import IngestionWizard, { resolveConfirmationVendorCount, isV2OrV3SourcingMode } from '@/app/buyer/ingestion-wizard';
 import { AppProvider } from '@/lib/store';
 import { extractLineItemsFromDocument, classifyLineItems, uploadRFQAttachment, createRFQ } from '@/lib/rfqClient';
 import { UI_STRINGS } from '@/lib/uiStrings';
@@ -1197,6 +1197,15 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       expect(resolveConfirmationVendorCount({})).toBe(0);
     });
 
+    it('isV2OrV3SourcingMode is true only for V2/V3 aliases, false for everything else', () => {
+      for (const m of ['mode_2', 'v2', 'version_2', 'mode_3', 'v3', 'version_3']) {
+        expect(isV2OrV3SourcingMode(m)).toBe(true);
+      }
+      for (const m of ['mode_0', 'v0', 'version_0', 'mode_1', 'v1', 'version_1', '', null, undefined]) {
+        expect(isV2OrV3SourcingMode(m)).toBe(false);
+      }
+    });
+
     it('displays the dynamically retrieved Procucev vendor count in the confirmation modal for Version 0, 2, and 3', async () => {
       // Simulate backend response with dynamically retrieved procucevVendorCount: 6 for Version 3
       mockCreateRFQ.mockResolvedValueOnce({
@@ -1239,6 +1248,12 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       const countEl = screen.getByTestId('confirmation-vendor-count');
       expect(countEl).toHaveTextContent('6');
       expect(screen.queryByText('AI Blind')).not.toBeInTheDocument();
+
+      // V3 gets a dedicated "Procucev Vendors" box carrying the same count.
+      const procucevBox = screen.getByTestId('confirmation-procucev-vendor-box');
+      expect(procucevBox).toBeInTheDocument();
+      expect(screen.getByTestId('confirmation-procucev-vendor-count')).toHaveTextContent('6');
+      expect(within(procucevBox).getByText('Procucev Vendors')).toBeInTheDocument();
     });
 
     it('displays dynamically retrieved Procucev vendor count for Version 0 in confirmation modal', async () => {
@@ -1279,6 +1294,9 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       const countEl = screen.getByTestId('confirmation-vendor-count');
       expect(countEl).toHaveTextContent('3');
       expect(screen.queryByText('1+ Supplier')).not.toBeInTheDocument();
+
+      // V0 is NOT a Procucev-network-expansion version, so the dedicated box is hidden.
+      expect(screen.queryByTestId('confirmation-procucev-vendor-box')).not.toBeInTheDocument();
     });
 
     it('displays the backend vendor count for Version 2 on the submitted RFQ', async () => {
@@ -1316,6 +1334,10 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
       expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
       expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('11');
+
+      // V2 (Hybrid) shows the dedicated Procucev Vendors box with the same count.
+      expect(screen.getByTestId('confirmation-procucev-vendor-box')).toBeInTheDocument();
+      expect(screen.getByTestId('confirmation-procucev-vendor-count')).toHaveTextContent('11');
     });
   });
 

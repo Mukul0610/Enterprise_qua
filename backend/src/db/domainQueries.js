@@ -130,6 +130,76 @@ async function getVendorsPageFromDB({ limit, offset, search = '', category = '',
   return { rows: dataResult.rows.map((row) => parseRaw(row.raw)), total };
 }
 
+/**
+ * COUNT of distinct public (Procucev-network) vendors whose category covers ANY
+ * of the given RFQ category signals — the DB-side equivalent of
+ * storeService.candidateVendorsForRFQ(rfq).filter(isProcucevVendor).length,
+ * but over the whole table instead of the capped in-memory bootstrap page.
+ *
+ * Why this exists: the RFQ success popup's Procucev vendor count was computed
+ * against that in-memory subset and came back 0 for V2/V3 even when matching
+ * vendors existed in the 80k+ row directory. getVendorsPageFromDB's `category`
+ * filter only equals the `major_category` column, so it misses a signal that
+ * is a *minor* category ("Steels", "Pipes & Pipe Fittings") or a vendor whose
+ * relevant category sits in `minorCategories` — exactly the shape of the real
+ * failing RFQ. This matches the same four category pools vendorCoversCategory
+ * checks (major, minor, vendor-selected, client-mapped), case-insensitively,
+ * and counts each vendor once.
+ *
+ * Matching is a case-insensitive substring test of the signal against the
+ * JSONB category text, backed by the trigram GIN indexes
+ * (idx_vendors_major_category_trgm / idx_vendors_minor_categories_trgm) so it
+ * does not sequential-scan at scale. A substring test can over-match in
+ * principle (a signal that is a substring of an unrelated category); in this
+ * taxonomy the labels are distinct enough that the trade-off — robust against
+ * casing/whitespace drift between the taxonomy master and vendor sheets, which
+ * is the actual cause of the zero — is worth it.
+ *
+ * @param {string[]} signals Category strings the RFQ carries.
+ * @returns {Promise<number>} Count of distinct matching public vendors.
+ */
+async function countPublicVendorsMatchingCategories(signals) {
+  if (!pool.hasStorage()) return 0;
+  const cleaned = Array.from(
+    new Set((Array.isArray(signals) ? signals : []).map((s) => String(s || '').trim().toLowerCase()).filter(Boolean))
+  );
+  if (cleaned.length === 0) return 0;
+
+  const params = [];
+  const orGroups = [];
+  const d1OrGroups = [];
+  for (const sig of cleaned) {
+    params.push(`%${sig}%`);
+    const p = params.length;
+    orGroups.push(`(
+      lower(major_category) LIKE $${p}
+      OR lower((raw->'minorCategories')::text) LIKE $${p}
+      OR lower((raw->'vendorSelectedCategories')::text) LIKE $${p}
+      OR lower((raw->'clientMappedCategories')::text) LIKE $${p}
+    )`);
+    d1OrGroups.push(`(
+      lower(major_category) LIKE $${p}
+      OR lower(json_extract(raw,'$.minorCategories')) LIKE $${p}
+      OR lower(json_extract(raw,'$.vendorSelectedCategories')) LIKE $${p}
+      OR lower(json_extract(raw,'$.clientMappedCategories')) LIKE $${p}
+    )`);
+  }
+
+  // Public-only: a vendor tagged to a specific buyer is never in the network pool.
+  const publicPg = `(raw->>'buyerId') IS NULL AND (raw->>'buyerAccountId') IS NULL`;
+  const publicD1 = `json_extract(raw,'$.buyerId') IS NULL AND json_extract(raw,'$.buyerAccountId') IS NULL`;
+
+  const wherePg = `WHERE (${orGroups.join(' OR ')}) AND ${publicPg}`;
+  const whereD1 = `WHERE (${d1OrGroups.join(' OR ')}) AND ${publicD1}`;
+
+  const result = await pool.query(
+    `SELECT COUNT(*)::int AS total FROM vendors ${wherePg}`,
+    params,
+    { d1: true, d1Text: `SELECT CAST(COUNT(*) AS INTEGER) AS total FROM vendors ${whereD1}` }
+  );
+  return result.rows[0]?.total || 0;
+}
+
 /** Single-row lookup by email — used to guarantee a specific vendor is
  * present in a capped/paginated listing without fetching the whole table. */
 async function getVendorByEmailFromDB(email) {
@@ -1058,6 +1128,7 @@ async function getVendorCreditTransactionsFromDB(vendorId) {
 module.exports = {
   getVendorsFromDB,
   getVendorsPageFromDB,
+  countPublicVendorsMatchingCategories,
   getVendorByEmailFromDB,
   getVendorsByBuyerFromDB,
   getVendorByIdFromDB,

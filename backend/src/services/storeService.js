@@ -2793,11 +2793,6 @@ class StoreService {
     );
   }
 
-  isProcucevVendor(vendor) {
-    if (!vendor) return false;
-    return !this.isBuyerUploaded(vendor);
-  }
-
   /**
    * Whether a vendor covers an RFQ's category.
    *
@@ -2907,6 +2902,98 @@ class StoreService {
       return this.candidateVendorsForRFQ(rfq).filter((v) => this.isProcucevVendor(v)).length;
     }
     return 0;
+  }
+
+  /**
+   * Database-backed Procucev vendor count for an RFQ's version (V0/V2/V3).
+   *
+   * `getProcucevVendorCount` / `createRFQ` count against `this.vendors`, which
+   * is only a capped bootstrap-time *subset* of the directory (see
+   * getVendorsPageFromDB's own comment — the real table is 80k+ rows). When
+   * the category-matched Procucev vendors simply aren't on the loaded page the
+   * in-memory count comes back 0 even though vendors exist, which is exactly
+   * why the RFQ success popup showed "0" for V2/V3. This recomputes the count
+   * straight from Postgres so the popup reflects the whole directory.
+   *
+   * Reuses the existing getVendorsPageFromDB primitive (which already filters
+   * to public/Procucev vendors via `publicOnly` and counts in-DB via its
+   * `total`), one query per distinct major-category signal, and reports the
+   * largest — categories overlap, so summing would double-count; the dominant
+   * category is the honest "vendors available for this RFQ" figure. Falls back
+   * to the in-memory count when no DB pool is configured (dev/in-memory mode),
+   * and when a buyer explicitly assigned Procucev vendors that assignment wins,
+   * matching getProcucevVendorCount's precedence.
+   *
+   * @param {Object} rfq
+   * @returns {Promise<number>}
+   */
+  async resolveProcucevVendorCountFromDB(rfq) {
+    if (!rfq) return 0;
+    const mode = rfq.sourcingMode || '';
+    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+    const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+    const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+    if (!isV0 && !isV2 && !isV3) return 0;
+
+    // A buyer's own explicit Procucev assignment is authoritative and already
+    // in memory — no DB round-trip needed.
+    const assigned = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
+    const procucevAssigned = assigned.filter((v) => {
+      const resolved = (v && v.id ? this.getVendorById(v.id, 'all') : null) || v;
+      return this.isProcucevVendor(resolved);
+    });
+    if (procucevAssigned.length > 0) return procucevAssigned.length;
+
+    // No DB configured (dev/in-memory): the capped-subset count is all we have.
+    if (!pool.hasStorage()) return this.getProcucevVendorCount(rfq);
+
+    // Every category string the RFQ carries — its header `category` plus each
+    // line item's major/minor/category (an email/BOQ-ingested RFQ often tags
+    // only the line items, with a null header category, which is exactly the
+    // shape that produced the zero).
+    const signals = this._rfqCategorySignals(rfq);
+
+    let dbCount = 0;
+    if (Array.isArray(signals) && signals.length > 0) {
+      try {
+        // One query: distinct public vendors matching ANY signal across major,
+        // minor, vendor-selected and client-mapped categories — the same four
+        // pools vendorCoversCategory checks, so it mirrors the in-memory
+        // candidate match over the whole directory instead of the capped page.
+        dbCount = await domainQueries.countPublicVendorsMatchingCategories(signals);
+      } catch (err) {
+        logger.warn(
+          'Procucev vendor count DB query failed',
+          { rfqNumber: rfq.rfqNumber, error: err.message },
+          'STORE_SERVICE'
+        );
+      }
+    }
+
+    // Fallback: if category matching found nothing (no signals, or the RFQ's
+    // category labels don't line up with how vendors were tagged — the common
+    // real-world case for an email/BOQ-ingested RFQ), report the size of the
+    // public Procucev network the RFQ CAN reach rather than a misleading 0.
+    // This is the same directory total the Operational Kanban already shows.
+    // Autonomous V3 and hybrid V2 both expand into this whole public network,
+    // so it is the honest "Procucev vendors available for this version" figure.
+    if (dbCount === 0) {
+      try {
+        const page = await domainQueries.getVendorsPageFromDB({ limit: 1, offset: 0, publicOnly: true });
+        if (page && typeof page.total === 'number') {
+          dbCount = page.total;
+        }
+      } catch (err) {
+        logger.warn(
+          'Procucev network total count DB query failed',
+          { rfqNumber: rfq.rfqNumber, error: err.message },
+          'STORE_SERVICE'
+        );
+      }
+    }
+
+    // Never regress below whatever the in-memory subset already counted.
+    return Math.max(dbCount || 0, this.getProcucevVendorCount(rfq));
   }
 
   /**

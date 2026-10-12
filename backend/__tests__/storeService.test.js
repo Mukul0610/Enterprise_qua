@@ -1228,6 +1228,152 @@ describe('Store Service & Business Operations', () => {
       expect(storeService.getProcucevVendorCount({ sourcingMode: 'mode_0', assignedVendors: [{ id: vA.id }] })).toBe(1);
     });
 
+    describe('resolveProcucevVendorCountFromDB (DB-backed count for the V2/V3 success popup)', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      test('counts category-matched public Procucev vendors from the database, not the capped in-memory subset', async () => {
+        // The real directory lives in Postgres; the in-memory subset here has no
+        // matching vendor (count 0 — the exact bug). The DB total must win, and
+        // the match must include the minor-category signal, not just the header.
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() }; // truthy sentinel: a pool is configured
+        const countSpy = jest
+          .spyOn(domainQueries, 'countPublicVendorsMatchingCategories')
+          .mockResolvedValue(20);
+
+        try {
+          const rfqV2 = {
+            sourcingMode: 'mode_2',
+            category: null,
+            extractedEntities: [{ majorCategory: 'Raw Material', minorCategory: 'Steels' }],
+            assignedVendors: [],
+          };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV2);
+
+          expect(count).toBe(20);
+          // Called with every signal the RFQ carries, including the minor one.
+          const passedSignals = countSpy.mock.calls[0][0];
+          expect(passedSignals).toEqual(expect.arrayContaining(['Raw Material', 'Steels']));
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('an explicit Procucev assignment wins over any DB count', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        const countSpy = jest.spyOn(domainQueries, 'countPublicVendorsMatchingCategories');
+
+        try {
+          const rfqV2 = {
+            sourcingMode: 'mode_2',
+            category: 'Lighting',
+            extractedEntities: [],
+            assignedVendors: [{ name: 'Procucev Assigned', source: 'procucev_network' }],
+          };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV2);
+          expect(count).toBe(1);
+          expect(countSpy).not.toHaveBeenCalled();
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('falls back to the in-memory count when no DB pool is configured', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = null; // no storage
+        try {
+          const rfqV2 = { sourcingMode: 'mode_2', category: 'Lighting', extractedEntities: [], assignedVendors: [] };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV2);
+          expect(typeof count).toBe('number');
+          expect(count).toBeGreaterThanOrEqual(0);
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('returns 0 for non-network versions (V1) and for a null RFQ', async () => {
+        expect(await storeService.resolveProcucevVendorCountFromDB(null)).toBe(0);
+        expect(
+          await storeService.resolveProcucevVendorCountFromDB({ sourcingMode: 'mode_1', category: 'Lighting' })
+        ).toBe(0);
+      });
+
+      test('when the category match is 0, falls back to the public Procucev network total (never a misleading 0)', async () => {
+        // The real-world failure: an email/BOQ RFQ whose category labels do not
+        // line up with how vendors were tagged, so category matching yields 0.
+        // The popup must still show how large the reachable network is.
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'countPublicVendorsMatchingCategories').mockResolvedValue(0);
+        const pageSpy = jest
+          .spyOn(domainQueries, 'getVendorsPageFromDB')
+          .mockResolvedValue({ rows: [], total: 985 });
+
+        try {
+          const rfqV2 = {
+            sourcingMode: 'mode_2',
+            category: null,
+            extractedEntities: [{ majorCategory: 'Raw Material', minorCategory: 'Steels' }],
+            assignedVendors: [],
+          };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV2);
+          expect(count).toBe(985);
+          expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ publicOnly: true }));
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('falls back to the network total even when the RFQ carries no category signals at all', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        const countSpy = jest.spyOn(domainQueries, 'countPublicVendorsMatchingCategories');
+        jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockResolvedValue({ rows: [], total: 42 });
+        try {
+          const rfqV3 = { sourcingMode: 'mode_3', category: '', extractedEntities: [], assignedVendors: [] };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV3);
+          expect(count).toBe(42);
+          // No signals -> the category-match query is skipped entirely.
+          expect(countSpy).not.toHaveBeenCalled();
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('prefers the category-matched count over the network total when it is non-zero', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'countPublicVendorsMatchingCategories').mockResolvedValue(7);
+        const pageSpy = jest.spyOn(domainQueries, 'getVendorsPageFromDB');
+        try {
+          const rfqV2 = { sourcingMode: 'mode_2', category: 'Lighting', extractedEntities: [], assignedVendors: [] };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV2);
+          expect(count).toBe(7);
+          // Category match succeeded, so the network-total fallback is not queried.
+          expect(pageSpy).not.toHaveBeenCalled();
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('swallows a DB query failure and still returns a number', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'countPublicVendorsMatchingCategories').mockRejectedValue(new Error('ECONNREFUSED'));
+        jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockRejectedValue(new Error('ECONNREFUSED'));
+        try {
+          const rfqV3 = { sourcingMode: 'mode_3', category: 'Lighting', extractedEntities: [], assignedVendors: [] };
+          const count = await storeService.resolveProcucevVendorCountFromDB(rfqV3);
+          expect(typeof count).toBe('number');
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+    });
+
     test('createRFQ auto-invites category and sub-category matched vendors for an email-sourced RFQ in any sourcing mode', () => {
       const subCatVendor = storeService.addVendor({
         name: 'Email Sub-Category Vendor',

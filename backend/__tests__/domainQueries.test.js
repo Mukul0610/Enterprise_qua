@@ -280,6 +280,62 @@ describe('Domain queries (vendors + RFQs, Neon PostgreSQL)', () => {
       });
     });
 
+    describe('countPublicVendorsMatchingCategories', () => {
+      test('no-ops to 0 when no pool is configured', async () => {
+        pool.pool = null;
+        await expect(domainQueries.countPublicVendorsMatchingCategories(['Steels'])).resolves.toBe(0);
+      });
+
+      test('returns 0 for an empty / all-blank signal list without querying', async () => {
+        pool.pool = { query: jest.fn() };
+        await expect(domainQueries.countPublicVendorsMatchingCategories([])).resolves.toBe(0);
+        await expect(domainQueries.countPublicVendorsMatchingCategories(['', '  '])).resolves.toBe(0);
+        expect(pool.pool.query).not.toHaveBeenCalled();
+      });
+
+      test('counts matches across major and minor category pools, public vendors only', async () => {
+        const query = jest.fn().mockResolvedValue({ rows: [{ total: 20 }] });
+        pool.pool = { query };
+
+        const total = await domainQueries.countPublicVendorsMatchingCategories([
+          'Raw Material',
+          'Steels',
+          'Engineering Spares - Mechanical',
+          'Pipes & Pipe Fittings',
+        ]);
+
+        expect(total).toBe(20);
+        const [sql, params] = query.mock.calls[0];
+        expect(sql).toContain('COUNT(*)');
+        expect(sql).toContain('major_category');
+        expect(sql).toContain("raw->'minorCategories'");
+        // Public-only clause present.
+        expect(sql).toContain("(raw->>'buyerId') IS NULL");
+        // De-duplicated, lower-cased, wildcard-wrapped params — one per distinct signal.
+        expect(params).toEqual([
+          '%raw material%',
+          '%steels%',
+          '%engineering spares - mechanical%',
+          '%pipes & pipe fittings%',
+        ]);
+      });
+
+      test('de-duplicates signals that differ only by case/whitespace', async () => {
+        const query = jest.fn().mockResolvedValue({ rows: [{ total: 3 }] });
+        pool.pool = { query };
+
+        await domainQueries.countPublicVendorsMatchingCategories(['Steels', ' steels ', 'STEELS']);
+
+        const [, params] = query.mock.calls[0];
+        expect(params).toEqual(['%steels%']);
+      });
+
+      test('defaults to 0 when the count query returns no row', async () => {
+        pool.pool = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+        await expect(domainQueries.countPublicVendorsMatchingCategories(['Steels'])).resolves.toBe(0);
+      });
+    });
+
     describe('getVendorByEmailFromDB', () => {
       test('no-ops when no pool is configured', async () => {
         pool.pool = null;
