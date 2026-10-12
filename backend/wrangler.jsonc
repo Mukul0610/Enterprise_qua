@@ -28,13 +28,13 @@
     "SMS_GATEWAY_SMSGID": "1102294821",
     "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
     "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
-    "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
+    "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "enterprise-qua-d1",
-      "database_id": "63af6c6f-3606-4afa-b0c7-9f9db6296d61"
+      "database_id": "9ed3bcce-ee38-4477-ac9f-c5e6f13c026c"
     }
   ],
   // Native R2 binding — used in place of the @aws-sdk/client-s3 path (see
@@ -49,7 +49,7 @@
   "r2_buckets": [
     {
       "binding": "R2_BUCKET",
-      "bucket_name": "procucec-dev"
+      "bucket_name": "procucec-prod"
     }
   ],
   // Drives the scheduled() export in worker.mjs — Cloudflare's replacement
@@ -118,7 +118,8 @@
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
         "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
-        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
+        "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
+        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
       },
       "d1_databases": [
         {
@@ -153,7 +154,8 @@
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
         "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
-        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.procucev-enterprise.workers.dev"
+        "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
+        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
       },
       "d1_databases": [
         {
