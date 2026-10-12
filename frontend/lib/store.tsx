@@ -2335,7 +2335,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       category: rfqData.category,
       sourcingMode: rfqData.sourcingMode,
       status: 'Quotes Pending',
-      source: rfqData.source || ((rfqData as any).aiSummary || rfqData.sourceFileName ? 'ai_extraction' : 'manual_entry'),
+      source: rfqData.source || (rfqData.sourceFileName ? 'ai_extraction' : 'manual_entry'),
       sourceFileName: rfqData.sourceFileName,
       // Origin of an emailed requisition. Previously omitted here, so the sender
       // the wizard had already parsed was dropped before it ever reached the API.

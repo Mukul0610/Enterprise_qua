@@ -134,7 +134,14 @@ class StoreService {
 
       this.vendors = vendorPage.rows;
       this.vendorsTotal = vendorPage.total;
-      this.rfqs = rfqs;
+      this.rfqs = rfqs.map((rfq) => {
+        if (rfq && rfq.source === 'ai_extraction' && !rfq.sourceFileName) {
+          const corrected = { ...rfq, source: 'manual_entry' };
+          this._persistRFQ(corrected);
+          return corrected;
+        }
+        return rfq;
+      });
       this.evaluations = evaluations;
       this.vendorCatalogue = vendorCatalogue;
       this.notifications = notifications;
@@ -1747,7 +1754,13 @@ class StoreService {
 
   getRFQs() {
     this.checkAndClose48HourRFQs();
-    return this.rfqs.map((r) => (r.quotes ? { ...r, quotes: evaluateQuotes(r.quotes) } : r));
+    return this.rfqs.map((r) => {
+      let item = r;
+      if (r && r.source === 'ai_extraction' && !r.sourceFileName) {
+        item = { ...r, source: 'manual_entry' };
+      }
+      return item.quotes ? { ...item, quotes: evaluateQuotes(item.quotes) } : item;
+    });
   }
 
   /**
@@ -1761,6 +1774,10 @@ class StoreService {
       if (Array.isArray(allFromDB)) {
         const byId = new Map(this.rfqs.map((r) => [r.id, r]));
         for (const rfq of allFromDB) {
+          if (rfq && rfq.source === 'ai_extraction' && !rfq.sourceFileName) {
+            rfq.source = 'manual_entry';
+            this._persistRFQ(rfq);
+          }
           byId.set(rfq.id, rfq);
         }
         this.rfqs = Array.from(byId.values()).sort(
@@ -1784,8 +1801,12 @@ class StoreService {
 
   getRFQById(id) {
     this.checkAndClose48HourRFQs();
-    const rfq = this.rfqs.find((r) => r.id === id || r.rfqNumber === id);
-    if (!rfq) return undefined;
+    const found = this.rfqs.find((r) => r.id === id || r.rfqNumber === id);
+    if (!found) return undefined;
+    let rfq = found;
+    if (found && found.source === 'ai_extraction' && !found.sourceFileName) {
+      rfq = { ...found, source: 'manual_entry' };
+    }
     return rfq.quotes
       ? {
         ...rfq,
@@ -1861,7 +1882,9 @@ class StoreService {
       // and the ingestion wizard's own documented fallback for the uploaded
       // document ("recorded as sourceFileName instead") could never have worked,
       // because the value never reached the database.
-      source: rfqData.source || null,
+      source: rfqData.source === 'ai_extraction' && !rfqData.sourceFileName
+        ? 'manual_entry'
+        : (rfqData.source !== undefined ? rfqData.source : null),
       sourceFileName: rfqData.sourceFileName || null,
       sourceEmail: rfqData.sourceEmail || null,
       raisedByEmail: requestingBuyerAccount ? requestingBuyerAccount.corporateEmail : rfqData.raisedByEmail || null,

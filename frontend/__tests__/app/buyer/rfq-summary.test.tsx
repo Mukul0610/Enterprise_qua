@@ -375,7 +375,7 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
       ['ai_extraction', RFQ.sourceAiExtraction],
     ])('labels the %s source as %s', (source, label) => {
       renderScreen([buildRFQ({ source })]);
-      expect(screen.getByText(label)).toBeInTheDocument();
+      expect(within(dataRows()[0]).getByText(label)).toBeInTheDocument();
     });
   });
 

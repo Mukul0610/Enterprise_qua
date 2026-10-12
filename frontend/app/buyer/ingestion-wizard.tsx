@@ -38,6 +38,7 @@ import type {
   RFQAttachment,
   RFQExtractionResult,
   RFQVendorCandidate,
+  RFQSource,
   SourcingMode,
   VendorEntry,
   VendorPageMeta,
@@ -671,7 +672,13 @@ export default function IngestionWizard({
   };
 
   const handleRemoveFile = (index: number) => {
-    setUploadedFiles((prev) => prev.filter((_, i) => i !== index));
+    setUploadedFiles((prev) => {
+      const next = prev.filter((_, i) => i !== index);
+      if (next.length === 0) {
+        setExtractionSummary(null);
+      }
+      return next;
+    });
   };
 
   /** AI Extraction: processes uploaded document (.eml, .msg, .xlsx, .pdf, .docx, .csv) into form */
@@ -946,9 +953,14 @@ export default function IngestionWizard({
           item.majorCategory === ALL_CATEGORIES_OPTION ? { ...item, majorCategory: '' } : item
         ),
       };
-      const rfqSource = 'ai_extraction';
+      const isAiExtracted = Boolean(
+        extractionSummary &&
+        extractionSummary.accepted > 0 &&
+        uploadedFiles.length > 0
+      );
+      const rfqSource: RFQSource = isAiExtracted ? 'ai_extraction' : 'manual_entry';
       const payload = toRFQCreatePayload(sanitizedForm, mode1AssignedVendors, rfqSource);
-      if (extractionSummary?.fileName) {
+      if (isAiExtracted && extractionSummary?.fileName) {
         payload.sourceFileName = extractionSummary.fileName;
       }
       const result = await createRFQ(payload);

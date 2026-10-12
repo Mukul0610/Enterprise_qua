@@ -676,7 +676,7 @@ export const UI_STRINGS = {
     // Intake source badges
     sourceEmailGateway: 'via Email Upload',
     sourceEmailUpload: 'Email File Upload',
-    sourceManualEntry: 'Manual Web Entry',
+    sourceManualEntry: 'Manual Entry',
     sourceAiExtraction: 'AI Extraction',
     sourceAiRfqCreate: 'AI RFQ Create',
     sourceWebPortal: 'Web App Portal',
