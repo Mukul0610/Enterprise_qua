@@ -2,7 +2,7 @@
 
 import React, { useState, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { useApp } from '@/lib/store';
+import { useApp, getLastHistoricalDataError } from '@/lib/store';
 import { formatCurrency, normalizePoDate } from '@/lib/constants';
 import { fetchDispatchTemplates, saveDispatchTemplate, type DispatchTemplate } from '@/lib/buyerProfileClient';
 import {
@@ -224,6 +224,7 @@ export default function InitialSetupModal() {
     setHistoricalPurchaseDataPeriod,
     processHistoricalPurchaseData,
     lastIngestionSummary,
+    lastIngestionError,
     setInitialSetupCompleted,
     activeBuyerAccount,
     buyerVendors,
@@ -341,18 +342,14 @@ export default function InitialSetupModal() {
   const [apiJoinedVendors, setApiJoinedVendors] = useState<HistoricalPurchaseVendorRecord[] | null>(null);
 
   // Validate a vendor row for required fields
+  // Note: Temporary required columns (email, phone) are not enforced from uploaded files
   const getVendorRowErrors = (v: VendorMasterUploadRecord): string[] => {
     const errs: string[] = [];
     if (!v.companyName || v.companyName.trim() === '') {
       errs.push('Company Name is required');
     }
-    if (!v.email || v.email.trim() === '') {
-      errs.push('Email is required');
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim())) {
+    if (v.email && v.email.trim() !== '' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim())) {
       errs.push('Invalid email format');
-    }
-    if (!v.phone || v.phone.trim() === '') {
-      errs.push('Mobile / Phone is required');
     }
     return errs;
   };
@@ -547,9 +544,10 @@ export default function InitialSetupModal() {
     });
 
     const isCsvOrText = file.name.endsWith('.csv') || file.name.endsWith('.tsv') || file.name.endsWith('.txt');
+    setVendorFileName(file.name);
 
     if (isCsvOrText && sessionId) {
-      // Stream directly to backend for large files
+      // Stream directly to backend for large files / session tracking in parallel
       (async () => {
         try {
           const token =
@@ -572,21 +570,27 @@ export default function InitialSetupModal() {
               setVendorJob(json.data.job);
               showToast('Ingestion Started', `Started background streaming ingestion for ${file.name}. Progress is tracked live.`, 'info');
             }
+          } else {
+            const errJson = await res.json().catch(() => null);
+            const errMsg = errJson?.error || errJson?.message || `Server returned ${res.status}: ${res.statusText}`;
+            setVendorUploadError(errMsg);
+            showToast('Upload Error', errMsg, 'warning');
           }
         } catch (err: any) {
           console.error('Streaming upload error:', err);
-          showToast('Upload Error', err.message || 'Streaming upload failed', 'warning');
-        } finally {
-          setIsParsingVendor(false);
+          const errMsg = err?.message || 'Streaming upload failed';
+          setVendorUploadError(errMsg);
+          showToast('Upload Error', errMsg, 'warning');
         }
       })();
-    } else {
-      // Excel or client fallback parsing
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array' });
+    }
+
+    // Always parse file client-side so storedVendors and table UI are populated immediately
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array' });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
@@ -701,8 +705,8 @@ export default function InitialSetupModal() {
             };
           }).filter((v) => Boolean(v.companyName?.trim() || v.email?.trim() || v.phone?.trim() || v.gstNumber?.trim() || v.contactPerson?.trim()));
 
-          if (parsedVendors.length === 0 || !parsedVendors.some((v) => v.companyName || v.email || v.phone)) {
-            const errMsg = 'The uploaded Vendor Master file has no recognizable supplier rows with Company Name or contact details. Please verify your file.';
+          if (parsedVendors.length === 0) {
+            const errMsg = 'The uploaded Vendor Master file has no recognizable supplier rows. Please verify your file.';
             setVendorUploadError(errMsg);
             showToast('Invalid Vendor File', errMsg, 'warning');
             setIsParsingVendor(false);
@@ -715,9 +719,10 @@ export default function InitialSetupModal() {
 
           setStoredVendors(parsedVendors);
           setVendorMasterUploaded(true);
+          setVendorFileName(file.name);
           setIsEditingVendorTable(false);
 
-          if (sessionId) {
+          if (sessionId && !isCsvOrText) {
             try {
               const jobRes = await fetch(`/api/vendor-ingestion/${sessionId}/start-job`, {
                 method: 'POST',
@@ -826,7 +831,6 @@ export default function InitialSetupModal() {
       };
 
       reader.readAsArrayBuffer(file);
-    }
   };
 
   // Real File Upload & SheetJS/CSV Parsing for File 2: PO Purchase Dump
@@ -854,9 +858,10 @@ export default function InitialSetupModal() {
     });
 
     const isCsvOrText = file.name.endsWith('.csv') || file.name.endsWith('.tsv') || file.name.endsWith('.txt');
+    setPoFileName(file.name);
 
     if (isCsvOrText && sessionId) {
-      // Direct stream upload for large PO dumps
+      // Direct stream upload for large PO dumps / session tracking in parallel
       (async () => {
         try {
           const token =
@@ -879,21 +884,27 @@ export default function InitialSetupModal() {
               setPoJob(json.data.job);
               showToast('Ingestion Started', `Started background streaming ingestion for PO dump ${file.name}. Progress is tracked live.`, 'info');
             }
+          } else {
+            const errJson = await res.json().catch(() => null);
+            const errMsg = errJson?.error || errJson?.message || `PO upload stream error: ${res.statusText}`;
+            setPoUploadError(errMsg);
+            showToast('PO Upload Error', errMsg, 'warning');
           }
         } catch (err: any) {
           console.error('Streaming upload error:', err);
-          showToast('Upload Error', err.message || 'Streaming PO upload failed', 'warning');
-        } finally {
-          setIsParsingPo(false);
+          const errMsg = err?.message || 'Streaming PO upload failed';
+          setPoUploadError(errMsg);
+          showToast('Upload Error', errMsg, 'warning');
         }
       })();
-    } else {
-      // Excel parsing & background job dispatch
-      const reader = new FileReader();
-      reader.onload = async (e) => {
-        try {
-          const data = new Uint8Array(e.target?.result as ArrayBuffer);
-          const workbook = XLSX.read(data, { type: 'array', cellDates: true });
+    }
+
+    // Always parse file client-side so poLineItems and table UI are populated immediately
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const data = new Uint8Array(e.target?.result as ArrayBuffer);
+        const workbook = XLSX.read(data, { type: 'array', cellDates: true });
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
           const rawJson: any[] = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
@@ -1034,7 +1045,7 @@ export default function InitialSetupModal() {
           setPoLineItems(parsedPOs);
           setPoDataUploaded(true);
 
-          if (sessionId) {
+          if (sessionId && !isCsvOrText) {
             try {
               const jobRes = await fetch(`/api/vendor-ingestion/${sessionId}/start-job`, {
                 method: 'POST',
@@ -1121,7 +1132,6 @@ export default function InitialSetupModal() {
       };
 
       reader.readAsArrayBuffer(file);
-    }
   };
 
   const clearVendorMasterData = () => {
@@ -1501,10 +1511,10 @@ export default function InitialSetupModal() {
         return;
       }
       const imported = await processHistoricalPurchaseData(selectedPeriod, joinedVendors);
-      if (imported === 0 && !lastIngestionSummary && joinedVendors.length > 0) {
-        const msg = 'Failed to ingest historical purchase data. Please check your network connection and server status, then try again.';
-        setSubmissionError(msg);
-        showToast('Ingestion Failed', msg, 'warning');
+      const actualError = lastIngestionError || (typeof getLastHistoricalDataError === 'function' ? getLastHistoricalDataError() : null);
+      if (actualError) {
+        setSubmissionError(actualError);
+        showToast('Ingestion Error', actualError, 'warning');
         return;
       }
       setInitialSetupModalOpen(false);
@@ -1768,8 +1778,8 @@ export default function InitialSetupModal() {
                     {invalidVendors.length} Supplier Record{invalidVendors.length > 1 ? 's' : ''} Missing Required Fields
                   </p>
                   <p className="mt-0.5 text-[11px] text-amber-800 dark:text-amber-300 leading-relaxed">
-                    Required fields: <strong>Company Name</strong>, <strong>Email Address</strong>, and <strong>Mobile / Phone</strong>.
-                    You cannot move to the next step until all vendor records have valid required information.
+                    Required field: <strong>Company Name</strong>.
+                    Please click &apos;Edit Data&apos; to fix records missing company names before continuing.
                   </p>
                   {!isEditingVendorTable && (
                     <button
@@ -1938,8 +1948,8 @@ export default function InitialSetupModal() {
                           <th className="p-2 w-28">Vendor Code</th>
                           <th className="p-2 min-w-[140px]">Company Name *</th>
                           <th className="p-2 min-w-[120px]">Contact Person</th>
-                          <th className="p-2 min-w-[140px]">Email Address *</th>
-                          <th className="p-2 min-w-[110px]">Phone *</th>
+                          <th className="p-2 min-w-[140px]">Email Address</th>
+                          <th className="p-2 min-w-[110px]">Phone</th>
                           <th className="p-2 min-w-[120px]">GSTIN</th>
                           <th className="p-2 min-w-[140px]">Address / Location</th>
                           <th className="p-2 min-w-[110px]">Rating</th>
@@ -1951,8 +1961,8 @@ export default function InitialSetupModal() {
                           const rowErrors = getVendorRowErrors(v);
                           const hasErrors = rowErrors.length > 0;
                           const isNameInvalid = !v.companyName || v.companyName.trim() === '';
-                          const isEmailInvalid = !v.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim());
-                          const isPhoneInvalid = !v.phone || v.phone.trim() === '';
+                          const isEmailInvalid = Boolean(v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim()));
+                          const isPhoneInvalid = false;
 
                           return (
                             <tr
@@ -2011,7 +2021,7 @@ export default function InitialSetupModal() {
                                 />
                                 {isEmailInvalid && (
                                   <span className="text-[9px] text-rose-600 dark:text-rose-400 font-bold block mt-0.5">
-                                    {v.email ? 'Invalid Email' : 'Required'}
+                                    Invalid Email
                                   </span>
                                 )}
                               </td>
@@ -2107,8 +2117,8 @@ export default function InitialSetupModal() {
                           const rowErrors = getVendorRowErrors(v);
                           const hasErrors = rowErrors.length > 0;
                           const isNameInvalid = !v.companyName || v.companyName.trim() === '';
-                          const isEmailInvalid = !v.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim());
-                          const isPhoneInvalid = !v.phone || v.phone.trim() === '';
+                          const isEmailInvalid = Boolean(v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email.trim()));
+                          const isPhoneInvalid = false;
 
                           return (
                             <tr
@@ -2133,20 +2143,14 @@ export default function InitialSetupModal() {
                               <td className="p-2.5 font-mono text-[11px]">
                                 {isEmailInvalid ? (
                                   <span className="text-rose-600 dark:text-rose-400 font-bold inline-flex items-center gap-1">
-                                    <AlertCircle size={11} /> {v.email ? 'Invalid Email' : 'Email Required'}
+                                    <AlertCircle size={11} /> Invalid Email
                                   </span>
                                 ) : (
-                                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">{v.email}</span>
+                                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">{v.email || '—'}</span>
                                 )}
                               </td>
                               <td className="p-2.5 font-mono text-[11px]">
-                                {isPhoneInvalid ? (
-                                  <span className="text-rose-600 dark:text-rose-400 font-bold inline-flex items-center gap-1">
-                                    <AlertCircle size={11} /> Mobile Required
-                                  </span>
-                                ) : (
-                                  <span className="text-slate-600 dark:text-gray-400">{v.phone}</span>
-                                )}
+                                <span className="text-slate-600 dark:text-gray-400">{v.phone || '—'}</span>
                               </td>
                               <td className="p-2.5 font-mono text-[10px] text-slate-700 dark:text-gray-200 font-bold">{v.gstNumber || '—'}</td>
                               <td className="p-2.5 text-slate-600 dark:text-gray-400 text-[11px] truncate max-w-[200px]">{v.address || '—'}</td>

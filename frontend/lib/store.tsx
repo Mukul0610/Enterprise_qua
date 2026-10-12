@@ -68,6 +68,11 @@ function authFetchHeaders(): Record<string, string> {
   };
 }
 
+let _lastHistoricalDataError: string | null = null;
+export function getLastHistoricalDataError(): string | null {
+  return _lastHistoricalDataError;
+}
+
 /**
  * Whole days between now and a target delivery date.
  *
@@ -173,6 +178,8 @@ interface AppContextType {
   processHistoricalPurchaseData: (period: '1_year' | '2_years' | '3_years', vendors: HistoricalPurchaseVendorRecord[]) => Promise<number>;
   lastIngestionSummary: IngestionSummary | null;
   setLastIngestionSummary: (summary: IngestionSummary | null) => void;
+  lastIngestionError: string | null;
+  setLastIngestionError: (err: string | null) => void;
 
   // Buyer Uploaded Vendors, Database Check & Automated Onboarding Emails
   buyerVendors: VendorEntry[];
@@ -1025,11 +1032,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [initialSetupCompleted, setInitialSetupCompleted] = useState<boolean>(false);
   const [historicalPurchaseDataPeriod, setHistoricalPurchaseDataPeriod] = useState<'1_year' | '2_years' | '3_years'>('1_year');
   const [lastIngestionSummary, setLastIngestionSummary] = useState<IngestionSummary | null>(null);
+  const [lastIngestionError, setLastIngestionError] = useState<string | null>(null);
 
   const processHistoricalPurchaseData = async (
     period: '1_year' | '2_years' | '3_years',
     vendors: HistoricalPurchaseVendorRecord[]
   ): Promise<number> => {
+    _lastHistoricalDataError = null;
+    setLastIngestionError(null);
     // Used to build the full VendorEntry list purely client-side and never
     // call the backend at all — every "imported" vendor vanished on refresh
     // and the "onboarding credentials dispatched" claim was never true. A
@@ -1069,21 +1079,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           })),
         }),
       });
-    } catch (e) {
+    } catch (e: any) {
       console.error('Failed to ingest historical purchase data:', e);
-      showToast('Import Failed', 'Could not reach the server. Please try again.', 'warning');
+      const errText = e?.message || 'Could not reach the server. Please check your network connection and server status.';
+      _lastHistoricalDataError = errText;
+      setLastIngestionError(errText);
+      showToast('Import Failed', errText, 'warning');
       return 0;
     }
 
     const data = await res.json().catch(() => null);
     if (!res.ok || !data?.success) {
+      const errText = data?.error || data?.message || (res.status ? `Server error ${res.status}: ${res.statusText || 'Failed to process historical data'}` : 'Could not process the historical purchase data. Please try again.');
+      _lastHistoricalDataError = errText;
+      setLastIngestionError(errText);
       showToast(
         'Import Failed',
-        data?.error || 'Could not process the historical purchase data. Please try again.',
+        errText,
         'warning'
       );
       return 0;
     }
+    _lastHistoricalDataError = null;
+    setLastIngestionError(null);
 
     const summary: IngestionSummary = {
       importedCount: data.importedCount ?? 0,
@@ -2514,6 +2532,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         processHistoricalPurchaseData,
         lastIngestionSummary,
         setLastIngestionSummary,
+        lastIngestionError,
+        setLastIngestionError,
         buyerVendors,
         addBuyerVendor,
         updateBuyerVendor,

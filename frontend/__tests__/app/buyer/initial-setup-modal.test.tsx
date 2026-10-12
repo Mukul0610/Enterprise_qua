@@ -7,6 +7,7 @@ import { UI_STRINGS } from '@/lib/uiStrings';
 
 jest.mock('@/lib/store', () => ({
   useApp: jest.fn(),
+  getLastHistoricalDataError: jest.fn(() => null),
 }));
 
 
