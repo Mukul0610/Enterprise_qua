@@ -75,7 +75,7 @@ const ATTACHMENT_ERRORS = {
 async function resolveRfqReadScope(req) {
   const role = req.user && req.user.role;
   if (role === 'buyer') {
-    const account = await storeService.getBuyerAccountByEmail(req.user.email);
+    const account = await storeService.ensureBuyerAccountForUser(req.user);
     return { role, restricted: true, buyerAccountId: account ? account.id : null };
   }
   if (role === 'vendor') {
@@ -454,7 +454,13 @@ async function createRFQ(req, res, next) {
     // Resolved server-side from the authenticated session, never trusted from
     // the request body, so the RFQ is attributed to whoever is actually
     // logged in rather than a client-supplied or globally-shared value.
-    requestingBuyerAccount = req.user ? await storeService.getBuyerAccountByEmail(req.user.email) : null;
+    // ensureBuyerAccountForUser creates the account for a buyer who has none
+    // (e.g. bulk-imported) so the RFQ is never saved without an owner and
+    // left invisible in their own list. Non-buyers keep the plain lookup.
+    requestingBuyerAccount = req.user
+      ? (await storeService.ensureBuyerAccountForUser(req.user)) ||
+        (await storeService.getBuyerAccountByEmail(req.user.email))
+      : null;
 
     // Server-side re-validation of the buyer's subscription entitlement —
     // mirrors the vendor download-quota check below (generateEmailPreview).
