@@ -5,6 +5,13 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+"observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
   "main": "src/worker.mjs",
   "alias": {
     "iconv-lite": "./src/workerShims/iconvLiteShim.js",
