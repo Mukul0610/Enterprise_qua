@@ -343,6 +343,8 @@ export const ROLE_SIDEBAR_NAV: Record<UserRole, SidebarNavItem[]> = {
       group: NAV_GROUPS.buyerAccount,
       route: '/buyer/profile',
     },
+    // Temporarily hidden: Vendor Email Templates
+    /*
     {
       id: 'vendor_email_templates',
       screenTag: 'Screen 1.8b',
@@ -352,6 +354,7 @@ export const ROLE_SIDEBAR_NAV: Record<UserRole, SidebarNavItem[]> = {
       group: NAV_GROUPS.buyerAccount,
       route: '/buyer/vendor-email-templates',
     },
+    */
     // Temporarily hidden: Buyer Billing History
     /*
     {
