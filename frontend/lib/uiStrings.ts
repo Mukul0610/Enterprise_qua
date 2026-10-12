@@ -639,6 +639,10 @@ export const UI_STRINGS = {
     attachmentViewAria: 'Open {fileName} in a new tab',
     attachmentUploadedOn: 'Attached {date}',
     noAttachments: 'No supporting documents were attached to this RFQ.',
+
+    // Vendor Inquiries & Live Availability
+    vendorOnline: 'Online',
+    vendorOffline: 'Offline',
   },
 
   rfqSummary: {

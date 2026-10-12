@@ -5,6 +5,7 @@ import { useApp } from '@/lib/store';
 import { authClient } from '@/lib/authClient';
 import {
   SOURCING_MODES,
+  PRESENCE_POLL_INTERVAL_MS,
   formatCurrency,
   formatFileSize,
   formatIndianDate,
@@ -12,10 +13,19 @@ import {
 } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { rfqAttachmentUrl, updateRFQ, replyToRFQInquiry, submitRFQInquiry } from '@/lib/rfqClient';
+import { getVendorPresence } from '@/lib/vendorPresenceClient';
 import QuoteAttachmentLink from '@/app/components/QuoteAttachmentLink';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
 import { downloadFullQuotesExcel, downloadSingleVendorQuoteExcel } from '@/lib/bidComparisonExport';
-import type { ExtractedEntity, QuoteComparison, RFQAttachment, RFQInquiry, RFQItem, RFQSource } from '@/lib/types';
+import type {
+  ExtractedEntity,
+  QuoteComparison,
+  RFQAttachment,
+  RFQInquiry,
+  RFQItem,
+  RFQSource,
+  VendorChatChannel,
+} from '@/lib/types';
 import {
   ArrowLeft,
   ClipboardList,
@@ -81,32 +91,6 @@ const SOURCE_LABELS: Record<RFQSource, string> = {
 /** Line-item columns the buyer can order the table by. */
 type SortKey = 'item' | 'category' | 'quantity' | 'targetDate';
 type SortDirection = 'asc' | 'desc';
-
-export interface VendorChatChannel {
-  key: string;
-  vendorId?: string;
-  vendorName: string;
-  vendorEmail?: string | null;
-  inquiryId?: string;
-  inquiry?: RFQInquiry;
-  messages: Array<{
-    id: string;
-    senderRole: 'vendor' | 'buyer';
-    senderName: string;
-    senderEmail?: string | null;
-    message: string;
-    timestamp: string;
-  }>;
-  status: 'open' | 'answered' | 'no_messages';
-  lastMessage?: {
-    message: string;
-    timestamp: string;
-    senderRole: 'vendor' | 'buyer';
-  };
-  contactPerson?: string | null;
-  phone?: string | null;
-  isProcucev?: boolean;
-}
 
 export interface RFQDetailsProps {
   /** The RFQ to render, or null when the number in the URL matches nothing. */
@@ -752,6 +736,30 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         return 0;
       });
   }, [activeRfq, isVendor, isV0, currentUserSession, checkIsProcucevVendor]);
+
+  // Live vendor presence state (Online / Offline based on heartbeat / session activity)
+  const [onlineVendors, setOnlineVendors] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    let mounted = true;
+    const fetchPresence = async () => {
+      const identifiers = vendorChannels.flatMap((c) =>
+        [c.vendorEmail, c.vendorId, c.vendorName].filter(Boolean) as string[]
+      );
+      if (identifiers.length === 0) return;
+      const res = await getVendorPresence(identifiers);
+      if (mounted && res.success && Array.isArray(res.onlineVendors)) {
+        setOnlineVendors(new Set(res.onlineVendors.map((s) => s.toLowerCase())));
+      }
+    };
+
+    fetchPresence();
+    const timer = setInterval(fetchPresence, PRESENCE_POLL_INTERVAL_MS);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [vendorChannels]);
 
   // Set default selected vendor
   useEffect(() => {
@@ -2239,6 +2247,11 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                   filteredChannels.map((channel) => {
                     const isSelected = activeChannel?.key === channel.key;
                     const hasUnanswered = channel.status === 'open';
+                    const isOnline = Boolean(
+                      (channel.vendorEmail && onlineVendors.has(channel.vendorEmail.toLowerCase())) ||
+                      (channel.vendorId && onlineVendors.has(channel.vendorId.toLowerCase())) ||
+                      (channel.vendorName && onlineVendors.has(channel.vendorName.toLowerCase()))
+                    );
 
                     return (
                       <div
@@ -2260,9 +2273,11 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                           >
                             {(channel.vendorName || 'V').charAt(0).toUpperCase()}
                           </div>
-                          {hasUnanswered && (
+                          {hasUnanswered ? (
                             <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-amber-500 rounded-full ring-2 ring-white dark:ring-gray-900 animate-pulse" />
-                          )}
+                          ) : isOnline ? (
+                            <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-emerald-500 rounded-full ring-2 ring-white dark:ring-gray-900" title="Online" />
+                          ) : null}
                         </div>
 
                         <div className="min-w-0 flex-1 space-y-1">
@@ -2307,9 +2322,15 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                               <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800">
                                 Answered
                               </span>
+                            ) : isOnline ? (
+                              <span className="px-1.5 py-0.2 rounded text-[8px] font-bold bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-300 dark:border-emerald-800 inline-flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                {DETAILS.vendorOnline}
+                              </span>
                             ) : (
-                              <span className="px-1.5 py-0.2 rounded text-[8px] font-medium bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400">
-                                Ready
+                              <span className="px-1.5 py-0.2 rounded text-[8px] font-medium bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 inline-flex items-center gap-1">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                {DETAILS.vendorOffline}
                               </span>
                             )}
                             {channel.messages.length > 0 && (
@@ -2347,6 +2368,27 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
                               Procucev Vendor
                             </span>
                           )}
+                          {(() => {
+                            const isActiveOnline = Boolean(
+                              activeChannel && (
+                                (activeChannel.vendorEmail && onlineVendors.has(activeChannel.vendorEmail.toLowerCase())) ||
+                                (activeChannel.vendorId && onlineVendors.has(activeChannel.vendorId.toLowerCase())) ||
+                                (activeChannel.vendorName && onlineVendors.has(activeChannel.vendorName.toLowerCase()))
+                              )
+                            );
+                            return (
+                              <span
+                                className={`px-2 py-0.5 rounded-full text-[9px] font-bold inline-flex items-center gap-1 ${
+                                  isActiveOnline
+                                    ? 'bg-emerald-50 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                                    : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 border border-slate-200 dark:border-gray-700'
+                                }`}
+                              >
+                                <span className={`w-1.5 h-1.5 rounded-full ${isActiveOnline ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+                                {isActiveOnline ? DETAILS.vendorOnline : DETAILS.vendorOffline}
+                              </span>
+                            );
+                          })()}
                           {activeChannel.status === 'open' ? (
                             <span className="px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 dark:bg-amber-950 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800">
                               Requires Response

@@ -8,6 +8,7 @@ const pool = require('../db/pool');
 const identityQueries = require('../db/identityQueries');
 const authSessionQueries = require('../db/authSessionQueries');
 const { getWaitUntil } = require('../db/d1Bridge');
+const vendorPresenceService = require('./vendorPresenceService');
 
 const CONFIGURED_AUTH_SECRET = process.env.AUTH_SECRET || process.env.JWT_SECRET || '';
 
@@ -388,6 +389,10 @@ async function authenticateWithPassword(email, password, ipAddress, mobile) {
     ipAddress,
   });
 
+  if (user.role === 'vendor') {
+    vendorPresenceService.recordHeartbeat({ identifier: user.email, role: user.role, vendorId: user.id });
+  }
+
   return {
     success: true,
     token,
@@ -642,6 +647,10 @@ async function verifyOtp(email, code, ipAddress, mobile) {
     action: `User authenticated via Instant Email OTP [Role: ${user.role}]`,
     ipAddress,
   });
+
+  if (user.role === 'vendor') {
+    vendorPresenceService.recordHeartbeat({ identifier: user.email, role: user.role, vendorId: user.id });
+  }
 
   return {
     success: true,

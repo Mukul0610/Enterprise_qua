@@ -9,6 +9,7 @@ const { normalizePhone } = require('../db/identityQueries');
 const { logger } = require('../services/loggerService');
 const { VALIDATION_SCHEMAS, validatePayload } = require('../config/validationSchemas');
 const { ZOHO_CONFIG, computeZohoPlanAmount, VENDOR_SUBSCRIPTION_PLANS } = require('../config/constants');
+const vendorPresenceService = require('../services/vendorPresenceService');
 
 /**
  * A vendor profile may only be created/edited by the vendor it belongs to
@@ -841,6 +842,43 @@ async function getBulkImportSessionStatus(req, res, next) {
   }
 }
 
+async function getVendorsPresence(req, res, next) {
+  try {
+    const { identifiers } = req.query || {};
+    const { isValid, errors } = validatePayload(VALIDATION_SCHEMAS.vendorPresenceQuery, { identifiers });
+    if (!isValid) {
+      return res.status(400).json({ success: false, error: Object.values(errors)[0] });
+    }
+    const result = vendorPresenceService.getPresence(identifiers);
+    res.json(result);
+  } catch (err) {
+    logger.error('Error fetching vendor presence', err, 'VENDOR_CONTROLLER');
+    next(err);
+  }
+}
+
+async function recordVendorHeartbeat(req, res, next) {
+  try {
+    const user = req.user;
+    const body = req.body || {};
+    const { isValid, errors } = validatePayload(VALIDATION_SCHEMAS.vendorHeartbeat, body);
+    if (!isValid) {
+      return res.status(400).json({ success: false, error: Object.values(errors)[0] });
+    }
+    const identifier = body.identifier || (user && (user.email || user.sub));
+    if (!identifier) {
+      return res.status(400).json({ success: false, error: 'Identifier is required for heartbeat.' });
+    }
+    const role = body.role || (user && user.role) || 'vendor';
+    const status = body.status || 'online';
+    const result = vendorPresenceService.recordHeartbeat({ identifier, role, status });
+    res.json(result);
+  } catch (err) {
+    logger.error('Error recording vendor heartbeat', err, 'VENDOR_CONTROLLER');
+    next(err);
+  }
+}
+
 module.exports = {
   getVendors,
   getVendorById,
@@ -857,4 +895,6 @@ module.exports = {
   downloadInvoice,
   bulkImportVendors,
   getBulkImportSessionStatus,
+  getVendorsPresence,
+  recordVendorHeartbeat,
 };

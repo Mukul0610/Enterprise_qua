@@ -11,6 +11,12 @@ const mockUpdateRFQ = jest.fn().mockResolvedValue({ success: true, rfq: { id: 'r
 const mockReplyToRFQInquiry = jest.fn().mockResolvedValue({ success: true, rfq: { id: 'rfq-1', inquiries: [] } });
 const mockSubmitRFQInquiry = jest.fn().mockResolvedValue({ success: true, inquiry: { id: 'inq-new' } });
 
+const mockGetVendorPresence = jest.fn().mockResolvedValue({
+  success: true,
+  onlineVendors: [],
+  details: {},
+});
+
 jest.mock('@/lib/rfqClient', () => {
   const actual = jest.requireActual('@/lib/rfqClient');
   return {
@@ -20,6 +26,10 @@ jest.mock('@/lib/rfqClient', () => {
     submitRFQInquiry: (...args: any[]) => mockSubmitRFQInquiry(...args),
   };
 });
+jest.mock('@/lib/vendorPresenceClient', () => ({
+  getVendorPresence: (...args: any[]) => mockGetVendorPresence(...args),
+  sendVendorHeartbeat: jest.fn().mockResolvedValue({ success: true }),
+}));
 jest.mock('@/lib/store', () => ({ useApp: jest.fn() }));
 jest.mock('@/lib/authClient', () => ({ authClient: { getToken: jest.fn() } }));
 
@@ -1036,6 +1046,40 @@ function makeInquiry(overrides: any = {}): any {
       // Click All filter
       fireEvent.click(screen.getByRole('button', { name: /All \(/i }));
       expect(screen.getAllByText('Alpha Supplies').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('displays Online status badge when vendor is active and Offline when inactive', async () => {
+      mockGetVendorPresence.mockResolvedValueOnce({
+        success: true,
+        onlineVendors: ['online-vendor@example.com'],
+        details: {
+          'online-vendor@example.com': { isOnline: true },
+          'offline-vendor@example.com': { isOnline: false },
+        },
+      });
+
+      renderDetails(
+        buildRFQ({
+          assignedVendors: [
+            {
+              id: 'v-online',
+              name: 'Online Tech Supplies',
+              email: 'online-vendor@example.com',
+            } as any,
+            {
+              id: 'v-offline',
+              name: 'Offline Engineering Ltd',
+              email: 'offline-vendor@example.com',
+            } as any,
+          ],
+          inquiries: [],
+        })
+      );
+
+      await waitFor(() => {
+        expect(screen.getAllByText(DETAILS.vendorOnline).length).toBeGreaterThanOrEqual(1);
+        expect(screen.getAllByText(DETAILS.vendorOffline).length).toBeGreaterThanOrEqual(1);
+      });
     });
 
     it('allows switching selected vendor and sending clarification reply in buyer view', async () => {

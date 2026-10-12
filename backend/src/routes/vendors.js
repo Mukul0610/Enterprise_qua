@@ -7,6 +7,8 @@ router.get('/', optionalAuthenticate, vendorController.getVendors);
 router.post('/', authenticate, vendorController.createVendor);
 router.post('/bulk-import', authenticate, vendorController.bulkImportVendors);
 router.get('/rfq-credits', authenticate, vendorController.getVendorRfqCredits);
+router.get('/presence', optionalAuthenticate, vendorController.getVendorsPresence);
+router.post('/heartbeat', optionalAuthenticate, vendorController.recordVendorHeartbeat);
 router.get('/bulk-import/:sessionId', authenticate, vendorController.getBulkImportSessionStatus);
 router.get('/:id/rfq-credits', authenticate, vendorController.getVendorRfqCredits);
 router.get('/:id', optionalAuthenticate, vendorController.getVendorById);

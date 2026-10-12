@@ -526,6 +526,16 @@ const VALIDATION_SCHEMAS = {
     majorCategory: { type: 'string', required: false, maxLength: 255 },
     vendorRecordIds: { type: 'array', required: false },
   },
+
+  vendorHeartbeat: {
+    identifier: { type: 'string', required: false, minLength: 1, maxLength: 255 },
+    role: { type: 'string', required: false, minLength: 1, maxLength: 50 },
+    status: { type: 'string', required: false, enum: ['online', 'offline'] },
+  },
+
+  vendorPresenceQuery: {
+    identifiers: { type: 'string', required: false, maxLength: 2000 },
+  },
 };
 
 

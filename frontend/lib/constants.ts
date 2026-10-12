@@ -875,6 +875,11 @@ export const ROLE_ROUTE_PREFIX: Record<UserRole, string> = {
   admin: '/admin',
 };
 
+/** Vendor live presence threshold & polling intervals (ms) */
+export const PRESENCE_ONLINE_THRESHOLD_MS = 10 * 60 * 1000;
+export const PRESENCE_HEARTBEAT_INTERVAL_MS = 60 * 1000;
+export const PRESENCE_POLL_INTERVAL_MS = 30 * 1000;
+
 export {
   FORM_SCHEMAS,
   validateFormData,

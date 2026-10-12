@@ -2809,3 +2809,23 @@ at refreshFromDB (lib/store.tsx:643:9)
 ### 2026-10-11T21:28:36+05:30
 
 continue
+
+### 2026-10-12T11:21:50+05:30
+
+check when the chat with vendor in detaitla    <span className="px-1.5 py-0.2 rounded text-[8px] font-medium bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400">
+                                Ready
+                              </span>
+                            )} this ready is being show just tell me dont't do any thing
+
+### 2026-10-12T11:25:34+05:30
+
+In the RFQ Summary → View RFQ section, please replace the vendor status “Ready” with “Online” or “Offline” based on the vendor’s actual availability. Ensure the status is displayed and updated correctly.
+
+### 2026-10-12T12:14:41+05:30
+
+tell me summary about the featue in point with gap between them don't make any change in code for this prompt
+
+### 2026-10-12T12:21:25+05:30
+
+suggest name of branch and commit message just tell me I will commit the code
+

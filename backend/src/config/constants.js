@@ -811,6 +811,8 @@ const CHASER_DELAYS = {
   EMAIL_MS:     resolveChaserDelay(process.env.CHASER_EMAIL_DELAY_MS, TWENTY_FOUR_HOURS_MS),
 };
 
+const PRESENCE_ONLINE_THRESHOLD_MS = 10 * 60 * 1000;
+
 // ==============================================================================
 // SMS DLT TEMPLATE REGISTRY
 // ==============================================================================
@@ -1653,4 +1655,5 @@ module.exports = {
   resolveBuyerSourcingMode,
   CHASER_DELAYS,
   SMS_DLT_TEMPLATES,
+  PRESENCE_ONLINE_THRESHOLD_MS,
 };

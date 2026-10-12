@@ -578,6 +578,46 @@ export interface RFQVendorCandidate extends VendorEntry {
   alreadyInvited: boolean;
 }
 
+export interface VendorPresenceInfo {
+  identifier: string;
+  isOnline: boolean;
+  lastActive?: string;
+}
+
+export interface VendorPresenceResponse {
+  success: boolean;
+  onlineVendors: string[];
+  details?: Record<string, { isOnline: boolean; lastActive?: string }>;
+  thresholdMinutes?: number;
+}
+
+export interface VendorChatChannel {
+  key: string;
+  vendorId?: string;
+  vendorName: string;
+  vendorEmail?: string | null;
+  inquiryId?: string;
+  inquiry?: RFQInquiry;
+  messages: Array<{
+    id: string;
+    senderRole: 'vendor' | 'buyer';
+    senderName: string;
+    senderEmail?: string | null;
+    message: string;
+    timestamp: string;
+  }>;
+  status: 'open' | 'answered' | 'no_messages';
+  lastMessage?: {
+    message: string;
+    timestamp: string;
+    senderRole: 'vendor' | 'buyer';
+  };
+  contactPerson?: string | null;
+  phone?: string | null;
+  isProcucev?: boolean;
+  isOnline?: boolean;
+}
+
 export interface AIBotFeedItem {
   id: string;
   timestamp: string;

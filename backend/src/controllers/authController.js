@@ -2,6 +2,7 @@ const authService = require('../services/authService');
 const { logger } = require('../services/loggerService');
 const { VALIDATION_SCHEMAS, validatePayload, AUTH_MESSAGES } = require('../config/constants');
 const { extractToken } = require('../middleware/auth');
+const vendorPresenceService = require('../services/vendorPresenceService');
 
 function getClientIp(req) {
   return req.ip || (req.headers && req.headers['x-forwarded-for']) || '127.0.0.1';
@@ -136,6 +137,9 @@ async function logout(req, res, next) {
         );
         return res.status(503).json({ success: false, error: AUTH_MESSAGES.LOGOUT_REVOCATION_FAILED });
       }
+    }
+    if (userEmail && userEmail !== 'authenticated-user') {
+      vendorPresenceService.clearPresence(userEmail);
     }
     logger.audit(`User logged out: ${userEmail}`, userEmail, { ipAddress });
     return res.json({ success: true, message: AUTH_MESSAGES.LOGOUT_SUCCESS });
