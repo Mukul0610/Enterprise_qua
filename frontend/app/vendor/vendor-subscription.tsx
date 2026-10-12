@@ -130,7 +130,9 @@ export default function VendorSubscriptionCenter() {
       id: 'premium' as const,
       name: 'Premium Model',
       subtext: 'Client Uploaded Vendor',
+      originalPrice: '',
       price: 'Free',
+      chargeAmount: 'Free',
       billing: 'included with Buyer Roster upload',
       description: 'Automatically granted to vendors uploaded by buyers. Access all direct RFQ invitations issued by your clients.',
       badge: 'Client Uploaded',
@@ -150,8 +152,14 @@ export default function VendorSubscriptionCenter() {
       id: 'connect' as const,
       name: 'Connect Model',
       subtext: 'Marketplace Expansion',
-      price: '₹2',
-      billing: 'per 3 months (90 days)',
+      originalPrice: '₹25,000',
+      price: '₹7,499',
+      // The amount actually charged server-side (ZOHO_SUBSCRIPTION_PRICING in
+      // backend/src/config/constants.js) hasn't changed — only the displayed
+      // card price has. Keeping this separate so the payment button never
+      // promises an amount the backend won't actually collect.
+      chargeAmount: '₹2',
+      billing: 'per year',
       description: 'Expand your market reach. Access & download open RFQs across the entire Procucev Network Marketplace.',
       badge: 'Popular for Growth',
       colorClass: 'border-indigo-300 dark:border-indigo-800 shadow-indigo-500/10',
@@ -172,8 +180,10 @@ export default function VendorSubscriptionCenter() {
       id: 'select' as const,
       name: 'Select Model',
       subtext: 'Item Catalogue & High Volume',
-      price: '₹5',
-      billing: 'per 3 months (90 days)',
+      originalPrice: '₹50,000',
+      price: '₹14,999',
+      chargeAmount: '₹5',
+      billing: 'per year',
       description: 'Complete tier for high-volume suppliers. Build your Item Catalogue and capture maximum marketplace demand.',
       badge: 'Full Suite',
       colorClass: 'border-purple-300 dark:border-purple-800 shadow-purple-500/10',
@@ -308,7 +318,12 @@ export default function VendorSubscriptionCenter() {
                   </h3>
                 </div>
 
-                <div className="flex items-baseline gap-1">
+                <div className="flex items-baseline gap-1.5 flex-wrap">
+                  {p.originalPrice && (
+                    <span className="text-sm font-semibold text-slate-400 dark:text-gray-500 line-through">
+                      {p.originalPrice}
+                    </span>
+                  )}
                   <span className="text-3xl font-black text-slate-900 dark:text-white">{p.price}</span>
                   <span className="text-[11px] text-slate-400 dark:text-gray-500 font-medium">{p.billing}</span>
                 </div>
@@ -354,7 +369,7 @@ export default function VendorSubscriptionCenter() {
               {/* Card Footer Button */}
               <div className="p-6 bg-slate-50 dark:bg-gray-950/40 border-t border-slate-150 dark:border-gray-800/60">
                 <button
-                  onClick={() => handlePlanButtonClick(p.id, p.price)}
+                  onClick={() => handlePlanButtonClick(p.id, p.chargeAmount)}
                   disabled={isActive || isUpdatingPlan}
                   className={`btn w-full text-xs font-bold py-2.5 flex items-center justify-center gap-1.5 ${
                     isActive
