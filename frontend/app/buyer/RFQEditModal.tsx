@@ -22,7 +22,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Loader2, Paperclip, Plus, Save, Sparkles, Trash2, X } from 'lucide-react';
 import { getMajorCategories, getMinorCategories, autoCategorizeItem, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
 import { CURRENCY, RFQ_STATUSES, formatFileSize, formatIndianDateTime } from '@/lib/constants';
-import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail } from '@/lib/validationSchemas';
+import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
 import { uploadRFQAttachment } from '@/lib/rfqClient';
 import { isPastDateString } from '@/lib/manualRfqModel';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
@@ -359,7 +359,12 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
             setPincodePostOffices([]);
           } else {
             setPincodeError(null);
-            setPincodePostOffices(res.postOffices || []);
+            const offices = res.postOffices || [];
+            setPincodePostOffices(offices);
+            const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+            if (resolvedLoc) {
+              setForm((prev) => (prev ? { ...prev, deliveryLocation: resolvedLoc } : prev));
+            }
           }
         } catch {
           setPincodeError(null);
@@ -398,6 +403,27 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
 
   const patch = <K extends keyof RFQEditFormState>(key: K, value: RFQEditFormState[K]) => {
     setForm((prev) => (prev ? { ...prev, [key]: value } : prev));
+  };
+
+  const handlePincodeBlur = async () => {
+    if (!form?.deliveryPincode) return;
+    const raw = form.deliveryPincode.trim();
+    if (/^\d{6}$/.test(raw) && !isDummyPincode(raw)) {
+      try {
+        const res = await validatePincode(raw);
+        if (res.isValid) {
+          setPincodeError(null);
+          const offices = res.postOffices || [];
+          setPincodePostOffices(offices);
+          const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+          if (resolvedLoc) {
+            setForm((prev) => (prev ? { ...prev, deliveryLocation: resolvedLoc } : prev));
+          }
+        }
+      } catch {
+        // silent
+      }
+    }
   };
 
   const patchRow = (id: string, changes: Partial<RFQEditLineItem>) => {
@@ -679,6 +705,7 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
                     type="text"
                     value={form.deliveryPincode}
                     onChange={(e) => patch('deliveryPincode', e.target.value)}
+                    onBlur={handlePincodeBlur}
                     aria-invalid={!!errors.deliveryPincode || !!pincodeError}
                     maxLength={10}
                     className="mono font-semibold pr-20"

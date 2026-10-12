@@ -28,7 +28,7 @@ import {
   updateManualRFQLineItem,
   validateManualRFQForm,
 } from '@/lib/manualRfqModel';
-import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail } from '@/lib/validationSchemas';
+import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
 import { getMajorCategories, getMinorCategories, autoCategorizeItem, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
 import { extractRfqCategorySignals, matchVendorAgainstSignals } from '@/lib/vendorMatching';
@@ -627,7 +627,15 @@ export default function IngestionWizard({
             setPincodePostOffices([]);
           } else {
             setPincodeError(null);
-            setPincodePostOffices(res.postOffices || []);
+            const offices = res.postOffices || [];
+            setPincodePostOffices(offices);
+            const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+            if (resolvedLoc) {
+              setForm((prev) => ({
+                ...prev,
+                deliveryLocation: resolvedLoc,
+              }));
+            }
           }
         } catch {
           setPincodeError(null);
@@ -639,6 +647,29 @@ export default function IngestionWizard({
       setPincodeError(null);
       setPincodeValidating(false);
       setPincodePostOffices([]);
+    }
+  }, [form.deliveryPincode]);
+
+  const handlePincodeBlur = useCallback(async () => {
+    const raw = form.deliveryPincode.trim();
+    if (/^\d{6}$/.test(raw) && !isDummyPincode(raw)) {
+      try {
+        const res = await validatePincode(raw);
+        if (res.isValid) {
+          setPincodeError(null);
+          const offices = res.postOffices || [];
+          setPincodePostOffices(offices);
+          const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+          if (resolvedLoc) {
+            setForm((prev) => ({
+              ...prev,
+              deliveryLocation: resolvedLoc,
+            }));
+          }
+        }
+      } catch {
+        // silent
+      }
     }
   }, [form.deliveryPincode]);
 
@@ -1262,6 +1293,7 @@ export default function IngestionWizard({
                 required
                 value={form.deliveryPincode}
                 onChange={(e) => patchForm('deliveryPincode', e.target.value)}
+                onBlur={handlePincodeBlur}
                 placeholder={MODAL.deliveryPincodePlaceholder}
                 maxLength={10}
                 className="w-full px-3 py-2 pr-20 rounded-xl border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-slate-900 dark:text-white mono font-semibold focus:ring-2 focus:ring-indigo-500"

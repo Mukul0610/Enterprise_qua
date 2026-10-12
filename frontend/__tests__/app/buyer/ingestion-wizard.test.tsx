@@ -1319,4 +1319,62 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
     });
   });
 
+  describe('PIN code auto-population of Delivery Location', () => {
+    test('auto-populates city and state into delivery location on entering a valid PIN code', async () => {
+      renderWizard();
+
+      const pincodeInput = screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder);
+      const locationInput = screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder) as HTMLInputElement;
+
+      expect(locationInput.value).toBe('');
+
+      // Enter valid PIN code (e.g. 400701 -> Navi Mumbai, Maharashtra)
+      fireEvent.change(pincodeInput, { target: { value: '400701' } });
+      fireEvent.blur(pincodeInput);
+
+      await waitFor(() => {
+        expect(locationInput.value).toBe('Navi Mumbai, Maharashtra');
+      });
+    });
+
+    test('resolves delivery location from postal API response if available', async () => {
+      const realFetch = global.fetch;
+      global.fetch = jest.fn((url: RequestInfo | URL, init?: any) => {
+        if (typeof url === 'string' && url.includes('api.postalpincode.in')) {
+          return Promise.resolve({
+            ok: true,
+            status: 200,
+            json: async () => [
+              {
+                Status: 'Success',
+                PostOffice: [
+                  {
+                    Name: 'Connaught Place',
+                    District: 'Central Delhi',
+                    State: 'Delhi',
+                  },
+                ],
+              },
+            ],
+          }) as any;
+        }
+        return (realFetch as any)(url, init);
+      });
+
+      renderWizard();
+
+      const pincodeInput = screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder);
+      const locationInput = screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder) as HTMLInputElement;
+
+      fireEvent.change(pincodeInput, { target: { value: '110001' } });
+      fireEvent.blur(pincodeInput);
+
+      await waitFor(() => {
+        expect(locationInput.value).toBe('Central Delhi, Delhi');
+      });
+
+      global.fetch = realFetch;
+    });
+  });
+
 });

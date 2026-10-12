@@ -263,6 +263,33 @@ global.fetch = jest.fn().mockImplementation((url: string, init?: { method?: stri
           },
         };
       }
+      if (typeof url === 'string' && url.includes('api.postalpincode.in')) {
+        const pinMatch = url.match(/\/pincode\/(\d{6})/);
+        const pin = pinMatch ? pinMatch[1] : '';
+        const isNaviMumbai = pin.startsWith('4007');
+        return [
+          {
+            Status: 'Success',
+            Message: 'Number of pincode found:1',
+            PostOffice: [
+              {
+                Name: isNaviMumbai ? 'Navi Mumbai' : 'Mumbai',
+                Description: null,
+                BranchType: 'Sub Post Office',
+                DeliveryStatus: 'Delivery',
+                Circle: 'Maharashtra',
+                District: isNaviMumbai ? 'Navi Mumbai' : 'Mumbai',
+                Division: 'Navi Mumbai',
+                Region: 'Mumbai',
+                Block: 'Thane',
+                State: 'Maharashtra',
+                Country: 'India',
+                Pincode: pin,
+              },
+            ],
+          },
+        ];
+      }
       if (typeof url === 'string' && url.includes('/api/ai-feed')) {
         return { success: true, data: [] };
       }

@@ -10,6 +10,8 @@ import {
   INDIAN_PINCODE_PATTERN,
   isDummyPincode,
   FormSchema,
+  resolveLocationFromPostalResult,
+  getFallbackLocationForPincode,
 } from '../../lib/validationSchemas';
 import { UI_STRINGS } from '../../lib/uiStrings';
 
@@ -499,6 +501,92 @@ describe('validatePincode async postal API validator', () => {
     expect(res.isValid).toBe(true);
     expect(abortCalled).toBe(true);
     jest.useRealTimers();
+  });
+
+  describe('resolveLocationFromPostalResult and getFallbackLocationForPincode', () => {
+    test('resolves location from postal office District and State', () => {
+      const offices = [
+        {
+          Name: 'Vashi',
+          Description: null,
+          BranchType: 'Sub Post Office',
+          DeliveryStatus: 'Delivery',
+          Circle: 'Maharashtra',
+          District: 'Thane',
+          Division: 'Navi Mumbai',
+          Region: 'Mumbai',
+          Block: 'Thane',
+          State: 'Maharashtra',
+          Country: 'India',
+          Pincode: '400703',
+        },
+      ];
+      const loc = resolveLocationFromPostalResult('400703', offices);
+      expect(loc).toBe('Thane, Maharashtra');
+    });
+
+    test('falls back to city/state prefix mapping when no offices returned', () => {
+      expect(resolveLocationFromPostalResult('400701', [])).toBe('Navi Mumbai, Maharashtra');
+      expect(resolveLocationFromPostalResult('110001', [])).toBe('New Delhi, Delhi');
+      expect(resolveLocationFromPostalResult('560001', [])).toBe('Bengaluru, Karnataka');
+      expect(resolveLocationFromPostalResult('600001', [])).toBe('Chennai, Tamil Nadu');
+      expect(resolveLocationFromPostalResult('700001', [])).toBe('Kolkata, West Bengal');
+      expect(resolveLocationFromPostalResult('500001', [])).toBe('Hyderabad, Telangana');
+      expect(resolveLocationFromPostalResult('411001', [])).toBe('Pune, Maharashtra');
+      expect(resolveLocationFromPostalResult('380001', [])).toBe('Ahmedabad, Gujarat');
+      expect(resolveLocationFromPostalResult('302001', [])).toBe('Jaipur, Rajasthan');
+      expect(resolveLocationFromPostalResult('226001', [])).toBe('Lucknow, Uttar Pradesh');
+      expect(resolveLocationFromPostalResult('201301', [])).toBe('Noida, Uttar Pradesh');
+      expect(resolveLocationFromPostalResult('122001', [])).toBe('Gurugram, Haryana');
+      expect(resolveLocationFromPostalResult('160001', [])).toBe('Chandigarh, Punjab');
+      expect(resolveLocationFromPostalResult('800001', [])).toBe('Patna, Bihar');
+      expect(resolveLocationFromPostalResult('751001', [])).toBe('Bhubaneswar, Odisha');
+      expect(resolveLocationFromPostalResult('781001', [])).toBe('Guwahati, Assam');
+      expect(resolveLocationFromPostalResult('682001', [])).toBe('Kochi, Kerala');
+      expect(resolveLocationFromPostalResult('641001', [])).toBe('Coimbatore, Tamil Nadu');
+      expect(resolveLocationFromPostalResult('530001', [])).toBe('Visakhapatnam, Andhra Pradesh');
+      expect(resolveLocationFromPostalResult('452001', [])).toBe('Indore, Madhya Pradesh');
+      expect(resolveLocationFromPostalResult('462001', [])).toBe('Bhopal, Madhya Pradesh');
+      expect(resolveLocationFromPostalResult('695001', [])).toBe('Thiruvananthapuram, Kerala');
+    });
+
+    test('returns state level fallback or empty string for unknown pins', () => {
+      expect(getFallbackLocationForPincode('999999')).toBe('');
+      expect(getFallbackLocationForPincode('')).toBe('');
+      expect(getFallbackLocationForPincode('4')).toBe('');
+      expect(getFallbackLocationForPincode('400001')).toBe('Mumbai, Maharashtra');
+      expect(getFallbackLocationForPincode('440001')).toBe('Nagpur, Maharashtra');
+      expect(getFallbackLocationForPincode('390001')).toBe('Vadodara, Gujarat');
+      expect(getFallbackLocationForPincode('395001')).toBe('Surat, Gujarat');
+      expect(getFallbackLocationForPincode('490001')).toBe('Chhattisgarh');
+    });
+
+    test('resolves location using fallback office properties or fallback pin lookup', () => {
+      const officeWithDivisionOnly = [
+        { Name: 'TestPO', Division: 'TestDivision' } as any,
+      ];
+      expect(resolveLocationFromPostalResult('400701', officeWithDivisionOnly)).toBe('TestDivision');
+
+      const officeWithCircleOnly = [
+        { Name: '', Circle: 'TestCircle' } as any,
+      ];
+      expect(resolveLocationFromPostalResult('400701', officeWithCircleOnly)).toBe('TestCircle');
+
+      const officeWithBlankProperties = [
+        { Name: '', District: '', Division: '', Circle: '', State: '' } as any,
+      ];
+      expect(resolveLocationFromPostalResult('400701', officeWithBlankProperties)).toBe('Navi Mumbai, Maharashtra');
+    });
+
+    test('handles non-array response from postal API gracefully', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ Message: 'Rate limited' }),
+      } as Response);
+
+      const res = await validatePincode('400701');
+      expect(res.isValid).toBe(true);
+    });
   });
 });
 

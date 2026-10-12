@@ -1069,4 +1069,32 @@ describe('RFQDeleteDialog', () => {
     fireEvent.click(autoBtn);
     expect(screen.getAllByDisplayValue(/Engineering Spares - Mechanical/i).length).toBeGreaterThan(0);
   });
+
+  it('auto-populates delivery location on PIN code blur in RFQEditModal', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [
+        {
+          Status: 'Success',
+          PostOffice: [
+            {
+              Name: 'Vashi',
+              District: 'Thane',
+              State: 'Maharashtra',
+            },
+          ],
+        },
+      ],
+    } as Response);
+
+    renderEdit(buildRFQ({ deliveryLocation: '', deliveryPincode: '' }));
+    const pinInput = document.getElementById('rfq-edit-pincode') as HTMLInputElement;
+    fireEvent.change(pinInput, { target: { value: '400703' } });
+    fireEvent.blur(pinInput);
+
+    await waitFor(() => {
+      const locInput = document.getElementById('rfq-edit-location') as HTMLInputElement;
+      expect(locInput.value).toBe('Thane, Maharashtra');
+    });
+  });
 });

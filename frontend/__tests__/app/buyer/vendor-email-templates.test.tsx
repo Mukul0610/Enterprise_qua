@@ -123,4 +123,15 @@ describe('VendorEmailTemplatesPage', () => {
     expect(screen.queryByDisplayValue('Custom B subject')).not.toBeInTheDocument();
     expect(screen.queryByText('Customized')).not.toBeInTheDocument();
   });
+
+  test('renders VendorEmailTemplatesRoute page component correctly', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const VendorEmailTemplatesRoute = require('@/app/buyer/vendor-email-templates/page').default;
+    (fetchDispatchTemplates as jest.Mock).mockResolvedValue({ success: true, data: {} });
+
+    render(<VendorEmailTemplatesRoute />);
+    await waitFor(() => {
+      expect(screen.getByText(/Template A/i)).toBeInTheDocument();
+    });
+  });
 });

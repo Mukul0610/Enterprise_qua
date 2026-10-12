@@ -56,7 +56,7 @@ import {
   updateManualRFQLineItem,
   validateManualRFQForm,
 } from '@/lib/manualRfqModel';
-import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail } from '@/lib/validationSchemas';
+import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
 import { UI_STRINGS, formatString, extractionReasonMessage } from '@/lib/uiStrings';
 import type {
   ManualRFQForm,
@@ -346,7 +346,15 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
             setPincodePostOffices([]);
           } else {
             setPincodeError(null);
-            setPincodePostOffices(res.postOffices || []);
+            const offices = res.postOffices || [];
+            setPincodePostOffices(offices);
+            const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+            if (resolvedLoc) {
+              setForm((prev) => ({
+                ...prev,
+                deliveryLocation: resolvedLoc,
+              }));
+            }
           }
         } catch {
           setPincodeError(null);
@@ -358,6 +366,29 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       setPincodeError(null);
       setPincodeValidating(false);
       setPincodePostOffices([]);
+    }
+  }, [form.deliveryPincode]);
+
+  const handlePincodeBlur = useCallback(async () => {
+    const raw = form.deliveryPincode.trim();
+    if (/^\d{6}$/.test(raw) && !isDummyPincode(raw)) {
+      try {
+        const res = await validatePincode(raw);
+        if (res.isValid) {
+          setPincodeError(null);
+          const offices = res.postOffices || [];
+          setPincodePostOffices(offices);
+          const resolvedLoc = resolveLocationFromPostalResult(raw, offices);
+          if (resolvedLoc) {
+            setForm((prev) => ({
+              ...prev,
+              deliveryLocation: resolvedLoc,
+            }));
+          }
+        }
+      } catch {
+        // silent
+      }
     }
   }, [form.deliveryPincode]);
 
@@ -866,6 +897,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
                   aria-invalid={!!formErrors.deliveryPincode || !!pincodeError}
                   value={form.deliveryPincode}
                   onChange={(e) => patchForm('deliveryPincode', e.target.value)}
+                  onBlur={handlePincodeBlur}
                   placeholder={MODAL.deliveryPincodePlaceholder}
                   maxLength={10}
                   className="mono font-semibold pr-20"

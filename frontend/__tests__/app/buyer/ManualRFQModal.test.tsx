@@ -1108,6 +1108,34 @@ describe('ManualRFQModal: Mode 1 private vendor roster preview', () => {
       expect(screen.queryByTestId('manual-rfq-quota-exhausted-banner')).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: MODAL.saveAction })).toBeInTheDocument();
     });
+
+    it('auto-populates delivery location when valid PIN code is entered and onBlur is fired', async () => {
+      global.fetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => [
+          {
+            Status: 'Success',
+            PostOffice: [
+              {
+                Name: 'Vashi',
+                District: 'Thane',
+                State: 'Maharashtra',
+              },
+            ],
+          },
+        ],
+      } as Response);
+
+      renderModal();
+      const pinInput = screen.getByPlaceholderText(MODAL.deliveryPincodePlaceholder);
+      fireEvent.change(pinInput, { target: { value: '400703' } });
+      fireEvent.blur(pinInput);
+
+      await waitFor(() => {
+        const locInput = screen.getByPlaceholderText(MODAL.deliveryLocationPlaceholder);
+        expect((locInput as HTMLInputElement).value).toBe('Thane, Maharashtra');
+      });
+    });
   });
 });
 
