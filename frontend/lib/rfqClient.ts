@@ -96,6 +96,8 @@ export async function extractLineItemsFromDocument(
       success: false,
       reason: body.reason || 'AI_FAILED',
       error: body.error || UI_STRINGS.rfqExtraction.unreadableResponse,
+      // Carried through for debugging — the real server-side cause of the failure.
+      ...(body.detail ? { detail: body.detail } : {}),
     };
   }
 

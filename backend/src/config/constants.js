@@ -453,6 +453,36 @@ const RFQ_CATEGORY_CLASSIFICATION = {
     'tbd',
   ],
 
+  // Umbrella labels a document's own "Category" column tends to carry, mapped to
+  // the real taxonomy minor they mean. These are NOT taxonomy minors themselves,
+  // so without this map resolveStatedCategory() rejects them and the stated
+  // category — which the document actually gave — is discarded, forcing every
+  // row to fall through to keyword matching (or blank). The minor each alias
+  // points to must exist in the category_division master, otherwise the review
+  // grid cannot render it. A label with no genuine taxonomy home (e.g. "Medical
+  // Equipment") is deliberately absent: it stays blank and is flagged for review
+  // rather than being forced into an unrelated category (RULE 10).
+  //
+  // Keys are compared lowercased and trimmed (see resolveStatedCategoryAlias).
+  STATED_CATEGORY_ALIASES: {
+    // IT (taxonomy major "IT"; "Hardware" is its generic hardware minor).
+    'it equipment': 'Hardware',
+    'it hardware': 'Hardware',
+    'computer hardware': 'Hardware',
+    'it software': 'Software',
+    // Electrical goods -> Engineering Spares - Electrical » Lights.
+    'electrical equipment': 'Lights',
+    'electrical material': 'Lights',
+    'electrical goods': 'Lights',
+    'lighting equipment': 'Lights',
+    // Plumbing -> Civil Works » Plumbing.
+    'plumbing material': 'Plumbing',
+    'plumbing equipment': 'Plumbing',
+    'plumbing goods': 'Plumbing',
+    // Piping -> Engineering Spares - Mechanical » Pipes & Pipe Fittings.
+    'piping material': 'Pipes & Pipe Fittings',
+  },
+
   // Longest keyword is evaluated first so "circuit breaker" beats "breaker".
   DOMAIN_KEYWORD_MAP: {
     'centrifugal pump': { major: 'Engineering Spares - Mechanical', minor: 'Pumps & Accessories' },
@@ -481,6 +511,22 @@ const RFQ_CATEGORY_CLASSIFICATION = {
     cable: { major: 'Engineering Spares - Electrical', minor: 'Cables' },
     sensor: { major: 'Engineering Spares - Electrical', minor: 'Sensors' },
     motor: { major: 'Engineering Spares - Electrical', minor: 'Motors' },
+    // Lighting fixtures -> Engineering Spares - Electrical » Lights. "flood
+    // light" / "street light" / "led light" are listed as whole phrases so they
+    // win over the shorter electrical entries (KEYWORDS_BY_LENGTH sorts
+    // longest-first).
+    'flood light': { major: 'Engineering Spares - Electrical', minor: 'Lights' },
+    'street light': { major: 'Engineering Spares - Electrical', minor: 'Lights' },
+    'led light': { major: 'Engineering Spares - Electrical', minor: 'Lights' },
+    luminaire: { major: 'Engineering Spares - Electrical', minor: 'Lights' },
+    // Plumbing -> Civil Works » Plumbing. "water pipe" and "hdpe" are
+    // plumbing-specific, so they must beat the generic 'pipe' -> Pipes & Pipe
+    // Fittings entry below; longest-first ordering handles the water-pipe case,
+    // and 'hdpe' is only ever a plumbing pipe here.
+    'water pipe': { major: 'Civil Works', minor: 'Plumbing' },
+    hdpe: { major: 'Civil Works', minor: 'Plumbing' },
+    cpvc: { major: 'Civil Works', minor: 'Plumbing' },
+    plumbing: { major: 'Civil Works', minor: 'Plumbing' },
     peb: { major: 'Civil Works', minor: 'PEB Structure' },
     tmt: { major: 'Civil Works', minor: 'TMT BARS' },
     steel: { major: 'Raw Material', minor: 'Steels' },

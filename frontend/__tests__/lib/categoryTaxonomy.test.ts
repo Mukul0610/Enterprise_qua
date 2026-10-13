@@ -116,23 +116,75 @@ describe('categoryTaxonomy module', () => {
     expect(res1.majorCategory).toBe('Engineering Spares - Mechanical');
     expect(res1.minorCategory).toBe('Pumps & Accessories');
 
-    // Service cues fallback
+    // Weak, generic service cues must NOT guess a category — the previous
+    // "Others – New Service/Product" fallback produced dummy categories.
     const res2 = require('@/lib/categoryTaxonomy').autoCategorizeItem('Custom Plant Operations Service', '');
-    expect(res2.majorCategory).toBe('Others – New Service');
-    expect(res2.minorCategory).toBe('Consulting');
+    expect(res2.majorCategory).toBe('');
+    expect(res2.minorCategory).toBe('');
 
-    // Product cues fallback
-    const res3 = require('@/lib/categoryTaxonomy').autoCategorizeItem('Custom Specialty Widget Product', '');
-    expect(res3.majorCategory).toBe('Others – New Product');
-    expect(res3.minorCategory).toBeTruthy();
+    // A specific, meaningful keyword still resolves to its real category.
+    const res3 = require('@/lib/categoryTaxonomy').autoCategorizeItem('Firewall appliance', '');
+    expect(res3.majorCategory).toBe('Information Technology (IT) & Software');
+    expect(res3.minorCategory).toBe('Cybersecurity Solutions');
 
-    // Unmatched fallback
+    // But a generic "product/equipment/item" cue with no real keyword must NOT
+    // guess — the old catch-all rule that did this has been removed.
+    const res3b = require('@/lib/categoryTaxonomy').autoCategorizeItem('Some generic product supply item', '');
+    expect(res3b.majorCategory).toBe('');
+    expect(res3b.minorCategory).toBe('');
+
+    const res3c = require('@/lib/categoryTaxonomy').autoCategorizeItem('Miscellaneous equipment', '');
+    expect(res3c.majorCategory).toBe('');
+    expect(res3c.minorCategory).toBe('');
+
+    // Unmatched / nonsense input stays empty.
     const res4 = require('@/lib/categoryTaxonomy').autoCategorizeItem('xyzzy999911', '');
     expect(res4.majorCategory).toBe('');
     expect(res4.minorCategory).toBe('');
 
+    // Empty input stays empty.
+    const res5 = require('@/lib/categoryTaxonomy').autoCategorizeItem('', '');
+    expect(res5.majorCategory).toBe('');
+    expect(res5.minorCategory).toBe('');
+
     // getDefaultMinorForMajor
     expect(require('@/lib/categoryTaxonomy').getDefaultMinorForMajor('Civil Works')).toBe('Back filing');
     expect(require('@/lib/categoryTaxonomy').getDefaultMinorForMajor('Unknown Major')).toBe('');
+  });
+
+  it('derives the dominant major category across line items, empty when none', () => {
+    const { dominantMajorCategory } = require('@/lib/categoryTaxonomy');
+
+    // Most frequent non-empty major wins.
+    expect(
+      dominantMajorCategory([
+        { majorCategory: 'Civil Works' },
+        { majorCategory: 'Engineering Spares - Mechanical' },
+        { majorCategory: 'Engineering Spares - Mechanical' },
+      ])
+    ).toBe('Engineering Spares - Mechanical');
+
+    // Blank / missing categories are ignored, not counted.
+    expect(
+      dominantMajorCategory([
+        { majorCategory: '' },
+        { majorCategory: null },
+        { majorCategory: 'Civil Works' },
+      ])
+    ).toBe('Civil Works');
+
+    // No categories at all -> empty, never a guess.
+    expect(
+      dominantMajorCategory([{ majorCategory: '' }, { majorCategory: undefined }])
+    ).toBe('');
+    expect(dominantMajorCategory([])).toBe('');
+
+    // Ignored synthetic values (e.g. the "All Categories" browse option) are skipped.
+    expect(
+      dominantMajorCategory(
+        [{ majorCategory: 'All Categories' }, { majorCategory: 'Civil Works' }],
+        ['All Categories']
+      )
+    ).toBe('Civil Works');
   });
 });

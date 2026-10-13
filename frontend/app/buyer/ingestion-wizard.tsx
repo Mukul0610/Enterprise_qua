@@ -29,7 +29,7 @@ import {
   validateManualRFQForm,
 } from '@/lib/manualRfqModel';
 import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
-import { getMajorCategories, getMinorCategories, autoCategorizeItem, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
+import { getMajorCategories, getMinorCategories, dominantMajorCategory } from '@/lib/categoryTaxonomy';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
 import { extractRfqCategorySignals, matchVendorAgainstSignals } from '@/lib/vendorMatching';
 import type {
@@ -570,6 +570,9 @@ export default function IngestionWizard({
   const [isExtracting, setIsExtracting] = useState(false);
   const [isCategorizing, setIsCategorizing] = useState(false);
   const [extractionError, setExtractionError] = useState<string | null>(null);
+  // The raw underlying failure cause from the server, shown beneath the friendly
+  // message in the failure banner so a failed extraction is easy to debug.
+  const [extractionDetail, setExtractionDetail] = useState<string | null>(null);
   const [extractionSummary, setExtractionSummary] = useState<{
     model: string;
     accepted: number;
@@ -591,26 +594,10 @@ export default function IngestionWizard({
   const lineItemErrors = submitAttempted ? validation.lineItemErrors : {};
 
   const patchForm = useCallback(<K extends keyof ManualRFQForm>(key: K, value: ManualRFQForm[K]) => {
-    setForm((prev) => {
-      const next = { ...prev, [key]: value };
-      if (key === 'title' && typeof value === 'string' && value.trim().length >= 3) {
-        const auto = autoCategorizeItem(value);
-        if (auto.majorCategory) {
-          if (!next.majorCategory) next.majorCategory = auto.majorCategory;
-          if (next.lineItems.length > 0 && !next.lineItems[0].majorCategory) {
-            next.lineItems = [
-              {
-                ...next.lineItems[0],
-                majorCategory: auto.majorCategory,
-                minorCategory: auto.minorCategory,
-              },
-              ...next.lineItems.slice(1),
-            ];
-          }
-        }
-      }
-      return next;
-    });
+    // Category is never guessed from the title in the browser: the local keyword
+    // table drifted out of sync with the real taxonomy. Categories come from
+    // document extraction or the server-backed Auto-Categorize action instead.
+    setForm((prev) => ({ ...prev, [key]: value }));
   }, []);
 
   useEffect(() => {
@@ -721,6 +708,7 @@ export default function IngestionWizard({
     if (validFiles.length > 0) {
       setUploadedFiles((prev) => [...prev, ...validFiles]);
       setExtractionError(null);
+      setExtractionDetail(null);
     }
   };
 
@@ -738,6 +726,7 @@ export default function IngestionWizard({
   const handleExtractFromFiles = async () => {
     setIsExtracting(true);
     setExtractionError(null);
+    setExtractionDetail(null);
     setExtractionSummary(null);
 
     const primaryFile = uploadedFiles[0];
@@ -749,7 +738,10 @@ export default function IngestionWizard({
         const extracted = result.data.extractedEntities.map(fromExtractedEntity);
         const derivedTitle = result.data.title || '';
         const derivedBudget = result.data.estimatedBudget ?? null;
-        const derivedMajor = extracted[0]?.majorCategory || '';
+        // Derive the RFQ header major from the dominant category across the
+        // extracted line items (not just the first row), and only when the
+        // document actually provided one — never a guess.
+        const derivedMajor = dominantMajorCategory(extracted, [ALL_CATEGORIES_OPTION]);
         const derivedLocation = result.data.deliveryLocation || '';
         const derivedPincode = result.data.deliveryPincode || '';
         const derivedDate = result.data.targetDeliveryDate || '';
@@ -780,11 +772,13 @@ export default function IngestionWizard({
       } else {
         const msg = extractionReasonMessage(result.reason, result.error);
         setExtractionError(msg);
+        setExtractionDetail(result.detail || result.error || null);
         showToast(EXTRACTION.fallbackTitle, msg, 'warning');
       }
-    } catch {
+    } catch (err) {
       const msg = EXTRACTION.unreadableResponse;
       setExtractionError(msg);
+      setExtractionDetail(err instanceof Error ? err.message : String(err));
       showToast(EXTRACTION.fallbackTitle, msg, 'warning');
     } finally {
       setIsExtracting(false);
@@ -799,82 +793,99 @@ export default function IngestionWizard({
   const handleEnterManually = () => {
     setForm((prev) => (prev.lineItems.length === 0 ? addManualRFQLineItem(prev) : prev));
     setExtractionError(null);
+    setExtractionDetail(null);
     showToast(EXTRACTION.fallbackTitle, EXTRACTION.manualEntryStarted, 'info');
     lineItemsSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
 
-  /** Auto-categorize all line items with AI */
+  /**
+   * Auto-categorize all line items against the shared taxonomy.
+   *
+   * Classification is asked of the server (/api/rfqs/ingest via classifyLineItems),
+   * which owns the full category_division master and the same precedence rules the
+   * ingest pipeline uses. The browser does NOT guess with a local keyword table:
+   * that table drifted out of sync with the real taxonomy and produced category
+   * names ("Lighting", "IT Hardware & Peripherals", "Bricks & Blocks") that are
+   * not in the master, so no dropdown could render them and no vendor matched.
+   *
+   * Items that already carry a category (e.g. filled by document extraction) are
+   * left untouched; only the blanks are sent for classification. The server's
+   * result is authoritative for those rows — an item it cannot confidently place
+   * is returned blank and stays blank rather than being guessed.
+   */
   const handleAutoCategorizeAll = async () => {
     setIsCategorizing(true);
     try {
-      let detectedMajor = '';
-      const updatedLineItems = form.lineItems.map((item) => {
-        const auto = autoCategorizeItem(item.itemName, item.technicalSpecs || form.title);
-        const nextMajor = auto.majorCategory || item.majorCategory || form.majorCategory || 'Engineering Spares - Mechanical';
-        const nextMinor = auto.minorCategory || (nextMajor ? getDefaultMinorForMajor(nextMajor) : '') || 'Pumps & Accessories';
-        if (nextMajor && !detectedMajor) detectedMajor = nextMajor;
-        return {
-          ...item,
-          majorCategory: nextMajor,
-          minorCategory: nextMinor,
-        };
-      });
+      // Only the rows still missing a category are classified. Keep the rest.
+      const toClassify = form.lineItems.filter(
+        (item) => !item.majorCategory && item.itemName.trim() !== ''
+      );
 
-      setForm((prev) => ({
-        ...prev,
-        majorCategory: detectedMajor || prev.majorCategory || (prev.title ? autoCategorizeItem(prev.title).majorCategory : '') || 'Engineering Spares - Mechanical',
-        lineItems: updatedLineItems,
-      }));
+      if (toClassify.length === 0) {
+        showToast(
+          EXTRACTION.classifySuccessTitle,
+          'All line items already have a category.',
+          'info'
+        );
+        return;
+      }
 
-      // Also call backend classifyLineItems if items exist
-      const quotableEntities = form.lineItems
-        .map((item) => ({
+      const result = await classifyLineItems(
+        toClassify.map((item) => ({
           id: item.id,
           itemName: item.itemName,
           technicalSpecs: item.technicalSpecs,
           quantity: Number(item.quantity) || 1,
           unit: item.unit || 'nos',
           targetDate: item.targetDate || '',
-          category: item.minorCategory,
-          majorCategory: item.majorCategory,
-          minorCategory: item.minorCategory,
+          category: '',
+          majorCategory: '',
+          minorCategory: '',
           confidence: 0,
         }))
-        .filter((e) => e.itemName.trim() !== '');
+      );
 
-      if (quotableEntities.length > 0) {
-        try {
-          const result = await classifyLineItems(quotableEntities);
-          if (result.success && result.data && Array.isArray(result.data.extractedEntities)) {
-            const classified = new Map(result.data.extractedEntities.map((e) => [e.id, e]));
-            setForm((prev) => ({
-              ...prev,
-              lineItems: prev.lineItems.map((item) => {
-                const matched = classified.get(item.id);
-                if (!matched) return item;
-                const nextMajor = matched.majorCategory || item.majorCategory;
-                const nextMinor =
-                  matched.minorCategory ||
-                  item.minorCategory ||
-                  (nextMajor ? getDefaultMinorForMajor(nextMajor) : '');
-                return {
-                  ...item,
-                  majorCategory: nextMajor,
-                  minorCategory: nextMinor,
-                };
-              }),
-            }));
-          }
-        } catch {}
+      if (!result.success || !result.data || !Array.isArray(result.data.extractedEntities)) {
+        showToast(EXTRACTION.fallbackTitle, result.error || EXTRACTION.classifyFailed, 'warning');
+        return;
       }
 
+      // The server is the source of truth for the rows it was asked about.
+      const classified = new Map(result.data.extractedEntities.map((e) => [e.id, e]));
+      let detectedMajor = '';
+      const updatedLineItems = form.lineItems.map((item) => {
+        if (item.majorCategory) {
+          if (!detectedMajor) detectedMajor = item.majorCategory;
+          return item;
+        }
+        const matched = classified.get(item.id);
+        // Not asked about, or the server could not place it -> leave blank.
+        if (!matched || !matched.majorCategory) return item;
+        if (!detectedMajor) detectedMajor = matched.majorCategory;
+        return {
+          ...item,
+          majorCategory: matched.majorCategory,
+          minorCategory: matched.minorCategory || '',
+        };
+      });
+
+      setForm((prev) => ({
+        ...prev,
+        majorCategory: prev.majorCategory || detectedMajor,
+        lineItems: updatedLineItems,
+      }));
+
+      const categorizedCount = updatedLineItems.filter((item) => (item.majorCategory || '').trim() !== '').length;
+      const uncategorizedCount = updatedLineItems.length - categorizedCount;
       showToast(
         EXTRACTION.classifySuccessTitle,
-        `Auto-classified ${form.lineItems.length} line items with appropriate categories.`,
+        uncategorizedCount > 0
+          ? `Categorized ${categorizedCount} of ${updatedLineItems.length} line items. ${uncategorizedCount} could not be reliably categorized and were left empty.`
+          : `Categorized ${categorizedCount} line items with appropriate categories.`,
         'success'
       );
     } catch {
-      showToast(EXTRACTION.fallbackTitle, 'Category auto-classification updated.', 'info');
+      showToast(EXTRACTION.fallbackTitle, EXTRACTION.classifyFailed, 'warning');
     } finally {
       setIsCategorizing(false);
     }
@@ -1048,6 +1059,7 @@ export default function IngestionWizard({
     setUploadedFiles([]);
     setExtractionSummary(null);
     setExtractionError(null);
+    setExtractionDetail(null);
     setSubmitAttempted(false);
     setSubmitError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -1235,6 +1247,14 @@ export default function IngestionWizard({
               <AlertCircle size={14} /> {EXTRACTION.fallbackTitle}
             </div>
             <p className="text-[11px] text-amber-900/90 dark:text-amber-200">{extractionError}</p>
+            {extractionDetail && extractionDetail !== extractionError && (
+              <div className="text-[10px] text-amber-900/85 dark:text-amber-200/90">
+                <span className="font-semibold">{EXTRACTION.errorDetailLabel}</span>
+                <pre className="mt-1 whitespace-pre-wrap break-words font-mono bg-amber-100/70 dark:bg-amber-950/50 rounded-md p-2 border border-amber-200 dark:border-amber-800/60">
+                  {extractionDetail}
+                </pre>
+              </div>
+            )}
             <button
               type="button"
               onClick={handleEnterManually}
@@ -1518,7 +1538,13 @@ export default function IngestionWizard({
                         <select
                           aria-label={MODAL.colMinor}
                           value={item.minorCategory}
-                          disabled={!item.majorCategory || item.majorCategory === ALL_CATEGORIES_OPTION}
+                          // Enabled when a major is chosen, or when the document
+                          // supplied a minor of its own (kept even without a
+                          // master major) so the buyer can see and keep it.
+                          disabled={
+                            (!item.majorCategory && !item.minorCategory) ||
+                            item.majorCategory === ALL_CATEGORIES_OPTION
+                          }
                           onChange={(e) => patchItem(item.id, { minorCategory: e.target.value })}
                           className="w-44 px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-gray-700 bg-white dark:bg-gray-800 font-medium disabled:opacity-40 focus:ring-2 focus:ring-indigo-500"
                         >

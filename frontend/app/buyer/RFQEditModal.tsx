@@ -20,10 +20,10 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { AlertCircle, CheckCircle2, Loader2, Paperclip, Plus, Save, Sparkles, Trash2, X } from 'lucide-react';
-import { getMajorCategories, getMinorCategories, autoCategorizeItem, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
+import { getMajorCategories, getMinorCategories, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
 import { CURRENCY, RFQ_STATUSES, formatFileSize, formatIndianDateTime } from '@/lib/constants';
 import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
-import { uploadRFQAttachment } from '@/lib/rfqClient';
+import { uploadRFQAttachment, classifyLineItems } from '@/lib/rfqClient';
 import { isPastDateString } from '@/lib/manualRfqModel';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import type {
@@ -434,6 +434,10 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
         lineItems: prev.lineItems.map((row) => {
           if (row.id !== id) return row;
           const nextRow = { ...row, ...changes };
+          // When the buyer picks a major, default its minor from the REAL
+          // taxonomy. Editing the item text no longer triggers a browser-side
+          // category guess (the local keyword table drifted out of sync with the
+          // master); use the server-backed Auto-Categorize action for that.
           if (changes.majorCategory !== undefined && changes.majorCategory !== row.majorCategory) {
             if (changes.minorCategory !== undefined) {
               nextRow.minorCategory = changes.minorCategory;
@@ -442,14 +446,6 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
             } else {
               nextRow.minorCategory = '';
             }
-          } else if (changes.itemName !== undefined || changes.technicalSpecs !== undefined) {
-            const auto = autoCategorizeItem(nextRow.itemName, nextRow.technicalSpecs || prev.title);
-            if (auto.majorCategory && (!row.majorCategory || changes.itemName !== undefined)) {
-              nextRow.majorCategory = auto.majorCategory;
-              nextRow.minorCategory = auto.minorCategory || getDefaultMinorForMajor(auto.majorCategory);
-            } else if (nextRow.majorCategory && !nextRow.minorCategory) {
-              nextRow.minorCategory = getDefaultMinorForMajor(nextRow.majorCategory);
-            }
           }
           return nextRow;
         }),
@@ -457,28 +453,61 @@ export function RFQEditModal({ rfq, onClose, onSave }: RFQEditModalProps) {
     });
   };
 
-  const handleAutoCategorizeAll = () => {
+  /**
+   * Auto-categorize blank line items against the shared taxonomy via the server
+   * (/api/rfqs/ingest), which owns the full category_division master. The browser
+   * no longer guesses with a local keyword table — it drifted out of sync with
+   * the real taxonomy and produced category names no dropdown could render. Rows
+   * the server cannot confidently place stay blank rather than being guessed.
+   */
+  const handleAutoCategorizeAll = async () => {
     if (!form) return;
     setIsCategorizing(true);
+    setSaveError(null);
     try {
+      const toClassify = form.lineItems.filter(
+        (item) => !item.majorCategory && item.itemName.trim() !== ''
+      );
+      if (toClassify.length === 0) return;
+
+      const result = await classifyLineItems(
+        toClassify.map((item) => ({
+          ...toExtractedEntity(item),
+          category: '',
+          majorCategory: '',
+          minorCategory: '',
+        }))
+      );
+
+      if (!result.success || !result.data || !Array.isArray(result.data.extractedEntities)) {
+        setSaveError(result.error || EDIT.classifyFailed);
+        return;
+      }
+
+      const classified = new Map(result.data.extractedEntities.map((e) => [e.id, e]));
       let detectedMajor = '';
       const updatedLineItems = form.lineItems.map((item) => {
-        const auto = autoCategorizeItem(item.itemName, item.technicalSpecs || form.title);
-        const nextMajor = auto.majorCategory || item.majorCategory || form.category || 'Engineering Spares - Mechanical';
-        const nextMinor = auto.minorCategory || (nextMajor ? getDefaultMinorForMajor(nextMajor) : '') || 'Pumps & Accessories';
-        if (nextMajor && !detectedMajor) detectedMajor = nextMajor;
+        if (item.majorCategory) {
+          if (!detectedMajor) detectedMajor = item.majorCategory;
+          return item;
+        }
+        const matched = classified.get(item.id);
+        if (!matched || !matched.majorCategory) return item;
+        if (!detectedMajor) detectedMajor = matched.majorCategory;
         return {
           ...item,
-          majorCategory: nextMajor,
-          minorCategory: nextMinor,
+          majorCategory: matched.majorCategory,
+          minorCategory: matched.minorCategory || '',
         };
       });
 
       setForm((prev) => (prev ? {
         ...prev,
-        category: detectedMajor || prev.category || 'Engineering Spares - Mechanical',
+        category: prev.category || detectedMajor,
         lineItems: updatedLineItems,
       } : prev));
+    } catch {
+      setSaveError(EDIT.classifyFailed);
     } finally {
       setIsCategorizing(false);
     }

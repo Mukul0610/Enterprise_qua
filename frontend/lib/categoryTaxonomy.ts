@@ -239,6 +239,34 @@ export function getDefaultMinorForMajor(major: string): string {
   return minors[0] || '';
 }
 
+/**
+ * The most frequent non-empty major category across the given items. Returns ''
+ * when none of the items carry a category, so an RFQ header is left empty
+ * rather than guessed. `ignore` lets callers exclude synthetic values such as
+ * the "All Categories" browse option.
+ */
+export function dominantMajorCategory(
+  items: ReadonlyArray<{ majorCategory?: string | null }>,
+  ignore: ReadonlyArray<string> = []
+): string {
+  const ignoreSet = new Set(ignore.map((value) => value.trim()));
+  const counts: Record<string, number> = {};
+  items.forEach((item) => {
+    const major = (item.majorCategory || '').trim();
+    if (!major || ignoreSet.has(major)) return;
+    counts[major] = (counts[major] || 0) + 1;
+  });
+  let best = '';
+  let bestCount = 0;
+  Object.keys(counts).forEach((major) => {
+    if (counts[major] > bestCount) {
+      best = major;
+      bestCount = counts[major];
+    }
+  });
+  return best;
+}
+
 /** Whether the master contains this major category. */
 export function hasMajorCategory(major: string): boolean {
   return Boolean(major && (majorsByKey.has(taxonomyKey(major)) || DEFAULT_MAJOR_MINORS[taxonomyKey(major)]));
@@ -569,11 +597,11 @@ const KNOWN_KEYWORD_RULES: Array<{
     major: 'Others – New Product',
     minor: 'General Consumables',
   },
-  {
-    keywords: ['product', 'equipment', 'general item', 'hardware item'],
-    major: 'Others – New Product',
-    minor: 'Others',
-  },
+  // NOTE: Deliberately no generic catch-all rule here (previously matched the
+  // bare words 'product'/'equipment'/'general item'/'hardware item'). Those
+  // appear in almost any line-item description and forced an unrelated
+  // "Others – New Product / Others" category onto items that should be left
+  // uncategorized. Requirement: never guess — leave empty when unsure.
 
   // 9. Others – New Service
   {
@@ -670,15 +698,10 @@ export function autoCategorizeItem(
     }
   }
 
-  // 3. Fallback based on service vs product cues
-  if (/service|repair|maintenance|installation|consulting|commissioning|inspection|testing|audit|civil work/i.test(combined)) {
-    return { majorCategory: 'Others – New Service', minorCategory: 'Consulting' };
-  }
-
-  if (/product|material|equipment|supply|supplies|spares|item|hardware/i.test(combined)) {
-    return { majorCategory: 'Others – New Product', minorCategory: 'Others' };
-  }
-
+  // 3. No reliable keyword or taxonomy match was found. Leave the category
+  //    empty rather than guessing from weak, generic cues (e.g. "item",
+  //    "product", "supply"), which previously forced an unrelated
+  //    "Others – New Product/Service" bucket onto nearly any text.
   return { majorCategory: '', minorCategory: '' };
 }
 

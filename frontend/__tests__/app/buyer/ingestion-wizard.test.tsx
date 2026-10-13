@@ -472,6 +472,23 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
     expect(screen.getAllByPlaceholderText(MODAL.itemPlaceholder).length).toBeGreaterThan(0);
   });
 
+  it('surfaces the server-supplied technical detail for a failed extraction', async () => {
+    renderWizard();
+    uploadFile(new File(['dummy'], 'scan.pdf', { type: 'application/pdf' }));
+
+    const detail = 'gemini-3.8-flash: Gemini responded 400: API key not valid';
+    mockExtract.mockResolvedValueOnce({ success: false, reason: 'AI_FAILED', detail });
+    clickExtract();
+
+    // The friendly reason message leads the banner...
+    await waitFor(() =>
+      expect(screen.getByText(EXTRACTION.reasonMessages.AI_FAILED)).toBeInTheDocument()
+    );
+    // ...and the raw underlying cause is available beneath it for debugging.
+    expect(screen.getByText(EXTRACTION.errorDetailLabel)).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeInTheDocument();
+  });
+
   it('handles auto-categorization errors and empty line items', async () => {
     renderWizard();
 
@@ -603,7 +620,12 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
   it('applies the matched category onto its own line item when ids align', async () => {
     renderWizard();
 
-    // Extract first so the line item's id is deterministically "ent-1" (from the mock entity).
+    // Extract an item with NO category so Auto-Categorize sends it to the server.
+    // (Items that already carry a category are left untouched.) The id is
+    // deterministically "ent-1" from the mock entity so the response aligns.
+    mockExtract.mockResolvedValueOnce(
+      successResult([entity({ id: 'ent-1', category: '', majorCategory: '', minorCategory: '' })])
+    );
     uploadFile(new File(['binary'], 'BOQ_Pumps.xlsx', { type: '' }));
     clickExtract();
     await waitFor(() => expect(mockExtract).toHaveBeenCalled());
@@ -700,24 +722,30 @@ describe('IngestionWizard (Direct Manual Form with Top Document Upload)', () => 
     await waitFor(() => expect(mockClassify).toHaveBeenCalled());
   });
 
-  it('keeps existing categories when a matched entity omits its own category fields', async () => {
+  it('leaves a blank item blank when the server cannot classify it', async () => {
     renderWizard();
+    // Extract a blank-category item so Auto-Categorize sends it to the server.
+    mockExtract.mockResolvedValueOnce(
+      successResult([entity({ id: 'ent-1', itemName: 'Mystery Item', category: '', majorCategory: '', minorCategory: '' })])
+    );
     uploadFile(new File(['binary'], 'BOQ_Pumps.xlsx', { type: '' }));
     clickExtract();
     await waitFor(() => expect(mockExtract).toHaveBeenCalled());
 
+    // Server returns the row with no category it could confidently assign.
     mockClassify.mockResolvedValueOnce({
       success: true,
       data: {
-        extractedEntities: [{ ...entity({ id: 'ent-1' }), majorCategory: '', minorCategory: '' }],
+        extractedEntities: [{ ...entity({ id: 'ent-1', itemName: 'Mystery Item' }), majorCategory: '', minorCategory: '' }],
       },
     });
 
     fireEvent.click(screen.getByRole('button', { name: /Auto-Categorize All \(AI\)/i }));
     await waitFor(() => expect(mockClassify).toHaveBeenCalled());
 
-    // The originally-extracted major category should remain since the response's was blank.
-    expect(screen.getByDisplayValue(entity().majorCategory)).toBeInTheDocument();
+    // The item is still present and its major category select is left blank —
+    // never guessed into an unrelated category.
+    expect(screen.getByDisplayValue('Mystery Item')).toBeInTheDocument();
   });
 
   it('drops a failed attachment upload result but still dispatches the RFQ', async () => {

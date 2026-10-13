@@ -43,9 +43,9 @@ import {
   ExternalLink,
   Zap,
 } from 'lucide-react';
-import { getMajorCategories, getMinorCategories, autoCategorizeItem, getDefaultMinorForMajor } from '@/lib/categoryTaxonomy';
+import { getMajorCategories, getMinorCategories, dominantMajorCategory } from '@/lib/categoryTaxonomy';
 import { CURRENCY, SOURCING_MODES, entitledSourcingModes, RFQ_DOCUMENT_LIMITS } from '@/lib/constants';
-import { createRFQ, extractLineItemsFromDocument, fetchAllVendors, uploadRFQAttachment, requestVendorCategoryUpdateEmail } from '@/lib/rfqClient';
+import { createRFQ, extractLineItemsFromDocument, classifyLineItems, fetchAllVendors, uploadRFQAttachment, requestVendorCategoryUpdateEmail } from '@/lib/rfqClient';
 import { buildExtractionRequest } from '@/lib/documentExtraction';
 import {
   addManualRFQLineItem,
@@ -260,51 +260,77 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
   const lineItemErrors = submitAttempted ? validation.lineItemErrors : {};
 
   const patchForm = useCallback(<K extends keyof ManualRFQForm>(key: K, value: ManualRFQForm[K]) => {
-    setForm((prev) => {
-      const next = { ...prev, [key]: value };
-      if (key === 'title' && typeof value === 'string' && value.trim().length >= 3) {
-        const auto = autoCategorizeItem(value);
-        if (auto.majorCategory) {
-          if (!next.majorCategory) next.majorCategory = auto.majorCategory;
-          if (next.lineItems.length > 0 && !next.lineItems[0].majorCategory) {
-            next.lineItems = [
-              {
-                ...next.lineItems[0],
-                majorCategory: auto.majorCategory,
-                minorCategory: auto.minorCategory,
-              },
-              ...next.lineItems.slice(1),
-            ];
-          }
-        }
-      }
-      return next;
-    });
+    // Category is never guessed from the title in the browser: the local keyword
+    // table drifted out of sync with the real taxonomy. Categories come from
+    // document extraction or the server-backed Auto-Categorize action instead.
+    setForm((prev) => ({ ...prev, [key]: value }));
   }, []);
 
   const [isCategorizing, setIsCategorizing] = useState(false);
 
-  const handleAutoCategorizeAll = () => {
+  /**
+   * Auto-categorize blank line items against the shared taxonomy via the server
+   * (/api/rfqs/ingest), which owns the full category_division master. The browser
+   * no longer guesses with a local keyword table — that table drifted out of sync
+   * with the real taxonomy and produced category names no dropdown could render.
+   * Rows the server cannot confidently place stay blank rather than being guessed.
+   */
+  const handleAutoCategorizeAll = async () => {
     setIsCategorizing(true);
     try {
+      const toClassify = form.lineItems.filter(
+        (item) => !item.majorCategory && item.itemName.trim() !== ''
+      );
+
+      if (toClassify.length === 0) {
+        store?.showToast?.(EXTRACTION.classifySuccessTitle, 'All line items already have a category.', 'info');
+        return;
+      }
+
+      const result = await classifyLineItems(
+        toClassify.map((item) => ({
+          id: item.id,
+          itemName: item.itemName,
+          technicalSpecs: item.technicalSpecs,
+          quantity: Number(item.quantity) || 1,
+          unit: item.unit || 'nos',
+          targetDate: item.targetDate || '',
+          category: '',
+          majorCategory: '',
+          minorCategory: '',
+          confidence: 0,
+        }))
+      );
+
+      if (!result.success || !result.data || !Array.isArray(result.data.extractedEntities)) {
+        store?.showToast?.(EXTRACTION.fallbackTitle, result.error || EXTRACTION.classifyFailed, 'warning');
+        return;
+      }
+
+      const classified = new Map(result.data.extractedEntities.map((e) => [e.id, e]));
       let detectedMajor = '';
       const updatedLineItems = form.lineItems.map((item) => {
-        const auto = autoCategorizeItem(item.itemName, item.technicalSpecs || form.title);
-        const nextMajor = auto.majorCategory || item.majorCategory || form.majorCategory || 'Engineering Spares - Mechanical';
-        const nextMinor = auto.minorCategory || (nextMajor ? getDefaultMinorForMajor(nextMajor) : '') || 'Pumps & Accessories';
-        if (nextMajor && !detectedMajor) detectedMajor = nextMajor;
+        if (item.majorCategory) {
+          if (!detectedMajor) detectedMajor = item.majorCategory;
+          return item;
+        }
+        const matched = classified.get(item.id);
+        if (!matched || !matched.majorCategory) return item;
+        if (!detectedMajor) detectedMajor = matched.majorCategory;
         return {
           ...item,
-          majorCategory: nextMajor,
-          minorCategory: nextMinor,
+          majorCategory: matched.majorCategory,
+          minorCategory: matched.minorCategory || '',
         };
       });
 
       setForm((prev) => ({
         ...prev,
-        majorCategory: detectedMajor || prev.majorCategory || (prev.title ? autoCategorizeItem(prev.title).majorCategory : '') || 'Engineering Spares - Mechanical',
+        majorCategory: prev.majorCategory || detectedMajor,
         lineItems: updatedLineItems,
       }));
+    } catch {
+      store?.showToast?.(EXTRACTION.fallbackTitle, EXTRACTION.classifyFailed, 'warning');
     } finally {
       setIsCategorizing(false);
     }
@@ -484,12 +510,16 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
     if (failures.length > 0) setExtractError(failures.join(' | '));
     if (extracted.length === 0) return;
 
+    // Header major = dominant category across the extracted line items (not
+    // just the first), and only when the document actually supplied one.
+    const headerMajor = dominantMajorCategory(extracted);
+
     setHasExtracted(true);
     setForm((prev) => ({
       ...prev,
       title: prev.title || derivedTitle,
       estimatedBudget: prev.estimatedBudget ?? derivedBudget,
-      majorCategory: prev.majorCategory || extracted[0].majorCategory,
+      majorCategory: prev.majorCategory || headerMajor,
       lineItems: extracted,
     }));
   };
@@ -1061,7 +1091,9 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
                               aria-label={MODAL.colMinor}
                               aria-invalid={!!errors.minorCategory}
                               value={item.minorCategory}
-                              disabled={item.majorCategory === ''}
+                              // Enabled with a chosen major, or when the document
+                              // supplied a minor of its own (kept without a major).
+                              disabled={item.majorCategory === '' && item.minorCategory === ''}
                               onChange={(e) => patchItem(item.id, { minorCategory: e.target.value })}
                               className="w-44 disabled:opacity-50"
                             >

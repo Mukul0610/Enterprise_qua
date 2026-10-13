@@ -2817,3 +2817,8 @@ can you implement this easy task and dont create workflow and only direct code a
 4. Display the buyer's phone number in the Category Manager's Buyer RFQ Console under the buyer details section. Ensure the phone number is clearly visible and correctly mapped to the respective buyer.
 5. In category manager - Bulk Vendor Upload Status: When uploading vendor data, the system displays "Upload Completed" with a red X icon even when all records are duplicates and zero vendors are imported. The status message should accurately reflect the upload result, displaying "No Vendors Imported" or "Upload Failed" when no records are imported, and "Upload Partially Completed" when only some records are imported successfully.
 7. Please remove the AI Quality / Match Score section from the Vendor Comparison page, including the percentage score, progress bar, and parameter breakdown (P, L, W).
+
+## 2026-10-13 — Category Manager single/bulk vendor invite + coverage/push + bugs
+category manager side implement single vendor invite features in this model and implement this direct and dont create workflow i need urgent
+
+first pass coverage and push and then start implement on bug

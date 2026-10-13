@@ -24,6 +24,7 @@ const { logger } = require('./loggerService');
 const {
   CONFIDENCE,
   STATUS,
+  STATED_CATEGORY_ALIASES,
   GENERIC_CATEGORY_TOKENS,
   DOMAIN_KEYWORD_MAP,
   TAXONOMY_CACHE_TTL_MS,
@@ -178,9 +179,27 @@ function taxonomyPairForMinor(value) {
  * has no option for, and the buyer would see an empty select.
  */
 function resolveStatedCategory(statedMinor, statedMajor) {
-  const pair = taxonomyPairForMinor(statedMinor);
+  // A stated value is accepted if it is a real taxonomy minor directly, or if it
+  // is a known umbrella label (e.g. "IT Equipment", "Electrical Equipment",
+  // "Plumbing Material") that aliases onto one. Aliasing lets a document's own
+  // Category column fill the row instead of being discarded and falling through
+  // to keyword matching. The alias target is itself validated against the
+  // taxonomy, so an alias pointing at a minor the master does not hold still
+  // yields null (blank + review) rather than an unrenderable pair.
+  const pair = taxonomyPairForMinor(statedMinor) || taxonomyPairForMinor(aliasForStatedCategory(statedMinor));
   if (!pair) return null;
   return { major: canonicalMajor(statedMajor) || pair.major, minor: pair.minor };
+}
+
+/**
+ * The real taxonomy minor a document's umbrella category label maps to, or '' if
+ * the label is not a known alias. Matched case-insensitively on the trimmed
+ * value. Returns a plain string so the caller can hand it straight to
+ * taxonomyPairForMinor for the usual taxonomy validation.
+ */
+function aliasForStatedCategory(value) {
+  if (!value || typeof value !== 'string') return '';
+  return STATED_CATEGORY_ALIASES[value.trim().toLowerCase()] || '';
 }
 
 /**
@@ -262,19 +281,30 @@ function classifyLineItem(item, payloadCategory) {
     };
   }
 
-  // 4. Nothing matched. Left unclassified and flagged, which is what STATUS.DEFAULT
-  // already feeds into the `needsReview` count the wizard shows.
+  // 4. No taxonomy match. The item is unclassified against the master, but if the
+  // DOCUMENT itself stated a category (its own, or the payload-wide one), pass that
+  // original string through as the minor rather than discarding it. The wizard's
+  // category selects prepend an off-taxonomy stored value as a selectable option
+  // (withStoredValue), so the buyer sees exactly what the document said and can
+  // keep it or pick a taxonomy value — instead of two blank dropdowns. The major
+  // is left blank because no master major can be derived from an unknown label.
   //
-  // This used to stamp 'General Procurement' / 'General Industrial Goods'. Neither
-  // exists in the category master, so the pair could not be rendered by either
-  // dropdown: the row arrived looking blank anyway, but with a value underneath
-  // that validation accepted — so an unclassified item could be dispatched to
-  // vendors under a category that matches no vendor at all. Blank is honest, and
-  // the required-field rules then ask the buyer to choose.
+  // Earlier this stamped 'General Procurement' / 'General Industrial Goods', which
+  // were NOT in the master — a value no dropdown could render yet validation
+  // accepted, so an unclassified item could be dispatched under a category no
+  // vendor matched. Passing the document's own wording through is honest: it is
+  // what the buyer wrote, flagged for review (STATUS.DEFAULT feeds needsReview).
+  const statedCategory = !isGenericCategory(item.minorCategory || item.category)
+    ? String(item.minorCategory || item.category).trim()
+    : !isGenericCategory(payloadCategory)
+      ? String(payloadCategory).trim()
+      : '';
+  const statedMajor = !isGenericCategory(item.majorCategory) ? String(item.majorCategory).trim() : '';
+
   return {
-    majorCategory: '',
-    minorCategory: '',
-    category: '',
+    majorCategory: statedMajor,
+    minorCategory: statedCategory,
+    category: statedCategory,
     categoryConfidence: CONFIDENCE.DEFAULT,
     classificationStatus: STATUS.DEFAULT,
   };
@@ -560,6 +590,7 @@ module.exports = {
   taxonomyCategoryNames,
   canonicalMajor,
   taxonomyPairForMinor,
+  aliasForStatedCategory,
   isGenericCategory,
   matchByKeyword,
   classifyLineItem,

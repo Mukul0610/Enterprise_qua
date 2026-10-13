@@ -8,6 +8,7 @@ import type { ExtractedEntity, RFQAttachment, RFQEditFormState, RFQItem } from '
 
 jest.mock('@/lib/rfqClient', () => ({
   uploadRFQAttachment: jest.fn(),
+  classifyLineItems: jest.fn(),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -1063,11 +1064,26 @@ describe('RFQDeleteDialog', () => {
     });
   });
 
-  it('triggers handleAutoCategorizeAll on button click and auto-fills categories', () => {
+  it('triggers handleAutoCategorizeAll and fills categories from the server', async () => {
+    // Auto-Categorize now delegates to the server (classifyLineItems), which owns
+    // the real taxonomy. The browser no longer guesses with a local keyword table.
+    rfqClient.classifyLineItems.mockResolvedValueOnce({
+      success: true,
+      data: {
+        extractedEntities: [
+          entity({ id: 'ent-1', majorCategory: 'Engineering Spares - Mechanical', minorCategory: 'Pumps & Accessories' }),
+        ],
+      },
+    });
+
     renderEdit(buildRFQ({ extractedEntities: [entity({ itemName: 'Centrifugal Pump', majorCategory: '', minorCategory: '' })] }));
     const autoBtn = screen.getByText(/Auto-Categorize All/i);
     fireEvent.click(autoBtn);
-    expect(screen.getAllByDisplayValue(/Engineering Spares - Mechanical/i).length).toBeGreaterThan(0);
+
+    await waitFor(() => expect(rfqClient.classifyLineItems).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(screen.getAllByDisplayValue(/Engineering Spares - Mechanical/i).length).toBeGreaterThan(0)
+    );
   });
 
   it('auto-populates delivery location on PIN code blur in RFQEditModal', async () => {

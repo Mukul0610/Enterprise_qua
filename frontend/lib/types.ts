@@ -1982,6 +1982,12 @@ export interface RFQExtractionResult {
   extraction?: RFQExtractionMeta;
   reason?: RFQExtractionReason;
   error?: string;
+  /**
+   * The actual underlying failure cause (model/key/parse error) when extraction
+   * fails. Surfaced for debugging beneath the friendly `error` message; not every
+   * failure carries one.
+   */
+  detail?: string;
 }
 
 /** Outcome of storing one supporting document. */

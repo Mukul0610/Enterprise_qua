@@ -14,7 +14,9 @@ jest.mock('@/lib/rfqClient', () => ({
   createRFQ: jest.fn(),
   uploadRFQAttachment: jest.fn(),
   extractLineItemsFromDocument: jest.fn(),
+  classifyLineItems: jest.fn(() => Promise.resolve({ success: true, data: { extractedEntities: [] } })),
   fetchAllVendors: jest.fn(),
+  requestVendorCategoryUpdateEmail: jest.fn(() => Promise.resolve({ success: true })),
 }));
 
 // The modal reads buyerVendors from useApp() inside a try/catch, since it can

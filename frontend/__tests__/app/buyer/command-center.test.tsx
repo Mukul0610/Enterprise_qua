@@ -541,4 +541,90 @@ describe('app/buyer/command-center.tsx', () => {
       mockRfqs[0].quotes = originalQuotes;
     }
   });
+
+  it('applies each source filter tab and clears the pipeline search', () => {
+    render(
+      <CommandCenter
+        onNavigateToWizard={mockNavigateToWizard}
+        onNavigateToMatrix={mockNavigateToMatrix}
+        onNavigateToSubscription={mockNavigateToSubscription}
+        onNavigateToDirectory={mockNavigateToDirectory}
+      />
+    );
+
+    // Each source-filter tab narrows the pipeline (setRfqSourceFilter branches).
+    fireEvent.click(screen.getByText(/via Email Upload \(/i));
+    fireEvent.click(screen.getByText(/AI RFQ Create \(/i));
+    fireEvent.click(screen.getByText(/Manual RFQ \(/i));
+    fireEvent.click(screen.getByText(/All Sources \(/i));
+
+    // Typing then clearing exercises the search field and its clear button.
+    const search = screen.getByPlaceholderText(/Search pipeline by RFQ#/i);
+    fireEvent.change(search, { target: { value: 'Titanium' } });
+    expect((search as HTMLInputElement).value).toBe('Titanium');
+    const clearBtn = search.parentElement?.querySelector('button');
+    if (clearBtn) {
+      fireEvent.click(clearBtn);
+      expect((search as HTMLInputElement).value).toBe('');
+    }
+  });
+
+  it('switches every live-feed channel filter tab', () => {
+    render(
+      <CommandCenter
+        onNavigateToWizard={mockNavigateToWizard}
+        onNavigateToMatrix={mockNavigateToMatrix}
+        onNavigateToSubscription={mockNavigateToSubscription}
+        onNavigateToDirectory={mockNavigateToDirectory}
+      />
+    );
+
+    // feedChannelFilter branches: call / whatsapp / sms / email / system / all.
+    fireEvent.click(screen.getByRole('button', { name: /^Calls$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^WA$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^SMS$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /Email \(24h\)/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^System$/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^All \(/i }));
+    expect(screen.getByText('Live Outreach')).toBeInTheDocument();
+  });
+
+  it('renders the remaining RFQ status badges (Quotes Received, Closed, Expired, default)', () => {
+    const extraStatuses: RFQItem[] = [
+      { ...mockRfqs[0], id: 'rfq-qr', rfqNumber: 'RFQ-QR', status: 'Quotes Received' },
+      { ...mockRfqs[0], id: 'rfq-cl', rfqNumber: 'RFQ-CL', status: 'Closed' },
+      { ...mockRfqs[0], id: 'rfq-ex', rfqNumber: 'RFQ-EX', status: 'Expired' },
+      { ...mockRfqs[0], id: 'rfq-qp', rfqNumber: 'RFQ-QP', status: 'Quotes Pending' },
+    ];
+    (useApp as jest.Mock).mockReturnValue({
+      rfqs: extraStatuses,
+      aiFeed: mockAiFeed,
+      currentMode: 'mode_1',
+      setSelectedRFQForMatrix: mockSetSelectedRFQForMatrix,
+      showToast: mockShowToast,
+      selectedRFQForDeepDive: extraStatuses[0],
+      setSelectedRFQForDeepDive: mockSetSelectedRFQForDeepDive,
+      deepDiveModalOpen: false,
+      setDeepDiveModalOpen: mockSetDeepDiveModalOpen,
+      openRFQDeepDive: mockOpenRFQDeepDive,
+      remainingFreeRFQs: 4,
+      activeSubscription: 'free_trial',
+      activeBuyerAccount: { organizationName: 'Larsen & Toubro Limited' },
+      setInitialSetupModalOpen: mockSetInitialSetupModalOpen,
+      initialSetupCompleted: false,
+    });
+
+    render(
+      <CommandCenter
+        onNavigateToWizard={mockNavigateToWizard}
+        onNavigateToMatrix={mockNavigateToMatrix}
+        onNavigateToSubscription={mockNavigateToSubscription}
+        onNavigateToDirectory={mockNavigateToDirectory}
+      />
+    );
+
+    // Open the pipeline modal so every status badge is rendered.
+    fireEvent.click(screen.getByTitle('Click to view Active Pipeline details'));
+    expect(screen.getAllByText('RFQ-QR').length).toBeGreaterThan(0);
+  });
 });

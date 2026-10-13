@@ -116,6 +116,23 @@ describe('RFQ ingestion service (AI line-item classification)', () => {
       });
     });
 
+    test('4c. passes a document-stated category through as the minor when it is not in the taxonomy', () => {
+      // The document categorised the item ("Medical Equipment"), but the master
+      // has no such category. Rather than dropping it to blank, the stated value
+      // is passed through as the minor (major stays blank, flagged DEFAULT) so the
+      // wizard can show and keep it. A generic placeholder is still ignored.
+      const kept = ingestion.classifyLineItem({ itemName: 'Patient Monitor', category: 'Medical Equipment' });
+      expect(kept).toMatchObject({
+        majorCategory: '',
+        minorCategory: 'Medical Equipment',
+        category: 'Medical Equipment',
+        classificationStatus: STATUS.DEFAULT,
+      });
+
+      const genericIgnored = ingestion.classifyLineItem({ itemName: 'Mystery item', category: 'various' });
+      expect(genericIgnored.minorCategory).toBe('');
+    });
+
     test('4b. leaves an item unclassified when the taxonomy index has not loaded', () => {
       // A failed taxonomy read degrades to keyword matching and flags the rest;
       // it never invents a category.
@@ -238,6 +255,73 @@ describe('RFQ ingestion service (AI line-item classification)', () => {
         .filter((entity) => !isRenderable(entity))
         .map((entity) => `${entity.itemName}: ${entity.majorCategory} / ${entity.minorCategory}`);
       expect(unrenderable).toEqual([]);
+    });
+
+    // A document's own "Category" column often uses umbrella labels ("IT
+    // Equipment", "Electrical Equipment", "Plumbing Material") that are not
+    // taxonomy minors. Without the alias layer these were discarded and every
+    // row fell through to keyword matching or blank. The alias resolves them to
+    // the real taxonomy minor so the stated category actually fills the row.
+    describe('stated-category aliases (document "Category" column)', () => {
+      test('aliasForStatedCategory maps a known umbrella label, blanks an unknown one', () => {
+        expect(ingestion.aliasForStatedCategory('IT Equipment')).toBe('Hardware');
+        expect(ingestion.aliasForStatedCategory('  electrical equipment ')).toBe('Lights');
+        expect(ingestion.aliasForStatedCategory('Plumbing Material')).toBe('Plumbing');
+        expect(ingestion.aliasForStatedCategory('Medical Equipment')).toBe('');
+        expect(ingestion.aliasForStatedCategory('')).toBe('');
+        expect(ingestion.aliasForStatedCategory(null)).toBe('');
+      });
+
+      test.each([
+        ['IT Equipment', 'IT', 'Hardware'],
+        ['Electrical Equipment', 'Engineering Spares - Electrical', 'Lights'],
+        ['Plumbing Material', 'Civil Works', 'Plumbing'],
+      ])('a stated label "%s" resolves to %s / %s', (stated, major, minor) => {
+        const result = ingestion.classifyLineItem({ itemName: 'Generic item', category: stated });
+        expect(result).toMatchObject({
+          majorCategory: major,
+          minorCategory: minor,
+          classificationStatus: STATUS.EXPLICIT,
+        });
+      });
+
+      // The exact rows from the reported RFQ document. Each line's stated
+      // category (or its item text) must resolve to a real taxonomy pair, and a
+      // line with no genuine taxonomy home stays blank for review — never a
+      // wrong or dummy category.
+      test('fills the reported RFQ document rows from their stated categories', () => {
+        const rows = [
+          { itemName: 'Business Laptop', technicalSpecs: 'Intel Core i5, 16GB RAM', category: 'IT Equipment' },
+          { itemName: 'Patient Monitor', technicalSpecs: 'ECG, SpO2, NIBP', category: 'Medical Equipment' },
+          { itemName: 'PPC Cement', technicalSpecs: '50 kg bags, IS 1489', category: 'Construction Material' },
+          { itemName: 'LED Flood Light', technicalSpecs: '150W, IP66, 6500K', category: 'Electrical Equipment' },
+          { itemName: 'HDPE Water Pipe', technicalSpecs: '110 mm, PN10', category: 'Plumbing Material' },
+        ];
+        const { entities } = ingestion.normalizeLineItems(rows, {});
+
+        // Laptop -> IT / Hardware: the stated "IT Equipment" aliases to the
+        // taxonomy's IT » Hardware and, being an explicit stated category, wins
+        // (step 1) before keyword matching on "laptop" is reached (step 3).
+        // Either way the major is correct — IT — which is what the buyer sees.
+        expect(entities[0]).toMatchObject({ majorCategory: 'IT', minorCategory: 'Hardware' });
+        // Patient Monitor -> "Medical Equipment" has no taxonomy home, so no major
+        // is derived, but the document's stated category is PASSED THROUGH as the
+        // minor (flagged DEFAULT) instead of being dropped to blank. The wizard
+        // prepends it as a selectable dropdown option.
+        expect(entities[1]).toMatchObject({ majorCategory: '', minorCategory: 'Medical Equipment', classificationStatus: STATUS.DEFAULT });
+        // PPC Cement -> "Construction Material" likewise passes through verbatim
+        // rather than being forced into a wrong Civil Works minor.
+        expect(entities[2]).toMatchObject({ majorCategory: '', minorCategory: 'Construction Material', classificationStatus: STATUS.DEFAULT });
+        // LED Flood Light -> Engineering Spares - Electrical / Lights.
+        expect(entities[3]).toMatchObject({ majorCategory: 'Engineering Spares - Electrical', minorCategory: 'Lights' });
+        // HDPE Water Pipe -> Civil Works / Plumbing (plumbing-specific keyword
+        // beats the generic 'pipe' -> Pipes & Pipe Fittings).
+        expect(entities[4]).toMatchObject({ majorCategory: 'Civil Works', minorCategory: 'Plumbing' });
+
+        // Every row that resolved to a taxonomy MAJOR is a renderable pair.
+        const resolved = entities.filter((e) => e.majorCategory);
+        expect(resolved.every(isRenderable)).toBe(true);
+      });
     });
   });
 

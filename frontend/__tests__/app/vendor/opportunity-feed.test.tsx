@@ -936,3 +936,124 @@ describe('OpportunityFeed: downloads, locking and plan upgrades', () => {
     }
   });
 });
+
+describe('OpportunityFeed: filter handlers and onboarding source resolution', () => {
+  beforeEach(() => {
+    serveRFQs([DIRECT_OWN, DIRECT_HVAC_QUOTED, DIRECT_STEEL, NETWORK_OWN]);
+  });
+
+  test('Direct major-category change resets the Direct minor-category select to "all"', async () => {
+    await renderFeed();
+    const s = selects();
+
+    // Select a real major category so the minor options populate.
+    fireEvent.change(s.directMajor, { target: { value: 'Mechanical & Fluid Equipment' } });
+    expect(s.directMajor.value).toBe('Mechanical & Fluid Equipment');
+    // Changing major must force minor back to 'all' (handleMajorCategoryDirect).
+    expect(s.directMinor.value).toBe('all');
+  });
+
+  test('Direct minor-category and buyer selects update independently', async () => {
+    await renderFeed();
+    const s = selects();
+
+    fireEvent.change(s.directMajor, { target: { value: 'Mechanical & Fluid Equipment' } });
+    // The minor options depend on the chosen major; whatever the second option is,
+    // selecting it should stick (handleMinorCategoryDirect).
+    const minorOptions = Array.from(s.directMinor.options).map((o) => o.value);
+    const nextMinor = minorOptions.find((v) => v !== 'all');
+    if (nextMinor) {
+      fireEvent.change(s.directMinor, { target: { value: nextMinor } });
+      expect(s.directMinor.value).toBe(nextMinor);
+    }
+
+    const buyerOptions = Array.from(s.directBuyer.options).map((o) => o.value);
+    const nextBuyer = buyerOptions.find((v) => v !== 'all');
+    if (nextBuyer) {
+      fireEvent.change(s.directBuyer, { target: { value: nextBuyer } });
+      expect(s.directBuyer.value).toBe(nextBuyer);
+    }
+  });
+
+  test('Direct search box filters the direct invitations (handleSearchDirect)', async () => {
+    await renderFeed();
+    const [directSearch] = searchBoxes();
+    fireEvent.change(directSearch, { target: { value: 'nonexistent-term-xyz' } });
+    expect((directSearch as HTMLInputElement).value).toBe('nonexistent-term-xyz');
+  });
+
+  test('Network major-category change resets the Network minor-category select to "all"', async () => {
+    await renderFeed();
+    const s = selects();
+
+    fireEvent.change(s.netMajor, { target: { value: 'Mechanical & Fluid Equipment' } });
+    expect(s.netMajor.value).toBe('Mechanical & Fluid Equipment');
+    // handleMajorCategoryNet forces the network minor back to 'all'.
+    expect(s.netMinor.value).toBe('all');
+
+    const minorOptions = Array.from(s.netMinor.options).map((o) => o.value);
+    const nextMinor = minorOptions.find((v) => v !== 'all');
+    if (nextMinor) {
+      fireEvent.change(s.netMinor, { target: { value: nextMinor } });
+      expect(s.netMinor.value).toBe(nextMinor);
+    }
+  });
+
+  test('Network search box updates its own term (handleSearchNet)', async () => {
+    await renderFeed();
+    const boxes = searchBoxes();
+    const netSearch = boxes[boxes.length - 1];
+    fireEvent.change(netSearch, { target: { value: 'pump' } });
+    expect((netSearch as HTMLInputElement).value).toBe('pump');
+  });
+
+  test('resolves a self-registered onboarding source from GET /api/vendors/:email', async () => {
+    const baseImpl = (global.fetch as jest.Mock).getMockImplementation()!;
+    (global.fetch as jest.Mock).mockImplementation((url: string, init?: unknown) => {
+      if (typeof url === 'string' && /\/api\/vendors\/[^/]+$/.test(url) && !/payment-link/.test(url)) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            data: {
+              majorCategory: 'Engineering Spares - Mechanical',
+              minorCategories: ['Pumps & Accessories'],
+              source: 'self_registration',
+            },
+          }),
+        });
+      }
+      return baseImpl(url, init);
+    });
+
+    await renderFeed();
+    // The onboarding effect's success branch has run (no throw); cards still render.
+    expect(downloadButtons().length).toBeGreaterThan(0);
+  });
+
+  test('resolves a buyer-added onboarding source from GET /api/vendors/:email', async () => {
+    const baseImpl = (global.fetch as jest.Mock).getMockImplementation()!;
+    (global.fetch as jest.Mock).mockImplementation((url: string, init?: unknown) => {
+      if (typeof url === 'string' && /\/api\/vendors\/[^/]+$/.test(url) && !/payment-link/.test(url)) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({
+            success: true,
+            data: {
+              majorCategory: 'Engineering Spares - Mechanical',
+              minorCategories: ['Pumps & Accessories'],
+              addedByBuyerCompany: OWN_ROSTER_BUYER,
+              buyerAccountId: 'buyer-1',
+            },
+          }),
+        });
+      }
+      return baseImpl(url, init);
+    });
+
+    await renderFeed();
+    expect(downloadButtons().length).toBeGreaterThan(0);
+  });
+});

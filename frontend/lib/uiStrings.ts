@@ -344,6 +344,7 @@ export const UI_STRINGS = {
       '{accepted} line items extracted by {model}. {needsReview} need a category review before dispatch.',
     successToast: '{accepted} line items extracted from {fileName}.',
     fallbackTitle: 'Line Items Could Not Be Read',
+    errorDetailLabel: 'Exact reason (for debugging):',
     fallbackHint: 'Add each line item below, assign its minor category, then continue to sourcing.',
     unreadableResponse:
       'The extraction service returned an unexpected response. Add the line items manually to continue.',
@@ -949,6 +950,8 @@ export const UI_STRINGS = {
     deletedMessage: '{rfqNumber} has been deleted.',
     deleteFailedTitle: 'RFQ Not Deleted',
     deleteFailed: 'The RFQ could not be deleted. Try again, and if it persists the API may be unavailable.',
+    classifyFailed:
+      'Categories could not be refreshed just now. Set the major and minor category on each line item manually, or try again.',
   },
 
   vendorFeed: {

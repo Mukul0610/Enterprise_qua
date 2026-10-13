@@ -47,11 +47,12 @@ export const MANUAL_ENTRY_CONFIDENCE = 0;
 
 // The row's two category selects are built from the shared taxonomy: the major
 // select lists the majors, and the minor select lists only the minors under the
-// chosen major. A value outside the master therefore has no matching option, so
-// the select renders blank and looks broken while still holding a value that
-// validation accepts. Off-taxonomy values are dropped on the way in instead, which
-// leaves the field genuinely empty and lets the existing required-field rules ask
-// the buyer for it.
+// chosen major. A category the document stated that is NOT in the master is kept
+// anyway (see fromExtractedEntity) and the selects prepend it as a selectable
+// option (withStoredValue / withStoredCategory), so the document's exact category
+// is shown and the buyer can keep it or swap it for a taxonomy value — instead of
+// being silently dropped to blank. A value the master DOES contain is normalised
+// to the master's own spelling.
 //
 // Read from the taxonomy registry at call time rather than captured into module
 // constants at import time: the master is fetched from the database now, so it is
@@ -307,13 +308,23 @@ export function toRFQCreatePayload(
  * A quantity of zero becomes null rather than being kept, because zero from an
  * extraction means "could not read one", not "the buyer wants none".
  *
- * Categories the shared taxonomy does not contain are dropped, because the row's
- * dropdowns are built from that taxonomy and cannot display anything else.
+ * Categories the document stated are KEPT even when the shared taxonomy does not
+ * contain them: the row carries the document's exact major/minor, and the
+ * category dropdowns prepend any such out-of-taxonomy value as a selectable
+ * option (see withStoredCategory) so it renders and the buyer can keep it or
+ * swap it for a taxonomy value. This fills a category for every item the
+ * document categorised instead of silently dropping unknown ones.
  */
 export function fromExtractedEntity(entity: ExtractedEntity): ManualRFQLineItem {
   rowCounter += 1;
-  const majorCategory = taxonomyMajorOrBlank(clean(entity.majorCategory));
-  const minorCategory = taxonomyMinorOrBlank(majorCategory, clean(entity.minorCategory) || clean(entity.category));
+  const rawMajor = clean(entity.majorCategory);
+  const rawMinor = clean(entity.minorCategory) || clean(entity.category);
+  // Keep whatever the document stated. taxonomyMajorOrBlank/taxonomyMinorOrBlank
+  // return '' for an off-taxonomy value, so the `|| raw` fallback preserves the
+  // document's exact category instead of dropping it; the selects then prepend
+  // it as an option (withStoredValue) so it renders and stays selectable.
+  const majorCategory = taxonomyMajorOrBlank(rawMajor) || rawMajor;
+  const minorCategory = taxonomyMinorOrBlank(majorCategory, rawMinor) || rawMinor;
 
   const rawTargetDate = clean(entity.targetDate);
   const targetDate = isPastDateString(rawTargetDate) ? '' : rawTargetDate;

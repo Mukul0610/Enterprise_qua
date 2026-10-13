@@ -494,42 +494,54 @@ describe('fromExtractedEntity', () => {
     expect(fromExtractedEntity(extracted({ quantity: 2.5 })).quantity).toBe(2.5);
   });
 
-  // This is the case that reached the buyer as two blank dropdowns: the server
-  // used to stamp a placeholder major that the taxonomy does not contain.
-  it('drops a major category the taxonomy does not contain', () => {
+  // The document's own category is KEPT even when it is not in the master, so
+  // the buyer sees what the document stated instead of two blank dropdowns. The
+  // selects prepend such a value as a selectable option (withStoredValue).
+  it('keeps a major category the taxonomy does not contain', () => {
     const row = fromExtractedEntity(
-      extracted({ majorCategory: 'General Procurement', minorCategory: 'Motors' })
+      extracted({ majorCategory: 'Medical Equipment', minorCategory: 'Patient Monitors' })
     );
 
-    expect(row.majorCategory).toBe('');
-    expect(row.minorCategory).toBe('');
+    expect(row.majorCategory).toBe('Medical Equipment');
+    expect(row.minorCategory).toBe('Patient Monitors');
   });
 
-  it('drops a minor category that does not belong to the surviving major', () => {
+  it('keeps a stated minor even when it is not a known minor of the major', () => {
     const row = fromExtractedEntity(
       extracted({ majorCategory: MAJOR, minorCategory: 'Not A Real Minor' })
     );
 
     expect(row.majorCategory).toBe(MAJOR);
-    expect(row.minorCategory).toBe('');
+    expect(row.minorCategory).toBe('Not A Real Minor');
   });
 
-  it('drops a minor that belongs to a different major', () => {
-    const otherMinor = categoriesData[1].minorCategories[0];
+  it('keeps a known taxonomy category pair as stated', () => {
+    const knownMinor = categoriesData[0].minorCategories[0];
     const row = fromExtractedEntity(
-      extracted({ majorCategory: MAJOR, minorCategory: otherMinor })
+      extracted({ majorCategory: MAJOR, minorCategory: knownMinor })
     );
 
-    expect(row.minorCategory).toBe('');
+    expect(row.majorCategory).toBe(MAJOR);
+    expect(row.minorCategory).toBe(knownMinor);
   });
 
   it('leaves both categories empty when the extraction named neither', () => {
     const row = fromExtractedEntity(
-      extracted({ majorCategory: undefined, minorCategory: undefined })
+      extracted({ majorCategory: undefined, minorCategory: undefined, category: undefined })
     );
 
     expect(row.majorCategory).toBe('');
     expect(row.minorCategory).toBe('');
+  });
+
+  it('keeps a stated payload-level category as the minor when no major was given', () => {
+    const row = fromExtractedEntity(
+      extracted({ majorCategory: undefined, minorCategory: undefined, category: 'Medical Supplies' })
+    );
+
+    // The document's category is kept so the row is not left blank; the select
+    // prepends it as a selectable option.
+    expect(row.minorCategory).toBe('Medical Supplies');
   });
 
   // A round trip through the payload shape must not lose the pair.
