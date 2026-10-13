@@ -488,9 +488,15 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
         failures.push(`${file.name}: File exceeds the 15 MB limit`);
         continue;
       }
-      // eslint-disable-next-line no-await-in-loop -- each document is reported
-      // against itself, so they are read one at a time.
-      const request = await buildExtractionRequest(file);
+      let request;
+      try {
+        // eslint-disable-next-line no-await-in-loop -- each document is reported
+        // against itself, so they are read one at a time.
+        request = await buildExtractionRequest(file);
+      } catch (err: any) {
+        failures.push(`${file.name}: ${err?.message || 'Document upload failed.'}`);
+        continue;
+      }
       // eslint-disable-next-line no-await-in-loop
       const result = await extractLineItemsFromDocument(request);
 

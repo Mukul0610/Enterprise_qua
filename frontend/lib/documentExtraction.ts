@@ -13,6 +13,7 @@
 
 import * as XLSX from 'xlsx';
 import type { RFQExtractionRequest } from './types';
+import { stageDocumentForExtraction } from './rfqClient';
 
 /**
  * Spreadsheet-like documents are flattened in the browser, because Gemini cannot
@@ -254,6 +255,40 @@ export async function extractPdfText(buffer: ArrayBuffer): Promise<string> {
   }
 }
 
+/**
+ * Thrown when a binary document could not be staged for extraction (upload
+ * failure, or the backend rejected it as too large — see
+ * stageDocumentForExtraction). Callers treat this the same as any other
+ * extraction failure.
+ */
+export class DocumentStagingError extends Error {
+  tooLarge: boolean;
+  constructor(message: string, tooLarge = false) {
+    super(message);
+    this.name = 'DocumentStagingError';
+    this.tooLarge = tooLarge;
+  }
+}
+
+/**
+ * Upload a binary document's raw bytes to R2 and return the reference
+ * /api/rfqs/extract expects in place of inlineData.
+ *
+ * Replaces reading the file as a base64 data URL in the browser and folding
+ * that string into the extraction request's JSON body — on a large PDF/image
+ * that base64 string, repeated across the request body, the parsed body, and
+ * whatever copy is passed along before reaching Gemini, is what exceeded a
+ * Worker's memory ceiling in production. Staging first means the extraction
+ * request itself stays a few bytes of JSON regardless of document size.
+ */
+async function stageForExtraction(file: File, mimeType: string): Promise<string> {
+  const result = await stageDocumentForExtraction(file, mimeType);
+  if (!result.success || !result.key) {
+    throw new DocumentStagingError(result.error || 'Document upload failed.', Boolean(result.tooLarge));
+  }
+  return result.key;
+}
+
 /** Build the extraction request for whichever document the buyer supplied. */
 export async function buildExtractionRequest(file: File): Promise<RFQExtractionRequest> {
   if (isSpreadsheet(file.name)) {
@@ -273,36 +308,31 @@ export async function buildExtractionRequest(file: File): Promise<RFQExtractionR
         return { fileName: file.name, documentText: docxText };
       }
     } catch {
-      // fallback to inline data below
+      // fallback to staged inline data below
     }
-    return {
-      fileName: file.name,
-      inlineData: await readAsBase64(file),
-      mimeType: file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    };
+    const mimeType = file.type || 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    return { fileName: file.name, fileKey: await stageForExtraction(file, mimeType), mimeType };
   }
   if (isEmailFile(file.name)) {
     const mimeType = /\.msg$/i.test(file.name) ? 'application/vnd.ms-outlook' : 'message/rfc822';
-    return { fileName: file.name, inlineData: await readAsBase64(file), mimeType };
+    return { fileName: file.name, fileKey: await stageForExtraction(file, mimeType), mimeType };
   }
   if (/\.pdf$/i.test(file.name)) {
     let pdfText = '';
     try {
       pdfText = await extractPdfText(await readAsArrayBuffer(file));
     } catch {
-      // fallback to inline data below
+      // fallback to staged inline data below
     }
+    const mimeType = file.type || 'application/pdf';
     return {
       fileName: file.name,
-      inlineData: await readAsBase64(file),
-      mimeType: file.type || 'application/pdf',
+      fileKey: await stageForExtraction(file, mimeType),
+      mimeType,
       ...(pdfText && pdfText.length >= 15 ? { documentText: pdfText } : {}),
     };
   }
-  return {
-    fileName: file.name,
-    inlineData: await readAsBase64(file),
-    // Browsers leave type empty for some uploads; PDF is the common default here.
-    mimeType: file.type || 'application/pdf',
-  };
+  // Browsers leave type empty for some uploads; PDF is the common default here.
+  const mimeType = file.type || 'application/pdf';
+  return { fileName: file.name, fileKey: await stageForExtraction(file, mimeType), mimeType };
 }

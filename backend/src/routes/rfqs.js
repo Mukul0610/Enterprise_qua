@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const rfqController = require('../controllers/rfqController');
 const { authenticate, requireRole } = require('../middleware/auth');
+const { GEMINI_CONFIG } = require('../config/constants');
 
 // Every RFQ read is authenticated and scoped to the caller's buyer organisation.
 // These three used to be anonymous and returned the entire global RFQ list,
@@ -19,6 +20,19 @@ router.post('/ingest', authenticate, rfqController.ingestRFQ);
 // routes it through emailIngestionService's real MIME parsing before the same
 // Gemini extraction and classification every other document goes through.
 router.post('/extract', authenticate, rfqController.extractRFQFromDocument);
+// Raw-body upload used ahead of /extract for documents too big to carry as
+// base64 inside a JSON envelope (see extractionStagingService.js for why).
+// express.raw only consumes the stream for a non-JSON/non-form content-type,
+// so this never collides with app.js's global express.json()/urlencoded()
+// parsers above it — a PDF/image/.eml content-type skips both of those.
+// The size limit itself is what turns an oversized upload into a 413 before
+// the whole body is even buffered.
+router.post(
+  '/extract/stage',
+  authenticate,
+  express.raw({ type: () => true, limit: GEMINI_CONFIG.MAX_DOCUMENT_BYTES }),
+  rfqController.stageExtractionDocument
+);
 // Autonomous mailbox gateway. Registered before '/:id' so neither path segment is
 // read as an RFQ identifier. Status is diagnostic; the manual check exists so a
 // buyer can pull the mailbox now instead of waiting for the next interval.

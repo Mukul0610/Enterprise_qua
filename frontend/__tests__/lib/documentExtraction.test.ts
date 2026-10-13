@@ -10,6 +10,15 @@ import {
   buildExtractionRequest,
 } from '@/lib/documentExtraction';
 
+// buildExtractionRequest now stages any binary document to R2 (via
+// rfqClient.stageDocumentForExtraction) rather than base64-inlining it, so
+// every former `inlineData` assertion below becomes a `fileKey` assertion
+// against this mock's fixed return value.
+jest.mock('@/lib/rfqClient', () => ({
+  stageDocumentForExtraction: jest.fn().mockResolvedValue({ success: true, key: 'staged-test-key' }),
+}));
+const STAGED_KEY = 'staged-test-key';
+
 // ==============================================================================
 // DOCUMENT PREPARATION FOR AI EXTRACTION
 // ==============================================================================
@@ -238,7 +247,7 @@ describe('buildExtractionRequest', () => {
       fileName: 'boq.xlsx',
       documentText: 'SHEET: Items\nPump | 4',
     });
-    expect(request).not.toHaveProperty('inlineData');
+    expect(request).not.toHaveProperty('fileKey');
   });
 
   test('sends a CSV as flattened text too', async () => {
@@ -255,7 +264,7 @@ describe('buildExtractionRequest', () => {
 
     await expect(buildExtractionRequest(file)).resolves.toEqual({
       fileName: 'spec.pdf',
-      inlineData: 'aGVsbG8=',
+      fileKey: STAGED_KEY,
       mimeType: 'application/pdf',
     });
   });
@@ -285,7 +294,7 @@ describe('buildExtractionRequest', () => {
 
     await expect(buildExtractionRequest(file)).resolves.toEqual({
       fileName: 'original_msg.eml',
-      inlineData: expect.any(String),
+      fileKey: STAGED_KEY,
       mimeType: 'message/rfc822',
     });
   });
@@ -295,7 +304,7 @@ describe('buildExtractionRequest', () => {
 
     await expect(buildExtractionRequest(file)).resolves.toEqual({
       fileName: 'requisition.msg',
-      inlineData: expect.any(String),
+      fileKey: STAGED_KEY,
       mimeType: 'application/vnd.ms-outlook',
     });
   });
@@ -309,24 +318,24 @@ describe('buildExtractionRequest', () => {
     });
   });
 
-  test('sends a .docx file as documentText or inlineData', async () => {
+  test('sends a .docx file as documentText or staged fileKey', async () => {
     const file = new File(['mock docx binary content'], 'specification.docx', {
       type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     });
 
     const res = await buildExtractionRequest(file);
     expect(res.fileName).toBe('specification.docx');
-    expect(res.documentText !== undefined || res.inlineData !== undefined).toBe(true);
+    expect(res.documentText !== undefined || res.fileKey !== undefined).toBe(true);
   });
 
-  test('sends a .pdf file as documentText or inlineData', async () => {
+  test('sends a .pdf file as documentText or staged fileKey', async () => {
     const file = new File(['%PDF-1.4 mock pdf binary content stream BT /F1 12 Tf (Centrifugal Pump 500 GPM) Tj ET endstream'], 'drawing.pdf', {
       type: 'application/pdf',
     });
 
     const res = await buildExtractionRequest(file);
     expect(res.fileName).toBe('drawing.pdf');
-    expect(res.documentText !== undefined || res.inlineData !== undefined).toBe(true);
+    expect(res.documentText !== undefined || res.fileKey !== undefined).toBe(true);
   });
 });
 
@@ -373,6 +382,22 @@ describe('isTextFile and isWordDocument', () => {
     expect(text).toContain('Part(B)');
   });
 
+  test('buildExtractionRequest throws DocumentStagingError when staging fails or the document is too large', async () => {
+    const { buildExtractionRequest, DocumentStagingError } = require('@/lib/documentExtraction');
+    const rfqClient = require('@/lib/rfqClient');
+    rfqClient.stageDocumentForExtraction.mockResolvedValue({
+      success: false,
+      tooLarge: true,
+      error: 'This document is too large to extract from.',
+    });
+
+    const file = new File(['%PDF-1.4'], 'huge.pdf', { type: 'application/pdf' });
+    await expect(buildExtractionRequest(file)).rejects.toThrow(DocumentStagingError);
+    await expect(buildExtractionRequest(file)).rejects.toMatchObject({ tooLarge: true });
+
+    rfqClient.stageDocumentForExtraction.mockResolvedValue({ success: true, key: 'staged-test-key' });
+  });
+
   test('extractDocxText returns empty string for non-docx buffer', async () => {
     const { extractDocxText } = require('@/lib/documentExtraction');
     const buf = new Uint8Array([1, 2, 3, 4, 5]).buffer;
@@ -393,7 +418,7 @@ describe('isTextFile and isWordDocument', () => {
     const req = await buildExtractionRequest(file);
     expect(req.fileName).toBe('custom_scan');
     expect(req.mimeType).toBe('application/pdf');
-    expect(req.inlineData).toBeDefined();
+    expect(req.fileKey).toBeDefined();
   });
 
   test('buildExtractionRequest extracts docx when text is present and falls back to inlineData when empty or threw', async () => {
@@ -401,7 +426,7 @@ describe('isTextFile and isWordDocument', () => {
     const emptyDocx = new File(['not a real zip'], 'empty.docx', { type: '' });
     const req1 = await buildExtractionRequest(emptyDocx);
     expect(req1.fileName).toBe('empty.docx');
-    expect(req1.inlineData).toBeDefined();
+    expect(req1.fileKey).toBeDefined();
     expect(req1.mimeType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
 
     const fn = 'word/document.xml';
@@ -444,7 +469,7 @@ describe('isTextFile and isWordDocument', () => {
     const req = await buildExtractionRequest(shortDocx);
 
     expect(req.documentText).toBeUndefined();
-    expect(req.inlineData).toBeDefined();
+    expect(req.fileKey).toBeDefined();
     expect(req.mimeType).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document');
   });
 
@@ -456,7 +481,7 @@ describe('isTextFile and isWordDocument', () => {
     const req = await buildExtractionRequest(pdfWithText);
     expect(req.fileName).toBe('valve_spec.pdf');
     expect(req.documentText).toContain('High Pressure Boiler Valve 250 PSI Specification');
-    expect(req.inlineData).toBeDefined();
+    expect(req.fileKey).toBeDefined();
     expect(req.mimeType).toBe('application/pdf');
   });
 
@@ -798,7 +823,7 @@ describe('isTextFile and isWordDocument', () => {
     expect(req1.fileName).toBe('short.pdf');
     expect(req1.mimeType).toBe('application/pdf');
     expect(req1.documentText).toBeUndefined();
-    expect(req1.inlineData).toBeDefined();
+    expect(req1.fileKey).toBeDefined();
 
     const origFR = global.FileReader;
     (global as any).FileReader = class MockFailingABReader {

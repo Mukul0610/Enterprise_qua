@@ -1,5 +1,6 @@
 import {
   extractLineItemsFromDocument,
+  stageDocumentForExtraction,
   classifyLineItems,
   downloadQuoteAttachment,
   uploadRFQAttachment,
@@ -153,6 +154,110 @@ describe('rfqClient.extractLineItemsFromDocument', () => {
     const res = await extractLineItemsFromDocument({ fileName: 'BOQ.xlsx', documentText: 'x' });
 
     expect(res.success).toBe(false);
+  });
+});
+
+describe('rfqClient.stageDocumentForExtraction', () => {
+  const originalFetch = global.fetch;
+  const file = new File(['%PDF-1.4 body'], 'spec.pdf', { type: 'application/pdf' });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    authClient.setSession(null, null);
+    jest.restoreAllMocks();
+  });
+
+  test('posts the raw file body (not JSON) and returns the staged key', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: { key: 'abc-123', size: 13 } }),
+    });
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res).toEqual({ success: true, key: 'abc-123' });
+    const [path, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(path).toBe('/api/rfqs/extract/stage?mimeType=application%2Fpdf');
+    expect(init.method).toBe('POST');
+    expect(init.headers['Content-Type']).toBe('application/pdf');
+    expect(init.body).toBe(file);
+  });
+
+  test('attaches the session token when one is held', async () => {
+    authClient.setSession(
+      { id: 'u1', email: 'b@x.com', name: 'B', role: 'buyer', orgId: 'o1', orgName: 'O' },
+      'jwt-token'
+    );
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: { key: 'abc-123' } }),
+    });
+
+    await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect((global.fetch as jest.Mock).mock.calls[0][1].headers.Authorization).toBe('Bearer jwt-token');
+  });
+
+  test('reports tooLarge on a 413 without attempting to parse the body', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 413 });
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res).toEqual({
+      success: false,
+      tooLarge: true,
+      error: 'This document is too large to extract from.',
+    });
+  });
+
+  test('reports a network failure rather than silently dropping the document', async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error('offline'));
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res.success).toBe(false);
+    expect(res.error).toBe(UI_STRINGS.auth.networkUnreachable);
+  });
+
+  test('treats a non-JSON response as unreadable', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => {
+        throw new Error('not json');
+      },
+    });
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res.success).toBe(false);
+    expect(res.error).toBe(UI_STRINGS.rfqExtraction.unreadableResponse);
+  });
+
+  test('reports failure when the server omits a key', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ success: true, data: {} }),
+    });
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res.success).toBe(false);
+  });
+
+  test('surfaces the server error message on failure', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: async () => ({ success: false, error: 'Object storage is not configured.' }),
+    });
+
+    const res = await stageDocumentForExtraction(file, 'application/pdf');
+
+    expect(res).toEqual({ success: false, error: 'Object storage is not configured.' });
   });
 });
 

@@ -110,6 +110,53 @@ export async function extractLineItemsFromDocument(
 }
 
 /**
+ * Upload a document's raw bytes ahead of extraction, so the browser never has
+ * to base64-encode it into a JSON body: a 14MB PDF is a 14MB fetch body here
+ * instead of a ~19MB base64 string folded into the /extract request (which is
+ * what produced the backend's exceededMemory 503s on large uploads).
+ *
+ * Returns the key extractLineItemsFromDocument's `fileKey` field expects in
+ * place of `inlineData`.
+ */
+export async function stageDocumentForExtraction(
+  file: File,
+  mimeType: string
+): Promise<{ success: boolean; key?: string; error?: string; tooLarge?: boolean }> {
+  const token = authClient.getToken();
+
+  let res: Response;
+  try {
+    res = await fetch(`/api/rfqs/extract/stage?mimeType=${encodeURIComponent(mimeType || 'application/octet-stream')}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': mimeType || 'application/octet-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: file,
+    });
+  } catch {
+    return { success: false, error: UI_STRINGS.auth.networkUnreachable };
+  }
+
+  if (res.status === 413) {
+    return { success: false, tooLarge: true, error: 'This document is too large to extract from.' };
+  }
+
+  let body: { success?: boolean; data?: { key?: string }; error?: string } = {};
+  try {
+    body = await res.json();
+  } catch {
+    return { success: false, error: UI_STRINGS.rfqExtraction.unreadableResponse };
+  }
+
+  if (!res.ok || !body.success || !body.data?.key) {
+    return { success: false, error: body.error || UI_STRINGS.rfqExtraction.unreadableResponse };
+  }
+
+  return { success: true, key: body.data.key };
+}
+
+/**
  * Re-classify line items against the shared major/minor taxonomy.
  *
  * The wizard used to do this in the browser with a three-keyword lookup, which

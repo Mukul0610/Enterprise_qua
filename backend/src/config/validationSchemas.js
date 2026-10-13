@@ -202,6 +202,10 @@ const VALIDATION_SCHEMAS = {
     fileName: { type: 'string', required: true, minLength: 1, maxLength: 260 },
     documentText: { type: 'string', required: false },
     inlineData: { type: 'string', required: false },
+    // Preferred over inlineData for anything binary — a reference to a document
+    // already uploaded raw via POST /api/rfqs/extract/stage, so the base64 body
+    // never has to round-trip through this endpoint's JSON request at all.
+    fileKey: { type: 'string', required: false, maxLength: 64 },
     mimeType: { type: 'string', required: false, maxLength: 120 },
   },
 

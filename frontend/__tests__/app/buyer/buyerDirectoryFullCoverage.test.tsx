@@ -9,6 +9,10 @@ import { useApp, AppProvider } from '@/lib/store';
 jest.mock('@/lib/rfqClient', () => ({
   ...jest.requireActual('@/lib/rfqClient'),
   extractLineItemsFromDocument: jest.fn(),
+  // buildExtractionRequest stages any binary upload (e.g. the .eml fixture
+  // below) via this before calling extractLineItemsFromDocument — mocked so
+  // that real step never hits the network in this suite.
+  stageDocumentForExtraction: jest.fn().mockResolvedValue({ success: true, key: 'staged-test-key' }),
   classifyLineItems: jest.fn(),
   uploadRFQAttachment: jest.fn(),
   createRFQ: jest.fn(),

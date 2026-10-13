@@ -11,6 +11,7 @@ const { logger } = require('../services/loggerService');
 const emailGatewayService = require('../services/emailGatewayService');
 const emailIngestionService = require('../services/emailIngestionService');
 const mailerService = require('../services/mailerService');
+const extractionStagingService = require('../services/extractionStagingService');
 const {
   VALIDATION_SCHEMAS,
   validatePayload,
@@ -672,6 +673,9 @@ async function pollEmailGateway(req, res, next) {
  * explain precisely what happened (no API key, unreadable file, nothing found).
  */
 async function extractRFQFromDocument(req, res, next) {
+  // Staged document (if any) is a transient R2 object this request owns end
+  // to end — always cleaned up, whether extraction succeeds, fails, or throws.
+  let stagedKey = null;
   try {
     const body = req.body || {};
 
@@ -681,6 +685,24 @@ async function extractRFQFromDocument(req, res, next) {
       return res.status(400).json({ success: false, error: Object.values(errors)[0], fieldErrors: errors });
     }
 
+    let inlineData = body.inlineData;
+    if (body.fileKey) {
+      stagedKey = body.fileKey;
+      // One buffer, read once. The base64 string below is the only encoded
+      // copy that ever exists for this request — everything upstream of it
+      // (the browser upload, the staging write) moved raw bytes, never base64.
+      const buffer = await extractionStagingService.load(body.fileKey);
+      if (!buffer) {
+        logger.warn('Document extraction rejected: staged document not found', { fileName: body.fileName }, 'RFQ_CONTROLLER');
+        return res.status(422).json({
+          success: false,
+          reason: 'NO_CONTENT',
+          error: EXTRACTION_REASON_MESSAGES.NO_CONTENT || EXTRACTION_REASON_MESSAGES.AI_FAILED,
+        });
+      }
+      inlineData = buffer.toString('base64');
+    }
+
     // A buyer uploading their own .eml through the authenticated web app is a
     // different trust path from the IMAP gateway's inbound mail (see
     // emailGatewayService.resolveSenderAuthorisation) — the session itself is
@@ -688,7 +710,7 @@ async function extractRFQFromDocument(req, res, next) {
     // MIME parsing without the gateway's sender-allow-list check.
     let extractionInput = {
       documentText: body.documentText,
-      inlineData: body.inlineData,
+      inlineData,
       mimeType: body.mimeType,
       fileName: body.fileName,
     };
@@ -700,7 +722,7 @@ async function extractRFQFromDocument(req, res, next) {
     ) {
       const prepared = await emailIngestionService.prepareEmailForExtraction({
         fileName: body.fileName,
-        content: body.inlineData,
+        content: inlineData,
       });
       if (prepared.status !== EMAIL_INGESTION_STATUS.READY) {
         logger.warn(
@@ -777,6 +799,40 @@ async function extractRFQFromDocument(req, res, next) {
     // UNEXPECTED fault (a thrown service/DB error), which stays a 500 via the
     // global error handler rather than being disguised as an extraction result.
     logger.error('Error extracting RFQ line items from document', err, 'RFQ_CONTROLLER');
+    next(err);
+  } finally {
+    // Staging is for the lifetime of exactly one extraction call — delete it
+    // whether this request succeeded, failed, or threw, so a staged upload
+    // never lingers in R2.
+    if (stagedKey) extractionStagingService.remove(stagedKey).catch(() => {});
+  }
+}
+
+/**
+ * Accept a raw document upload (no base64, no JSON envelope) ahead of
+ * POST /api/rfqs/extract, and hand back a `key` to pass there instead of the
+ * document itself. See extractionStagingService.js for why this split exists.
+ */
+async function stageExtractionDocument(req, res, next) {
+  try {
+    const buffer = req.body;
+    if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+      return res.status(400).json({ success: false, error: 'No document content was received.' });
+    }
+
+    const mimeType = typeof req.query.mimeType === 'string' ? req.query.mimeType : req.headers['content-type'];
+    const result = await extractionStagingService.stage(buffer, mimeType);
+
+    if (result.status === 'TOO_LARGE') {
+      return res.status(413).json({ success: false, error: 'This document is too large to extract from.' });
+    }
+    if (result.status !== 'SAVED') {
+      return res.status(502).json({ success: false, error: result.error || 'The document could not be staged.' });
+    }
+
+    return res.json({ success: true, data: { key: result.key, size: result.size } });
+  } catch (err) {
+    logger.error('Error staging a document for extraction', err, 'RFQ_CONTROLLER');
     next(err);
   }
 }
@@ -1394,6 +1450,7 @@ module.exports = {
   createRFQ,
   ingestRFQ,
   extractRFQFromDocument,
+  stageExtractionDocument,
   getEmailGatewayStatus,
   pollEmailGateway,
   uploadRFQAttachment,
