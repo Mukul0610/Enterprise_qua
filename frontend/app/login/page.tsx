@@ -64,7 +64,11 @@ export default function LoginPage() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginMobile, setLoginMobile] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
-  const [buyerAuthMode, setBuyerAuthMode] = useState<'password' | 'email_otp'>('password');
+  // Not role-restricted despite the name history: this is the single Sign In
+  // tab's auth method switcher, used identically by buyer, vendor, category
+  // manager, and admin logins — the role comes from the account record after
+  // authentication, never from a selector here.
+  const [loginAuthMode, setLoginAuthMode] = useState<'password' | 'email_otp'>('password');
   const [loginOtpSent, setLoginOtpSent] = useState(false);
   const [loginOtpInput, setLoginOtpInput] = useState('');
 
@@ -508,7 +512,7 @@ export default function LoginPage() {
   const primaryBtn =
     'btn btn-primary w-full text-xs font-bold py-2.5 flex items-center justify-center gap-1.5 disabled:opacity-60 disabled:cursor-not-allowed';
 
-  const otpModeActive = buyerAuthMode === 'email_otp';
+  const otpModeActive = loginAuthMode === 'email_otp';
 
   return (
     <div className="min-h-[85vh] flex items-center justify-center p-4">
@@ -623,8 +627,8 @@ export default function LoginPage() {
                 <div className="flex rounded-xl bg-slate-100 dark:bg-gray-800/80 p-1 text-xs">
                     <button
                       type="button"
-                      onClick={() => { setBuyerAuthMode('password'); setLoginOtpSent(false); }}
-                      className={`flex-1 py-1.5 rounded-lg font-bold text-[11px] transition-all flex items-center justify-center gap-1 ${buyerAuthMode === 'password'
+                      onClick={() => { setLoginAuthMode('password'); setLoginOtpSent(false); }}
+                      className={`flex-1 py-1.5 rounded-lg font-bold text-[11px] transition-all flex items-center justify-center gap-1 ${loginAuthMode === 'password'
                           ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
                           : 'text-slate-500 hover:text-slate-700'
                         }`}
@@ -633,8 +637,8 @@ export default function LoginPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => { setBuyerAuthMode('email_otp'); setLoginOtpSent(false); }}
-                      className={`flex-1 py-1.5 rounded-lg font-bold text-[11px] transition-all flex items-center justify-center gap-1 ${buyerAuthMode === 'email_otp'
+                      onClick={() => { setLoginAuthMode('email_otp'); setLoginOtpSent(false); }}
+                      className={`flex-1 py-1.5 rounded-lg font-bold text-[11px] transition-all flex items-center justify-center gap-1 ${loginAuthMode === 'email_otp'
                           ? 'bg-white dark:bg-gray-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
                           : 'text-slate-500 hover:text-slate-700'
                         }`}

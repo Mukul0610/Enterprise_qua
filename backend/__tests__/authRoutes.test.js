@@ -48,6 +48,23 @@ const PASSWORD = 'Pass@123';
 /** Mobile number as typed by the visitor on the sign-in form. */
 const MOBILE = '9157154504';
 
+/**
+ * Email-OTP sign-in has no role branch anywhere in authService — requestOtp
+ * and verifyOtp key purely off the email+mobile pair and return whatever role
+ * is already on the account record. buyerRecord() above is reused with just
+ * the role fields swapped, the same way assertUserCanSignIn and every other
+ * role-agnostic check in this file already treats the record.
+ */
+function vendorRecord(overrides = {}) {
+  return buyerRecord({ role: 'vendor', rawRoleName: 'VendorSupplier', ...overrides });
+}
+function categoryManagerRecord(overrides = {}) {
+  return buyerRecord({ role: 'category_manager', rawRoleName: 'CategoryManager', ...overrides });
+}
+function adminRecord(overrides = {}) {
+  return buyerRecord({ role: 'admin', rawRoleName: 'Admin', ...overrides });
+}
+
 describe('Authentication against the account records (/api/auth)', () => {
   let originalPool;
 
@@ -420,6 +437,25 @@ describe('Authentication against the account records (/api/auth)', () => {
       const verified = await authService.verifyOtp(EMAIL, requested.demoCode, '::1', MOBILE);
       expect(verified.success).toBe(true);
       expect(verified.user.email).toBe(EMAIL);
+    });
+
+    // Email OTP sign-in is a single, role-agnostic flow (one "Sign In" tab with
+    // a Password/Email OTP switcher on the login page, no role selector) — it
+    // has to work identically for every account role, not just buyers.
+    test.each([
+      ['vendor', vendorRecord],
+      ['category_manager', categoryManagerRecord],
+      ['admin', adminRecord],
+    ])('dispatches and verifies a code for a %s account the same as a buyer', async (role, recordFn) => {
+      jest.spyOn(identityQueries, 'findUserByEmailAndPhone').mockResolvedValue(recordFn());
+
+      const requested = await authService.requestOtp(EMAIL, MOBILE, role, '::1');
+      expect(requested.success).toBe(true);
+      expect(requested.demoCode).toMatch(/^\d{6}$/);
+
+      const verified = await authService.verifyOtp(EMAIL, requested.demoCode, '::1', MOBILE);
+      expect(verified.success).toBe(true);
+      expect(verified.user.role).toBe(role);
     });
 
     test('issues a 15-minute, 6-digit code as the shared otp_store column expects', () => {
