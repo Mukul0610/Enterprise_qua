@@ -200,6 +200,65 @@ async function countPublicVendorsMatchingCategories(signals) {
   return result.rows[0]?.total || 0;
 }
 
+/**
+ * The actual public (Procucev-network) vendor ROWS whose category covers ANY of
+ * the given RFQ signals — the row-returning companion to
+ * countPublicVendorsMatchingCategories, so V0 RFQ dispatch can assign the real
+ * matching vendors from the whole directory instead of the capped in-memory
+ * bootstrap page (which was returning zero at scale).
+ *
+ * Same four-pool, case-insensitive substring match and public-only filter as
+ * the count query. Ordered newest-first and capped by `limit`.
+ *
+ * @param {string[]} signals Category strings the RFQ carries.
+ * @param {number} limit Max rows to return.
+ * @returns {Promise<object[]>} Matching public vendor records.
+ */
+async function getPublicVendorsMatchingCategories(signals, limit = 100) {
+  if (!pool.hasStorage()) return [];
+  const cleaned = Array.from(
+    new Set((Array.isArray(signals) ? signals : []).map((s) => String(s || '').trim().toLowerCase()).filter(Boolean))
+  );
+  if (cleaned.length === 0) return [];
+
+  const params = [];
+  const orGroups = [];
+  const d1OrGroups = [];
+  for (const sig of cleaned) {
+    params.push(`%${sig}%`);
+    const p = params.length;
+    orGroups.push(`(
+      lower(major_category) LIKE $${p}
+      OR lower((raw->'minorCategories')::text) LIKE $${p}
+      OR lower((raw->'vendorSelectedCategories')::text) LIKE $${p}
+      OR lower((raw->'clientMappedCategories')::text) LIKE $${p}
+    )`);
+    d1OrGroups.push(`(
+      lower(major_category) LIKE $${p}
+      OR lower(json_extract(raw,'$.minorCategories')) LIKE $${p}
+      OR lower(json_extract(raw,'$.vendorSelectedCategories')) LIKE $${p}
+      OR lower(json_extract(raw,'$.clientMappedCategories')) LIKE $${p}
+    )`);
+  }
+
+  const publicPg = `(raw->>'buyerId') IS NULL AND (raw->>'buyerAccountId') IS NULL`;
+  const publicD1 = `json_extract(raw,'$.buyerId') IS NULL AND json_extract(raw,'$.buyerAccountId') IS NULL`;
+
+  const wherePg = `WHERE (${orGroups.join(' OR ')}) AND ${publicPg}`;
+  const whereD1 = `WHERE (${d1OrGroups.join(' OR ')}) AND ${publicD1}`;
+
+  const limitParam = params.length + 1;
+  const result = await pool.query(
+    `SELECT raw FROM vendors ${wherePg} ORDER BY created_at DESC LIMIT $${limitParam}`,
+    [...params, limit],
+    {
+      d1: true,
+      d1Text: `SELECT raw FROM vendors ${whereD1} ORDER BY created_at DESC LIMIT $${limitParam}`,
+    }
+  );
+  return (result && result.rows) ? result.rows.map((row) => parseRaw(row.raw)) : [];
+}
+
 /** Single-row lookup by email — used to guarantee a specific vendor is
  * present in a capped/paginated listing without fetching the whole table. */
 async function getVendorByEmailFromDB(email) {
@@ -1129,6 +1188,7 @@ module.exports = {
   getVendorsFromDB,
   getVendorsPageFromDB,
   countPublicVendorsMatchingCategories,
+  getPublicVendorsMatchingCategories,
   getVendorByEmailFromDB,
   getVendorsByBuyerFromDB,
   getVendorByIdFromDB,

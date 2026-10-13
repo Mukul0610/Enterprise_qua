@@ -977,7 +977,7 @@ function makeInquiry(overrides: any = {}): any {
       expect(screen.queryByText('Global Turbines Ltd')).not.toBeInTheDocument();
     });
 
-    it('filters Procucev vendors out of both buyer inquiry and assigned supplier sections', () => {
+    it('shows a Procucev vendor confidentially in the assigned supplier panel (name only, no contact)', () => {
       renderDetails(
         buildRFQ({
           sourcingMode: 'mode_2',
@@ -999,8 +999,199 @@ function makeInquiry(overrides: any = {}): any {
       const panelHeading = screen.getByText('Assigned & Invited Suppliers');
       const panel = panelHeading.closest('section');
       expect(panel).not.toBeNull();
+      // Both the client vendor and the Procucev vendor are now listed by name.
       expect(within(panel as HTMLElement).getAllByText('Client Approved Supplier').length).toBeGreaterThanOrEqual(1);
-      expect(within(panel as HTMLElement).queryByText('Assigned Network Supplier')).not.toBeInTheDocument();
+      expect(within(panel as HTMLElement).getAllByText('Assigned Network Supplier').length).toBeGreaterThanOrEqual(1);
+      // The Procucev card carries the double-blind badge.
+      expect(within(panel as HTMLElement).getAllByText(/Double-Blind/i).length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('keeps a V3 Procucev vendor confidential: shows name, category, location, score — hides email, phone, contact', () => {
+      // The reported requirement: a V3 Procucev vendor must appear in the panel
+      // with its category, location, and match score visible, but its email,
+      // phone, and contact person hidden.
+      renderDetails(
+        buildRFQ({
+          sourcingMode: 'mode_3',
+          assignedVendors: [
+            {
+              id: 'proc-v3',
+              name: 'Confidential Procucev Supplier',
+              email: 'secret@procucev-vendor.in',
+              phone: '+91 90000 55555',
+              contactPerson: 'Hidden Contact',
+              vendorCategory: 'Procucev Network',
+              majorCategory: 'Engineering Spares - Mechanical',
+              location: 'Pune, Maharashtra',
+              matchScore: 92,
+            } as any,
+          ],
+        })
+      );
+
+      // Scope assertions to the Procucev supplier card so category text from
+      // the line-items table does not create ambiguous matches.
+      const card = screen.getAllByTestId('assigned-supplier-card').find((c) =>
+        within(c).queryByText('Confidential Procucev Supplier')
+      ) as HTMLElement;
+      expect(card).toBeTruthy();
+
+      // Visible: company name, category, location, and match score.
+      expect(within(card).getByText('Confidential Procucev Supplier')).toBeInTheDocument();
+      expect(within(card).getByText(/Engineering Spares - Mechanical/)).toBeInTheDocument();
+      expect(within(card).getByText(/Pune, Maharashtra/)).toBeInTheDocument();
+      expect(within(card).getByText(/92% match/)).toBeInTheDocument();
+
+      // Hidden: contact details appear nowhere in the card.
+      expect(within(card).queryByText('secret@procucev-vendor.in')).not.toBeInTheDocument();
+      expect(within(card).queryByText('+91 90000 55555')).not.toBeInTheDocument();
+      expect(within(card).queryByText(/Hidden Contact/)).not.toBeInTheDocument();
+    });
+
+    it('treats an untagged assigned vendor on a V3 RFQ as confidential (hides its email, phone, contact)', () => {
+      // Reproduces the live leak: a V3 RFQ whose assigned vendor was populated
+      // by the backend and carries email/phone/contact but NO vendorCategory
+      // tag and no Procucev source. V3 routes only to the Procucev network, so
+      // the details view must still treat it as double-blind.
+      renderDetails(
+        buildRFQ({
+          sourcingMode: 'mode_3',
+          assignedVendors: [
+            {
+              id: 'v-untagged',
+              name: 'RFQ Procucev Vendor',
+              email: 'rfqprocucev@gmail.com',
+              phone: '+919866666667',
+              contactPerson: 'RFQ Procucev',
+            } as any,
+          ],
+        })
+      );
+
+      const card = screen.getAllByTestId('assigned-supplier-card').find((c) =>
+        within(c).queryByText('RFQ Procucev Vendor')
+      ) as HTMLElement;
+      expect(card).toBeTruthy();
+
+      // The company name shows; the double-blind badge is present.
+      expect(within(card).getByText('RFQ Procucev Vendor')).toBeInTheDocument();
+      expect(within(card).getByText(/Double-Blind/i)).toBeInTheDocument();
+
+      // Category, location, and a match row always render (category falls back to
+      // the RFQ's own category when the entry carries none).
+      expect(within(card).getByText(/Category:/)).toBeInTheDocument();
+      expect(within(card).getByText(/Location:/)).toBeInTheDocument();
+      expect(within(card).getByText(/match/i)).toBeInTheDocument();
+
+      // Contact details are hidden despite being present on the record.
+      expect(within(card).queryByText('rfqprocucev@gmail.com')).not.toBeInTheDocument();
+      expect(within(card).queryByText('+919866666667')).not.toBeInTheDocument();
+      expect(within(card).queryByText(/RFQ Procucev$/)).not.toBeInTheDocument();
+    });
+
+    describe('category manager assigned-suppliers view (full details + tabs)', () => {
+      function renderAsCategoryManager(rfq: RFQItem) {
+        (useApp as jest.Mock).mockReturnValue({
+          currentRole: 'category_manager',
+          showToast: mockShowToast,
+          refreshFromDB: jest.fn().mockResolvedValue(undefined),
+          buyerVendors: [],
+          currentUserSession: { name: 'Cat Manager', email: 'cm@procucev.com', role: 'category_manager' },
+        });
+        return render(<RFQDetails rfq={rfq} onBack={onBack} />);
+      }
+
+      const mixedRfq = () =>
+        buildRFQ({
+          sourcingMode: 'mode_3',
+          assignedVendors: [
+            {
+              id: 'proc-1',
+              name: 'Mamta Electrics',
+              email: 'mamta@network.in',
+              phone: '+91 90000 10001',
+              contactPerson: 'Mamta Rep',
+              vendorCategory: 'Procucev Network',
+              majorCategory: 'lights',
+            } as any,
+            {
+              id: 'own-1',
+              name: 'Amma Solution',
+              email: 'amma@buyerco.in',
+              phone: '+91 90000 20002',
+              contactPerson: 'Amma Rep',
+              vendorCategory: 'Client List',
+            } as any,
+          ],
+        });
+
+      it('renders two tabs and defaults to the Procucev tab with full contact details', () => {
+        renderAsCategoryManager(mixedRfq());
+
+        const tabs = screen.getByTestId('cm-supplier-tabs');
+        expect(screen.getByTestId('cm-tab-procucev')).toHaveTextContent('Procucev Vendors (1)');
+        expect(screen.getByTestId('cm-tab-own')).toHaveTextContent("Buyer's Own Vendors (1)");
+
+        // Procucev tab is active by default and shows FULL details (no double-blind).
+        expect(within(tabs).getByText('Mamta Electrics')).toBeInTheDocument();
+        expect(within(tabs).getByText('mamta@network.in')).toBeInTheDocument();
+        expect(within(tabs).getByText('+91 90000 10001')).toBeInTheDocument();
+        expect(within(tabs).getByText(/Mamta Rep/)).toBeInTheDocument();
+        // No double-blind badge in the category-manager supplier panel.
+        expect(within(tabs).queryByText(/Double-Blind/i)).not.toBeInTheDocument();
+      });
+
+      it('switches to the Buyer Own Vendors tab and shows that vendor full detail', () => {
+        renderAsCategoryManager(mixedRfq());
+
+        fireEvent.click(screen.getByTestId('cm-tab-own'));
+
+        const tabs = screen.getByTestId('cm-supplier-tabs');
+        expect(within(tabs).getByText('Amma Solution')).toBeInTheDocument();
+        expect(within(tabs).getByText('amma@buyerco.in')).toBeInTheDocument();
+        expect(within(tabs).getByText('+91 90000 20002')).toBeInTheDocument();
+        // The Procucev vendor is not in this tab's list.
+        expect(within(tabs).queryByText('Mamta Electrics')).not.toBeInTheDocument();
+      });
+
+      it('shows the assigned-suppliers panel with full detail even for a V0 RFQ', () => {
+        // Buyer-side V0 hides this panel (email-direct sourcing), but the
+        // category manager must still see the invited vendors on V0.
+        renderAsCategoryManager(
+          buildRFQ({
+            sourcingMode: 'mode_0',
+            assignedVendors: [
+              {
+                id: 'v0-vendor',
+                name: 'V0 Network Supplier',
+                email: 'v0@network.in',
+                phone: '+91 90000 30003',
+                contactPerson: 'V0 Rep',
+                vendorCategory: 'Procucev Network',
+              } as any,
+            ],
+          })
+        );
+
+        expect(screen.getByText('Assigned & Invited Suppliers')).toBeInTheDocument();
+        const tabs = screen.getByTestId('cm-supplier-tabs');
+        expect(within(tabs).getByText('V0 Network Supplier')).toBeInTheDocument();
+        expect(within(tabs).getByText('v0@network.in')).toBeInTheDocument();
+        expect(within(tabs).getByText('+91 90000 30003')).toBeInTheDocument();
+      });
+
+      it('still hides the suppliers panel from the BUYER on a V0 RFQ', () => {
+        // Control: the gate change must not expose the panel to the buyer on V0.
+        renderDetails(
+          buildRFQ({
+            sourcingMode: 'mode_0',
+            assignedVendors: [
+              { id: 'v0-x', name: 'V0 X', vendorCategory: 'Procucev Network' } as any,
+            ],
+          })
+        );
+        expect(screen.queryByText('Assigned & Invited Suppliers')).not.toBeInTheDocument();
+      });
     });
 
     it('allows searching vendors and filtering by status tabs', () => {

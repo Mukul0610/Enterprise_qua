@@ -124,12 +124,47 @@ type ConfirmationVendor = string | {
   name?: string;
   source?: string;
   addedByBuyerCompany?: boolean;
+  vendorCategory?: string;
 };
 
 interface ConfirmationRFQ {
   sourcingMode?: string;
   procucevVendorCount?: number;
   assignedVendors?: ConfirmationVendor[];
+  category?: string | null;
+  extractedEntities?: Array<{ category?: string | null; majorCategory?: string | null; minorCategory?: string | null }>;
+}
+
+/**
+ * Whether an RFQ carries any category signal at all (header category or a line
+ * item's category/major/minor). With none, a Procucev network match is
+ * undefined — the backend's category-less query matches the entire directory,
+ * so its procucevVendorCount is meaningless and must not be shown.
+ */
+function rfqHasCategorySignal(rfq: ConfirmationRFQ): boolean {
+  if (rfq.category && String(rfq.category).trim()) return true;
+  for (const item of Array.isArray(rfq.extractedEntities) ? rfq.extractedEntities : []) {
+    if (
+      (item.category && String(item.category).trim()) ||
+      (item.majorCategory && String(item.majorCategory).trim()) ||
+      (item.minorCategory && String(item.minorCategory).trim())
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Classify one assigned-vendor entry as a Procucev network vendor, honouring an
+ * explicit `vendorCategory` tag first (what the wizard now stamps) and falling
+ * back to the source-based `isProcucevVendor` heuristic for untagged entries.
+ */
+function isProcucevAssignedVendor(vendor: ConfirmationVendor): boolean {
+  const v = typeof vendor === 'string' ? { id: vendor } : vendor;
+  if ((v as { vendorCategory?: string }).vendorCategory === 'Procucev Network') return true;
+  if ((v as { vendorCategory?: string }).vendorCategory === 'Client List') return false;
+  return isProcucevVendor(v);
 }
 
 export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | undefined): number {
@@ -140,7 +175,27 @@ export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | und
   const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
   const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
 
-  // If the backend dynamically returned the vendor count for this RFQ version, use it:
+  // With no category selected, a Procucev network match is undefined: the
+  // backend's procucevVendorCount is a category-less whole-directory tally
+  // (e.g. 20030) and must never be shown. Report the vendors actually invited
+  // (assignedVendors) instead — zero when none were.
+  const hasCategory = rfqHasCategorySignal(rfq);
+  if ((isV0 || isV2 || isV3) && !hasCategory) {
+    return Array.isArray(rfq.assignedVendors)
+      ? rfq.assignedVendors.filter((vendor) => isProcucevAssignedVendor(vendor)).length
+      : 0;
+  }
+
+  // V0 reports the vendors ACTUALLY invited to this RFQ, taken from its own
+  // assignedVendors — not the backend's procucevVendorCount, which is a
+  // directory-wide category-match tally (it can read in the tens of thousands)
+  // and does not represent who was invited. Only when no assignment list is
+  // present do we fall back to the server figure.
+  if (isV0 && Array.isArray(rfq.assignedVendors) && rfq.assignedVendors.length > 0) {
+    return rfq.assignedVendors.filter((vendor) => isProcucevAssignedVendor(vendor)).length;
+  }
+
+  // V2/V3 (and V0 without an assignment list): use the backend's dynamic count.
   if (
     (isV0 || isV2 || isV3) &&
     typeof rfq.procucevVendorCount === 'number' &&
@@ -153,9 +208,7 @@ export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | und
   if (Array.isArray(rfq.assignedVendors)) {
     if (isV0 || isV2 || isV3) {
       // V0, V2, V3: only Procucev network vendors are counted.
-      return rfq.assignedVendors.filter((vendor) =>
-        isProcucevVendor(typeof vendor === 'string' ? { id: vendor } : vendor)
-      ).length;
+      return rfq.assignedVendors.filter((vendor) => isProcucevAssignedVendor(vendor)).length;
     }
     if (isV1) {
       // V1: all assigned vendors from the private roster.
@@ -163,6 +216,36 @@ export function resolveConfirmationVendorCount(rfq: ConfirmationRFQ | null | und
     }
   }
 
+  return 0;
+}
+
+/**
+ * The buyer's own (private roster) invited vendor count for the confirmation
+ * modal's "Mode & Vendors" box.
+ *
+ * For V2/V3 this is the complement of the Procucev network count — the private
+ * suppliers the buyer approved — so the modal shows a meaningful breakdown
+ * (private roster vs Procucev network) instead of repeating the Procucev
+ * number in both boxes. For V0/V1 it falls back to the single relevant total.
+ */
+export function resolveOwnVendorCount(rfq: ConfirmationRFQ | null | undefined): number {
+  if (!rfq) return 0;
+  const mode = rfq.sourcingMode;
+  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+  const isV1 = mode === 'mode_1' || mode === 'v1' || mode === 'version_1';
+  const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+  const isV3 = mode === 'mode_3' || mode === 'v3' || mode === 'version_3';
+
+  if (Array.isArray(rfq.assignedVendors)) {
+    const privateCount = rfq.assignedVendors.filter(
+      (vendor) => !isProcucevAssignedVendor(vendor)
+    ).length;
+    if (isV2 || isV3) return privateCount;
+    if (isV1) return rfq.assignedVendors.length;
+  }
+
+  // V0 has no private roster concept; fall back to the single total.
+  if (isV0) return resolveConfirmationVendorCount(rfq);
   return 0;
 }
 
@@ -1018,6 +1101,12 @@ export default function IngestionWizard({
         email?: string | null;
         contactPerson?: string | null;
         phone?: string | null;
+        /** Classifies the entry for the RFQ details view's confidentiality gate. */
+        vendorCategory?: 'Client List' | 'Procucev Network';
+        /** Non-identifying fields the details view may show for a Procucev vendor. */
+        majorCategory?: string | null;
+        location?: string | null;
+        matchScore?: number | null;
       };
       const toAssignedVendorEntry = (v: VendorEntry): AssignedVendorEntry => ({
         id: v.id,
@@ -1025,6 +1114,26 @@ export default function IngestionWizard({
         email: v.email || null,
         contactPerson: v.contactPerson || v.name || null,
         phone: v.phone || null,
+        // Tag the entry so the confirmation modal and RFQ details view classify
+        // it without needing the vendor's source: a buyer-uploaded vendor is the
+        // buyer's own ('Client List'); anything else here is a Procucev vendor.
+        vendorCategory: isBuyerUploaded(v) ? 'Client List' : 'Procucev Network',
+      });
+      // Procucev network vendors are double-blind: the RFQ details view must
+      // never expose their email/phone/contact. The assignment therefore carries
+      // the company name, a 'Procucev Network' tag, and only the non-identifying
+      // signals the buyer is allowed to see — category, location, and the 360°
+      // match score — so the details card can show those while hiding contact.
+      const toProcucevAssignedEntry = (r: RankedProcucevVendor): AssignedVendorEntry => ({
+        id: r.vendor.id,
+        name: r.vendor.name || 'Procucev Verified Supplier',
+        email: null,
+        contactPerson: null,
+        phone: null,
+        vendorCategory: 'Procucev Network',
+        majorCategory: r.vendor.majorCategory || r.matchedCategories[0] || 'General Industrial',
+        location: r.vendor.location || r.vendor.city || r.vendor.state || r.locationReason || null,
+        matchScore: r.overallScore,
       });
 
       let mode1AssignedVendors: AssignedVendorEntry[] | undefined = undefined;
@@ -1070,7 +1179,7 @@ export default function IngestionWizard({
         const alreadyAssigned = new Set((mode1AssignedVendors || []).map((v) => v.id));
         const picked = procucevV3Ranked
           .filter((r) => selectedProcucevV3Ids.includes(r.vendor.id) && !alreadyAssigned.has(r.vendor.id))
-          .map((r) => toAssignedVendorEntry(r.vendor));
+          .map((r) => toProcucevAssignedEntry(r));
         if (picked.length > 0) {
           mode1AssignedVendors = [...(mode1AssignedVendors || []), ...picked];
         }
@@ -1110,7 +1219,28 @@ export default function IngestionWizard({
       }
 
       adoptCreatedRFQ(result.rfq);
-      setConfirmationRfq(result.rfq);
+      // For V3, the server's procucevVendorCount reflects only its own
+      // auto-match and ignores the vendors the buyer explicitly picked from the
+      // Top Procucev panel. Reconcile the confirmation count so it never
+      // under-reports the suppliers actually dispatched: take the larger of the
+      // server count and the buyer's selection.
+      let confirmation = result.rfq;
+      if (form.sourcingMode === 'mode_3' && selectedProcucevV3Ids.length > 0) {
+        const serverCount =
+          typeof result.rfq?.procucevVendorCount === 'number' ? result.rfq.procucevVendorCount : 0;
+        confirmation = {
+          ...result.rfq,
+          procucevVendorCount: Math.max(serverCount, selectedProcucevV3Ids.length),
+          // Carry the exact dispatched list (tagged Client List / Procucev
+          // Network) so the modal's private-vs-Procucev split is authoritative
+          // and does not depend on how the server echoes assignedVendors.
+          assignedVendors:
+            Array.isArray(result.rfq?.assignedVendors) && result.rfq.assignedVendors.length >= (mode1AssignedVendors || []).length
+              ? result.rfq.assignedVendors
+              : mode1AssignedVendors || result.rfq?.assignedVendors,
+        };
+      }
+      setConfirmationRfq(confirmation);
       setSubmitAttempted(false);
       showToast(
         'RFQ Dispatched',
@@ -3043,9 +3173,15 @@ export default function IngestionWizard({
                 </span>
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
-                <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Mode & Vendors</span>
+                <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">
+                  {V2_V3_SOURCING_MODES.includes(String(confirmationRfq.sourcingMode || ''))
+                    ? 'Your Invited Vendors'
+                    : 'Mode & Vendors'}
+                </span>
                 <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {resolveConfirmationVendorCount(confirmationRfq)}
+                  {V2_V3_SOURCING_MODES.includes(String(confirmationRfq.sourcingMode || ''))
+                    ? resolveOwnVendorCount(confirmationRfq)
+                    : resolveConfirmationVendorCount(confirmationRfq)}
                 </span>
               </div>
               {/* Dedicated Procucev network vendor count — only V2 (Hybrid) and

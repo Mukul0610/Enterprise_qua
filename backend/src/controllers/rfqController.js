@@ -547,13 +547,34 @@ async function createRFQ(req, res, next) {
     // past the bootstrap page — the cause of the RFQ success popup showing
     // "0" matched Procucev vendors for V2/V3. Recompute from the database so
     // the popup's "Mode & Vendors" figure reflects the whole directory.
-    try {
-      const dbCount = await storeService.resolveProcucevVendorCountFromDB(created);
-      if (typeof dbCount === 'number' && dbCount > (created.procucevVendorCount || 0)) {
-        created.procucevVendorCount = dbCount;
+    const createdMode = String(created.sourcingMode || '');
+    const createdIsV0 = createdMode === 'mode_0' || createdMode === 'v0' || createdMode === 'version_0';
+
+    let finalRFQ = created;
+    if (createdIsV0) {
+      // V0 reaches ONLY the Procucev network. createRFQ matched against the
+      // capped in-memory vendor subset, which assigns zero at scale — so pull
+      // the real category-matched public vendors from the DB and assign them.
+      // This sets assignedVendors AND procucevVendorCount to the real invited
+      // count, so the success modal, buyer panel and CM tabs all agree (and the
+      // inflated directory tally is never shown for V0).
+      try {
+        finalRFQ = await storeService.augmentV0AssignmentsFromDB(created);
+      } catch (err) {
+        logger.warn('Could not apply DB-backed V0 vendor assignment', { error: err.message }, 'RFQ_CONTROLLER');
       }
-    } catch (err) {
-      logger.warn('Could not resolve DB-backed Procucev vendor count', { error: err.message }, 'RFQ_CONTROLLER');
+    } else {
+      // V2/V3 expand into the whole public network — recompute the available
+      // Procucev count from the DB so the popup figure is not undercounted by
+      // the capped in-memory subset.
+      try {
+        const dbCount = await storeService.resolveProcucevVendorCountFromDB(created);
+        if (typeof dbCount === 'number' && dbCount > (created.procucevVendorCount || 0)) {
+          created.procucevVendorCount = dbCount;
+        }
+      } catch (err) {
+        logger.warn('Could not resolve DB-backed Procucev vendor count', { error: err.message }, 'RFQ_CONTROLLER');
+      }
     }
 
     // Dispatch real email notification to target gateway address (e.g. RFQ@procucev.com)
@@ -561,12 +582,12 @@ async function createRFQ(req, res, next) {
       const recipientEmail = body.targetGatewayEmail || 'RFQ@procucev.com';
       void mailerService.sendRequisitionNotificationEmail(
         recipientEmail,
-        created,
+        finalRFQ,
         body.sourceEmail || (req.user && req.user.email)
       );
     }
 
-    res.status(201).json({ success: true, data: created });
+    res.status(201).json({ success: true, data: finalRFQ });
   } catch (err) {
     if (consumedFreeTrial && requestingBuyerAccount) {
       storeService.refundFreeRFQ(requestingBuyerAccount.id);

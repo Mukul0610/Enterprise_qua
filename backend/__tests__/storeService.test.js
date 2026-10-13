@@ -1427,6 +1427,145 @@ describe('Store Service & Business Operations', () => {
       });
     });
 
+    describe('augmentV0AssignmentsFromDB (DB-backed V0 vendor assignment)', () => {
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      function v0Rfq(overrides = {}) {
+        return storeService.createRFQ({
+          id: `rfq-v0-aug-${Math.random().toString(36).slice(2)}`,
+          title: 'V0 Augment RFQ',
+          category: 'Lighting',
+          sourcingMode: 'mode_0',
+          ...overrides,
+        });
+      }
+
+      test('assigns category-matched public vendors from the DB and sets the real count', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories').mockResolvedValue([
+          { id: 'pv-1', name: 'Mamta Electrics', email: 'm@n.in', source: 'procucev_network', majorCategory: 'Lighting', rating: 4 },
+          { id: 'pv-2', name: 'Raja Electricals', email: 'r@n.in', source: 'procucev_network', majorCategory: 'Lighting', rating: 5 },
+        ]);
+        try {
+          const rfq = v0Rfq();
+          const updated = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(updated.assignedVendors.map((v) => v.id)).toEqual(expect.arrayContaining(['pv-1', 'pv-2']));
+          expect(updated.procucevVendorCount).toBe(updated.assignedVendors.length);
+          expect(updated.procucevVendorCount).toBeGreaterThanOrEqual(2);
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('ranks a delivery-pincode match ahead of a non-match', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories').mockResolvedValue([
+          { id: 'far', name: 'Far Co', source: 'procucev_network', majorCategory: 'Lighting', rating: 5, pincode: '110001' },
+          { id: 'near', name: 'Near Co', source: 'procucev_network', majorCategory: 'Lighting', rating: 3, pincode: '385310' },
+        ]);
+        try {
+          const rfq = v0Rfq({ deliveryPincode: '385310' });
+          const updated = await storeService.augmentV0AssignmentsFromDB(rfq);
+          const ids = updated.assignedVendors.map((v) => v.id);
+          // The pincode match sorts ahead of the higher-rated non-match.
+          expect(ids.indexOf('near')).toBeLessThan(ids.indexOf('far'));
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('no-ops for a non-V0 RFQ', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        const spy = jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories');
+        try {
+          const rfq = { id: 'r', sourcingMode: 'mode_2', category: 'Lighting' };
+          const result = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(result).toBe(rfq);
+          expect(spy).not.toHaveBeenCalled();
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('no-ops when no DB pool is configured', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = null;
+        const spy = jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories');
+        try {
+          const rfq = v0Rfq();
+          const result = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(spy).not.toHaveBeenCalled();
+          expect(result).toBe(rfq);
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('a V0 RFQ with no category signal skips category matching and uses the network fallback', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        const catSpy = jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories');
+        // No category signal skips the category query but still falls back to the
+        // public network so a V0 RFQ is never left with no invited vendors.
+        const pageSpy = jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockResolvedValue({
+          rows: [{ id: 'net-1', name: 'Network Vendor', source: 'procucev_network', rating: 4 }],
+          total: 1,
+        });
+        try {
+          const rfq = { id: 'r2', sourcingMode: 'mode_0', category: '', extractedEntities: [], assignedVendors: [] };
+          const result = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(catSpy).not.toHaveBeenCalled();
+          expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ publicOnly: true }));
+          expect(result.assignedVendors.map((v) => v.id)).toContain('net-1');
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('falls back to the top public Procucev network when category matching finds nothing', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        // The RFQ carries a category, but no vendor's tags match it (the real
+        // label-mismatch case that previously left assignedVendors empty).
+        jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories').mockResolvedValue([]);
+        const pageSpy = jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockResolvedValue({
+          rows: [
+            { id: 'net-a', name: 'Net A', source: 'procucev_network', rating: 5 },
+            { id: 'net-b', name: 'Net B', source: 'procucev_network', rating: 3 },
+          ],
+          total: 2,
+        });
+        try {
+          const rfq = v0Rfq({ category: 'Totally-Unmatched-Category' });
+          const result = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ publicOnly: true }));
+          expect(result.assignedVendors.map((v) => v.id)).toEqual(expect.arrayContaining(['net-a', 'net-b']));
+          expect(result.procucevVendorCount).toBe(result.assignedVendors.length);
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+
+      test('swallows a DB query failure and returns the RFQ unchanged', async () => {
+        const originalPool = domainPool.pool;
+        domainPool.pool = { query: jest.fn() };
+        jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories').mockRejectedValue(new Error('ECONNREFUSED'));
+        jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockRejectedValue(new Error('ECONNREFUSED'));
+        try {
+          const rfq = v0Rfq();
+          const result = await storeService.augmentV0AssignmentsFromDB(rfq);
+          expect(result).toBe(rfq);
+        } finally {
+          domainPool.pool = originalPool;
+        }
+      });
+    });
+
     test('createRFQ auto-invites category and sub-category matched vendors for an email-sourced RFQ in any sourcing mode', () => {
       const subCatVendor = storeService.addVendor({
         name: 'Email Sub-Category Vendor',

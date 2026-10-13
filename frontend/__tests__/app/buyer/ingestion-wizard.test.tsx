@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import IngestionWizard, { resolveConfirmationVendorCount, isV2OrV3SourcingMode } from '@/app/buyer/ingestion-wizard';
+import IngestionWizard, { resolveConfirmationVendorCount, resolveOwnVendorCount, isV2OrV3SourcingMode } from '@/app/buyer/ingestion-wizard';
 import { AppProvider } from '@/lib/store';
 import { extractLineItemsFromDocument, classifyLineItems, uploadRFQAttachment, createRFQ } from '@/lib/rfqClient';
 import { UI_STRINGS } from '@/lib/uiStrings';
@@ -1008,6 +1008,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
         email: 'rajesh@apex.in',
         contactPerson: 'Rajesh Nair',
         phone: '+91 98200 11111',
+        vendorCategory: 'Client List',
       },
     ]);
   });
@@ -1082,6 +1083,7 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
         email: null,
         contactPerson: 'Apex Industrial Dynamics',
         phone: null,
+        vendorCategory: 'Client List',
       },
     ]);
   });
@@ -1159,24 +1161,30 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 
   describe('RFQ Success Popup Dynamic Procucev Vendor Count Retrieval', () => {
     it('resolveConfirmationVendorCount resolves dynamically retrieved Procucev vendor count for Version 0, 2, and 3', () => {
-      // Version 0: Procucev network vendors
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_0', procucevVendorCount: 7 })).toBe(7);
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'v0', procucevVendorCount: 4 })).toBe(4);
+      // Version 0 with a category but no assignment list falls back to the
+      // server's count (the count is only distrusted when no category exists).
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_0', category: 'Steels', procucevVendorCount: 7 })).toBe(7);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v0', category: 'Steels', procucevVendorCount: 4 })).toBe(4);
+      // Version 0 WITH an assignment list reports who was actually invited,
+      // overriding a directory-wide (and here, inflated) server count.
       expect(
         resolveConfirmationVendorCount({
           sourcingMode: 'mode_0',
-          procucevVendorCount: 0,
-          assignedVendors: [{ id: 'pv-existing', source: 'procucev_network' }],
+          procucevVendorCount: 20030,
+          assignedVendors: [
+            { id: 'pv-a', source: 'procucev_network' },
+            { id: 'pv-b', source: 'procucev_network' },
+          ],
         })
-      ).toBe(0);
+      ).toBe(2);
 
-      // Version 2: Hybrid sourcing plan Procucev network vendors
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_2', procucevVendorCount: 15 })).toBe(15);
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'version_2', procucevVendorCount: 9 })).toBe(9);
+      // Version 2: Hybrid sourcing plan Procucev network vendors (category present)
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_2', category: 'Steels', procucevVendorCount: 15 })).toBe(15);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'version_2', category: 'Steels', procucevVendorCount: 9 })).toBe(9);
 
-      // Version 3: AI Autonomous Sourcing Plan Procucev network vendors
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_3', procucevVendorCount: 22 })).toBe(22);
-      expect(resolveConfirmationVendorCount({ sourcingMode: 'v3', procucevVendorCount: 18 })).toBe(18);
+      // Version 3: AI Autonomous Sourcing Plan Procucev network vendors (category present)
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'mode_3', category: 'Steels', procucevVendorCount: 22 })).toBe(22);
+      expect(resolveConfirmationVendorCount({ sourcingMode: 'v3', category: 'Steels', procucevVendorCount: 18 })).toBe(18);
 
       // Version 1: Private roster only uses assignedVendors
       expect(
@@ -1229,6 +1237,92 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       expect(resolveConfirmationVendorCount({})).toBe(0);
     });
 
+    it('ignores a category-less whole-directory procucevVendorCount and reports the invited count', () => {
+      // The exact production payload: no category anywhere, no vendors invited,
+      // but the backend returns a 20030 whole-directory tally. The modal must
+      // show 0 (nobody was invited), never 20030.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          category: null,
+          procucevVendorCount: 20030,
+          assignedVendors: [],
+          extractedEntities: [{ category: '', majorCategory: '', minorCategory: '' }],
+        })
+      ).toBe(0);
+
+      // Same guard for V2/V3 when no category is selected.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_3',
+          category: '',
+          procucevVendorCount: 9999,
+          assignedVendors: [],
+          extractedEntities: [{ category: '' }],
+        })
+      ).toBe(0);
+
+      // Once a category IS present, the server/invited count is honoured again.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          category: 'Engineering Spares - Mechanical',
+          procucevVendorCount: 5,
+          assignedVendors: [],
+        })
+      ).toBe(5);
+
+      // A category on a line item (not the header) still counts as a signal.
+      expect(
+        resolveConfirmationVendorCount({
+          sourcingMode: 'mode_0',
+          category: null,
+          procucevVendorCount: 5,
+          assignedVendors: [],
+          extractedEntities: [{ majorCategory: 'Electrical' }],
+        })
+      ).toBe(5);
+    });
+
+    it('resolveOwnVendorCount reports the buyer private vendors separately from the Procucev network', () => {
+      // V3 with a mixed roster: 1 private (Client List) + 2 Procucev Network.
+      const mixedV3 = {
+        sourcingMode: 'mode_3',
+        procucevVendorCount: 2,
+        assignedVendors: [
+          { id: 'own-1', name: 'Amma Solution', vendorCategory: 'Client List' },
+          { id: 'proc-1', name: 'Mamta Electrics', vendorCategory: 'Procucev Network' },
+          { id: 'proc-2', name: 'Raja Electricals', vendorCategory: 'Procucev Network' },
+        ],
+      };
+      // The two boxes report distinct, correct values — no more duplicate count.
+      expect(resolveOwnVendorCount(mixedV3)).toBe(1);
+      expect(resolveConfirmationVendorCount(mixedV3)).toBe(2);
+
+      // V2 behaves the same way for the private/Procucev split.
+      const mixedV2 = {
+        sourcingMode: 'mode_2',
+        assignedVendors: [
+          { id: 'own-a', name: 'Private A', vendorCategory: 'Client List' },
+          { id: 'own-b', name: 'Private B', vendorCategory: 'Client List' },
+          { id: 'proc-a', name: 'Network A', vendorCategory: 'Procucev Network' },
+        ],
+      };
+      expect(resolveOwnVendorCount(mixedV2)).toBe(2);
+
+      // V1: the box shows the full private roster.
+      expect(
+        resolveOwnVendorCount({
+          sourcingMode: 'mode_1',
+          assignedVendors: [{ id: 'p1', name: 'P1' }, { id: 'p2', name: 'P2' }],
+        })
+      ).toBe(2);
+
+      // Null / empty is safe.
+      expect(resolveOwnVendorCount(null)).toBe(0);
+      expect(resolveOwnVendorCount({})).toBe(0);
+    });
+
     it('isV2OrV3SourcingMode is true only for V2/V3 aliases, false for everything else', () => {
       for (const m of ['mode_2', 'v2', 'version_2', 'mode_3', 'v3', 'version_3']) {
         expect(isV2OrV3SourcingMode(m)).toBe(true);
@@ -1276,25 +1370,33 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
       expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
 
-      // Check confirmation vendor count dynamically renders 6 (NOT hardcoded 'AI Blind')
-      const countEl = screen.getByTestId('confirmation-vendor-count');
-      expect(countEl).toHaveTextContent('6');
+      // The dedicated "Procucev Vendors" box renders the server's 6 dynamically
+      // (NOT a hardcoded 'AI Blind').
       expect(screen.queryByText('AI Blind')).not.toBeInTheDocument();
-
-      // V3 gets a dedicated "Procucev Vendors" box carrying the same count.
       const procucevBox = screen.getByTestId('confirmation-procucev-vendor-box');
       expect(procucevBox).toBeInTheDocument();
       expect(screen.getByTestId('confirmation-procucev-vendor-count')).toHaveTextContent('6');
       expect(within(procucevBox).getByText('Procucev Vendors')).toBeInTheDocument();
+
+      // The "Your Invited Vendors" box counts only the buyer's own roster — none
+      // in this flow — so it reads 0 rather than duplicating the Procucev count.
+      expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('0');
     });
 
-    it('displays dynamically retrieved Procucev vendor count for Version 0 in confirmation modal', async () => {
+    it('shows the actual invited Procucev count for Version 0, not the directory-wide tally', async () => {
+      // The backend reports a huge directory-wide procucevVendorCount, but the
+      // RFQ was actually dispatched to just the 2 vendors in assignedVendors.
+      // The modal must show 2 (who was invited), never 20030.
       mockCreateRFQ.mockResolvedValueOnce({
         success: true,
         rfq: {
           ...mockCreatedRFQ(),
           sourcingMode: 'mode_0',
-          procucevVendorCount: 3,
+          procucevVendorCount: 20030,
+          assignedVendors: [
+            { id: 'pv-1', name: 'Network Supplier One', source: 'procucev_network' },
+            { id: 'pv-2', name: 'Network Supplier Two', source: 'procucev_network' },
+          ],
         },
       });
 
@@ -1324,8 +1426,8 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
       expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
 
       const countEl = screen.getByTestId('confirmation-vendor-count');
-      expect(countEl).toHaveTextContent('3');
-      expect(screen.queryByText('1+ Supplier')).not.toBeInTheDocument();
+      expect(countEl).toHaveTextContent('2');
+      expect(countEl).not.toHaveTextContent('20030');
 
       // V0 is NOT a Procucev-network-expansion version, so the dedicated box is hidden.
       expect(screen.queryByTestId('confirmation-procucev-vendor-box')).not.toBeInTheDocument();
@@ -1365,11 +1467,12 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 
       await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
       expect(await screen.findByText('RFQ Dispatched Successfully!')).toBeInTheDocument();
-      expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('11');
 
-      // V2 (Hybrid) shows the dedicated Procucev Vendors box with the same count.
+      // V2 (Hybrid) shows the dedicated Procucev Vendors box with the server's 11.
       expect(screen.getByTestId('confirmation-procucev-vendor-box')).toBeInTheDocument();
       expect(screen.getByTestId('confirmation-procucev-vendor-count')).toHaveTextContent('11');
+      // The "Your Invited Vendors" box counts only the buyer's own roster (0 here).
+      expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('0');
     });
   });
 
@@ -1434,7 +1537,9 @@ describe('IngestionWizard: Mode 1 private vendor roster preview', () => {
 });
 
 describe('IngestionWizard: Mode 3 Top Procucev Network Vendors (360° ranking)', () => {
-  const realFetch = global.fetch;
+  // Captured fresh per test so the fallback and restore use the genuine
+  // jest.setup default fetch, never a leaked override from a prior describe.
+  let realFetch: typeof global.fetch;
 
   afterEach(() => {
     global.fetch = realFetch;
@@ -1487,6 +1592,7 @@ describe('IngestionWizard: Mode 3 Top Procucev Network Vendors (360° ranking)',
 
   beforeEach(() => {
     jest.clearAllMocks();
+    realFetch = global.fetch;
     mockCreateRFQ.mockResolvedValue({ success: true, rfq: mockCreatedRFQ() });
   });
 
@@ -1533,15 +1639,20 @@ describe('IngestionWizard: Mode 3 Top Procucev Network Vendors (360° ranking)',
 
     // Select all → both selected.
     fireEvent.click(screen.getByTestId('procucev-v3-select-all'));
-    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
+    expect(await screen.findByText('2 of 2 selected')).toBeInTheDocument();
 
     // Deselect all → none selected.
     fireEvent.click(screen.getByTestId('procucev-v3-select-all'));
-    expect(screen.getByText('0 of 2 selected')).toBeInTheDocument();
+    expect(await screen.findByText('0 of 2 selected')).toBeInTheDocument();
 
-    // Single-select one vendor by clicking its card.
-    fireEvent.click(screen.getByText('Nearby Pumps Pvt Ltd'));
-    expect(screen.getByText('1 of 2 selected')).toBeInTheDocument();
+    // Single-select one vendor by clicking its card (scoped to the card so a
+    // confirmation modal from an earlier test can never shadow the match).
+    const nearCard = (await screen.findAllByTestId('procucev-v3-vendor')).find((c) =>
+      within(c).queryByText('Nearby Pumps Pvt Ltd')
+    ) as HTMLElement;
+    expect(nearCard).toBeTruthy();
+    fireEvent.click(nearCard);
+    expect(await screen.findByText('1 of 2 selected')).toBeInTheDocument();
 
     const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
     fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), { target: { value: '10' } });
@@ -1551,8 +1662,17 @@ describe('IngestionWizard: Mode 3 Top Procucev Network Vendors (360° ranking)',
 
     await waitFor(() => expect(mockCreateRFQ).toHaveBeenCalled());
     const assigned = mockCreateRFQ.mock.calls[0][0].assignedVendors || [];
-    expect(assigned.some((v: { id: string }) => v.id === 'proc-near')).toBe(true);
+    const near = assigned.find((v: { id: string }) => v.id === 'proc-near');
+    expect(near).toBeTruthy();
     expect(assigned.some((v: { id: string }) => v.id === 'proc-far')).toBe(false);
+
+    // Double-blind: the dispatched Procucev entry carries only the company name
+    // plus the 'Procucev Network' tag — never its email, phone, or contact.
+    expect(near.name).toBe('Nearby Pumps Pvt Ltd');
+    expect(near.vendorCategory).toBe('Procucev Network');
+    expect(near.email).toBeNull();
+    expect(near.phone).toBeNull();
+    expect(near.contactPerson).toBeNull();
   });
 
   it('shows an empty-state message when no Procucev network vendors match', async () => {
@@ -1560,6 +1680,38 @@ describe('IngestionWizard: Mode 3 Top Procucev Network Vendors (360° ranking)',
     await enterMode3WithCategoryAndLocation();
 
     await waitFor(() => expect(screen.getByTestId('procucev-v3-panel')).toBeInTheDocument());
-    expect(screen.getByText(/No Procucev network vendors matched/i)).toBeInTheDocument();
+    // Wait for the (debounced) fetch to settle, then assert no vendor cards and
+    // the empty-state message — findBy retries so a late fetch resolution does
+    // not flake the assertion.
+    expect(await screen.findByText(/No Procucev network vendors matched/i)).toBeInTheDocument();
+    expect(screen.queryAllByTestId('procucev-v3-vendor')).toHaveLength(0);
+  });
+
+  it('reports the buyer-selected Procucev count in the success modal, not just the server count', async () => {
+    serveProcucevNetwork([NEAR, FAR]);
+    // Server under-reports: its own auto-match found only 1, but the buyer picks 2.
+    mockCreateRFQ.mockResolvedValueOnce({
+      success: true,
+      rfq: { ...mockCreatedRFQ(), sourcingMode: 'mode_3', procucevVendorCount: 1 },
+    });
+
+    await enterMode3WithCategoryAndLocation();
+    await waitFor(() => expect(screen.getAllByTestId('procucev-v3-vendor').length).toBe(2));
+
+    fireEvent.click(screen.getByTestId('procucev-v3-select-all'));
+    expect(screen.getByText('2 of 2 selected')).toBeInTheDocument();
+
+    const row = screen.getByPlaceholderText(MODAL.itemPlaceholder).closest('tr')!;
+    fireEvent.change(within(row).getByPlaceholderText(MODAL.qtyPlaceholder), { target: { value: '10' } });
+    fireEvent.change(within(row).getByPlaceholderText(MODAL.unitPlaceholder), { target: { value: 'Units' } });
+
+    fireEvent.click(screen.getByRole('button', { name: /Create & Dispatch RFQ/i }));
+
+    await waitFor(() => expect(screen.getByText('RFQ Dispatched Successfully!')).toBeInTheDocument());
+    // The Procucev box reflects the 2 selected, not the server's 1.
+    expect(screen.getByTestId('confirmation-procucev-vendor-box')).toHaveTextContent('2');
+    // The "Your Invited Vendors" box counts only the buyer's own roster — none
+    // here — so it reads 0 rather than duplicating the Procucev count.
+    expect(screen.getByTestId('confirmation-vendor-count')).toHaveTextContent('0');
   });
 });

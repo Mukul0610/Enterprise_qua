@@ -336,6 +336,40 @@ describe('Domain queries (vendors + RFQs, Neon PostgreSQL)', () => {
       });
     });
 
+    describe('getPublicVendorsMatchingCategories', () => {
+      test('no-ops to [] when no pool is configured', async () => {
+        pool.pool = null;
+        await expect(domainQueries.getPublicVendorsMatchingCategories(['Steels'], 10)).resolves.toEqual([]);
+      });
+
+      test('returns [] for an empty / all-blank signal list without querying', async () => {
+        pool.pool = { query: jest.fn() };
+        await expect(domainQueries.getPublicVendorsMatchingCategories([], 10)).resolves.toEqual([]);
+        await expect(domainQueries.getPublicVendorsMatchingCategories(['', '  '], 10)).resolves.toEqual([]);
+        expect(pool.pool.query).not.toHaveBeenCalled();
+      });
+
+      test('returns parsed matching vendor rows and binds the limit last', async () => {
+        const vendor = { id: 'pv-1', name: 'Mamta Electrics', source: 'procucev_network' };
+        const query = jest.fn().mockResolvedValue({ rows: [{ raw: vendor }] });
+        pool.pool = { query };
+
+        const rows = await domainQueries.getPublicVendorsMatchingCategories(['Lighting'], 25);
+
+        expect(rows).toEqual([vendor]);
+        const [sql, params] = query.mock.calls[0];
+        // Public-only filter and a LIMIT bound as the final parameter.
+        expect(sql).toMatch(/LIMIT/i);
+        expect(params[params.length - 1]).toBe(25);
+        expect(params).toContain('%lighting%');
+      });
+
+      test('returns [] when the query yields no rows', async () => {
+        pool.pool = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+        await expect(domainQueries.getPublicVendorsMatchingCategories(['Steels'], 10)).resolves.toEqual([]);
+      });
+    });
+
     describe('getVendorByEmailFromDB', () => {
       test('no-ops when no pool is configured', async () => {
         pool.pool = null;

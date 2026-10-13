@@ -3040,6 +3040,125 @@ class StoreService {
   }
 
   /**
+   * Assign the real category-matched Procucev vendors to a V0 RFQ from the
+   * DATABASE, not the capped in-memory bootstrap page.
+   *
+   * createRFQ's V0 block matches against `this.vendors`, a capped subset of the
+   * 80k+ directory, so at scale it frequently assigns zero vendors even though
+   * matching vendors exist — the RFQ then has an empty assignedVendors list and
+   * nobody is actually invited. This runs after createRFQ (same async-after-sync
+   * pattern as resolveProcucevVendorCountFromDB) to pull the matching public
+   * vendors from the DB, merge them into assignedVendors (de-duplicated), cap
+   * the list, persist it, and set procucevVendorCount to the real assigned
+   * count — so the success modal, the buyer panel and the CM tabs all agree.
+   *
+   * No-ops for non-V0 RFQs, when no DB pool is configured (dev/in-memory, where
+   * createRFQ's in-memory match already ran), or when the RFQ carries no
+   * category signal (a category-less RFQ cannot be matched).
+   *
+   * @param {Object} rfq The RFQ created by createRFQ.
+   * @returns {Promise<Object>} The RFQ with DB-backed V0 assignments applied.
+   */
+  async augmentV0AssignmentsFromDB(rfq) {
+    if (!rfq) return rfq;
+    const mode = rfq.sourcingMode || '';
+    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+    if (!isV0) return rfq;
+    if (!pool.hasStorage()) return rfq;
+
+    const MAX_V0_CATEGORY_INVITES = 100;
+    const signals = this._rfqCategorySignals(rfq);
+
+    let dbMatches = [];
+    // 1. Category-matched public vendors from the whole directory.
+    if (Array.isArray(signals) && signals.length > 0) {
+      try {
+        dbMatches = await domainQueries.getPublicVendorsMatchingCategories(signals, MAX_V0_CATEGORY_INVITES);
+      } catch (err) {
+        logger.warn(
+          'V0 DB-backed vendor assignment query failed',
+          { rfqNumber: rfq.rfqNumber, error: err.message },
+          'STORE_SERVICE'
+        );
+      }
+    }
+
+    // 2. Fallback: if category matching found nothing (no signals, or the RFQ's
+    // category labels don't line up with how vendors are tagged — the common
+    // real-world case that left assignedVendors empty while the count showed a
+    // directory-wide tally like 16,350), assign the top public Procucev vendors
+    // the RFQ CAN reach, so it always has a real, displayable invited set.
+    if (!Array.isArray(dbMatches) || dbMatches.length === 0) {
+      try {
+        const page = await domainQueries.getVendorsPageFromDB({
+          limit: MAX_V0_CATEGORY_INVITES,
+          offset: 0,
+          publicOnly: true,
+        });
+        dbMatches = (page && Array.isArray(page.rows)) ? page.rows : [];
+      } catch (err) {
+        logger.warn(
+          'V0 DB-backed network fallback query failed',
+          { rfqNumber: rfq.rfqNumber, error: err.message },
+          'STORE_SERVICE'
+        );
+      }
+    }
+
+    if (!Array.isArray(dbMatches) || dbMatches.length === 0) return rfq;
+
+    // Prefer vendors in the RFQ's delivery pincode, then by rating — same
+    // precedence as createRFQ's in-memory V0 ordering.
+    const targetPincode = rfq.deliveryPincode ? String(rfq.deliveryPincode).trim() : null;
+    const sorted = dbMatches
+      .filter((v) => this.isProcucevVendor(v))
+      .sort((a, b) => {
+        if (targetPincode) {
+          const aPin = a.pincode && String(a.pincode).trim() === targetPincode ? 1 : 0;
+          const bPin = b.pincode && String(b.pincode).trim() === targetPincode ? 1 : 0;
+          if (aPin !== bPin) return bPin - aPin;
+        }
+        return (Number(b.rating) || 0) - (Number(a.rating) || 0);
+      })
+      .slice(0, MAX_V0_CATEGORY_INVITES);
+
+    const existing = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
+    const existingKeys = new Set(
+      existing.map((v) => (v.id || v.email || v.name || '').toLowerCase())
+    );
+    const additions = sorted
+      .filter((v) => !existingKeys.has((v.id || v.email || v.name || '').toLowerCase()))
+      .map((v) => ({
+        id: v.id,
+        name: v.name,
+        email: v.email || null,
+        contactPerson: v.contactPerson || null,
+        phone: v.phone || null,
+        source: v.source || 'procucev_network',
+      }));
+
+    if (additions.length === 0) return rfq;
+
+    const merged = [...existing, ...additions];
+    const followUpData = rfq.followUpData
+      ? { ...rfq.followUpData, totalInvited: merged.length, vendors: merged }
+      : rfq.followUpData;
+
+    const updated = this.updateRFQ(rfq.id, {
+      assignedVendors: merged,
+      procucevVendorCount: merged.length,
+      ...(followUpData ? { followUpData } : {}),
+    }) || { ...rfq, assignedVendors: merged, procucevVendorCount: merged.length, followUpData };
+
+    logger.info(
+      `V0 RFQ ${rfq.rfqNumber}: assigned ${merged.length} Procucev vendors from DB match (${additions.length} added)`,
+      { rfqNumber: rfq.rfqNumber, assigned: merged.length },
+      'STORE_SERVICE'
+    );
+    return updated;
+  }
+
+  /**
    * Whether an RFQ should reach a given vendor.
    *
    * True when the vendor was explicitly added by the RFQ's buyer
