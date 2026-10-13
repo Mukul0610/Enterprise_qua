@@ -513,8 +513,10 @@ async function createRFQ(req, res, next) {
               error: 'Your 5 free trial RFQ credits for V1/V2/V3 have been fully used. Upgrade to a paid plan to raise more V1/V2/V3 RFQs, or continue using V0 Free Starter for Procucev Network RFQs.',
             });
           }
-          const consumeResult = storeService.tryConsumeFreeRFQ(requestingBuyerAccount.id);
-          if (!consumeResult.ok) {
+          // Same credit rule the email-ingestion path applies — kept in one
+          // place on the store so both RFQ-creation methods stay in agreement.
+          const consumeResult = storeService.consumeRFQCreditIfApplicable(requestingBuyerAccount, requestedMode);
+          if (!consumeResult.consumed) {
             logger.warn('Rejected RFQ creation: free trial exhausted', { buyerAccountId: requestingBuyerAccount.id }, 'RFQ_CONTROLLER');
             return res.status(403).json({
               success: false,

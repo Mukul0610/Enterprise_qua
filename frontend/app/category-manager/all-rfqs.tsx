@@ -2,7 +2,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { RFQItem } from '@/lib/types';
-import { formatCurrency } from '@/lib/constants';
+import { formatCurrency, formatIndianDateTime } from '@/lib/constants';
 import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { fetchAllRFQs } from '@/lib/rfqClient';
 import { ClipboardList, Search, ChevronRight, RefreshCw, AlertTriangle, FileText, UserPlus, X } from 'lucide-react';
@@ -39,6 +39,20 @@ const ALL_STATUSES: RFQItem['status'][] = [
   'Closed',
   'Expired',
 ];
+
+/**
+ * The most recent vendor-quotation submission timestamp on an RFQ, or `null`
+ * when no vendor has quoted yet. Each quote stamps `submittedAt` at submission
+ * (both the portal and email-ingestion paths do — see rfqController and
+ * emailGatewayService), so the latest is simply the max across the quotes.
+ */
+function latestQuoteSubmittedAt(rfq: RFQItem): string | null {
+  const times = (rfq.quotes || [])
+    .map((q) => q.submittedAt)
+    .filter((t): t is string => !!t && !Number.isNaN(Date.parse(t)));
+  if (times.length === 0) return null;
+  return times.reduce((latest, t) => (Date.parse(t) > Date.parse(latest) ? t : latest));
+}
 
 /**
  * Category-manager "All RFQs" console.
@@ -258,7 +272,7 @@ export default function AllRFQsConsole({ onNavigateToMatrix, onViewDetails }: Al
 
       {!loading && !error && filtered.length > 0 && (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white dark:border-slate-850 dark:bg-gray-950/40">
-          <table className="w-full min-w-[1240px] table-fixed text-sm">
+          <table className="w-full min-w-[1420px] table-fixed text-sm">
             <caption className="sr-only">{S.subtitle}</caption>
             <colgroup>
               <col className="w-[155px]" />
@@ -268,6 +282,7 @@ export default function AllRFQsConsole({ onNavigateToMatrix, onViewDetails }: Al
               <col className="w-[80px]" />
               <col className="w-[130px]" />
               <col className="w-[105px]" />
+              <col className="w-[180px]" />
               <col className="w-[300px]" />
             </colgroup>
             <thead>
@@ -279,6 +294,7 @@ export default function AllRFQsConsole({ onNavigateToMatrix, onViewDetails }: Al
                 <th scope="col" className="px-3 py-3 text-right font-bold">{S.colQuotes}</th>
                 <th scope="col" className="px-3 py-3 text-right font-bold">{S.colBudget}</th>
                 <th scope="col" className="px-3 py-3 text-left font-bold">{S.colCreated}</th>
+                <th scope="col" className="px-3 py-3 text-left font-bold">{S.colLatestQuote}</th>
                 <th scope="col" className="px-3 py-3 text-right font-bold">{S.colActions}</th>
               </tr>
             </thead>
@@ -304,6 +320,16 @@ export default function AllRFQsConsole({ onNavigateToMatrix, onViewDetails }: Al
                   </td>
                   <td className="whitespace-nowrap px-3 py-3 text-[11px] text-slate-500 dark:text-gray-450">
                     {rfq.createdAt ? new Date(rfq.createdAt).toLocaleDateString() : '—'}
+                  </td>
+                  <td className="px-3 py-3 text-[11px] text-slate-600 dark:text-gray-300" data-testid="all-rfqs-latest-quote">
+                    {(() => {
+                      const latest = latestQuoteSubmittedAt(rfq);
+                      return latest ? (
+                        <span className="whitespace-nowrap font-semibold">{formatIndianDateTime(latest)}</span>
+                      ) : (
+                        <span className="italic text-slate-400">{S.latestQuoteNone}</span>
+                      );
+                    })()}
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex flex-nowrap items-center justify-end gap-2">

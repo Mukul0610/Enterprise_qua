@@ -65,6 +65,59 @@ describe('Store Service & Business Operations', () => {
     });
   });
 
+  describe('consumeRFQCreditIfApplicable (shared sourcing-credit rule for all RFQ creation methods)', () => {
+    function freeTrialBuyer(overrides = {}) {
+      return storeService.addBuyerAccount({
+        organizationName: 'Credit Rule Co',
+        corporateEmail: `credit-${Math.random().toString(36).slice(2)}@ex.com`,
+        subscriptionPlan: 'free_trial',
+        remainingFreeRFQs: 5,
+        ...overrides,
+      });
+    }
+
+    test('isV0SourcingMode recognises every V0 alias and nothing else', () => {
+      expect(storeService.isV0SourcingMode('mode_0')).toBe(true);
+      expect(storeService.isV0SourcingMode('v0')).toBe(true);
+      expect(storeService.isV0SourcingMode('version_0')).toBe(true);
+      expect(storeService.isV0SourcingMode('mode_1')).toBe(false);
+      expect(storeService.isV0SourcingMode('mode_3')).toBe(false);
+    });
+
+    test('consumes one credit for a V1/V2/V3 RFQ on a free_trial plan', () => {
+      const buyer = freeTrialBuyer();
+      const result = storeService.consumeRFQCreditIfApplicable(buyer, 'mode_1');
+      expect(result.consumed).toBe(true);
+      expect(result.remaining).toBe(4);
+      expect(storeService.getBuyerAccounts().find((a) => a.id === buyer.id).remainingFreeRFQs).toBe(4);
+    });
+
+    test('consumes no credit for a V0 RFQ even on a free_trial plan', () => {
+      const buyer = freeTrialBuyer();
+      const result = storeService.consumeRFQCreditIfApplicable(buyer, 'mode_0');
+      expect(result.consumed).toBe(false);
+      expect(storeService.getBuyerAccounts().find((a) => a.id === buyer.id).remainingFreeRFQs).toBe(5);
+    });
+
+    test('consumes no credit on a paid plan (quota is by sourcing mode, not count)', () => {
+      const buyer = freeTrialBuyer({ subscriptionPlan: 'version_2', remainingFreeRFQs: 5 });
+      const result = storeService.consumeRFQCreditIfApplicable(buyer, 'mode_2');
+      expect(result.consumed).toBe(false);
+      expect(storeService.getBuyerAccounts().find((a) => a.id === buyer.id).remainingFreeRFQs).toBe(5);
+    });
+
+    test('reports no consumption and does not throw when there is no buyer account', () => {
+      expect(storeService.consumeRFQCreditIfApplicable(null, 'mode_1')).toEqual({ consumed: false, remaining: null });
+      expect(storeService.consumeRFQCreditIfApplicable({}, 'mode_1')).toEqual({ consumed: false, remaining: null });
+    });
+
+    test('reports not-consumed once a free_trial buyer is out of credits', () => {
+      const buyer = freeTrialBuyer({ remainingFreeRFQs: 0 });
+      const result = storeService.consumeRFQCreditIfApplicable(buyer, 'mode_1');
+      expect(result.consumed).toBe(false);
+    });
+  });
+
   describe('Vendors Management', () => {
     let testVendorId;
 

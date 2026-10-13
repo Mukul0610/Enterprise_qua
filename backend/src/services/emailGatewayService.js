@@ -1145,6 +1145,19 @@ async function processMessage(rawSource, config = resolveConfig()) {
       authorisation.buyerAccount
     );
 
+    // Email-ingested RFQs must draw down sourcing credits the same way a
+    // portal/AI-created RFQ does — the HTTP createRFQ controller is bypassed
+    // here, so the credit rule is applied explicitly. V0 and paid plans are
+    // exempt (handled inside consumeRFQCreditIfApplicable).
+    const creditResult = storeService.consumeRFQCreditIfApplicable(authorisation.buyerAccount, sourcingMode);
+    if (creditResult.consumed) {
+      logger.info(
+        `Consumed 1 sourcing credit for email-ingested RFQ ${created.rfqNumber}`,
+        { rfqNumber: created.rfqNumber, sourcingMode, remaining: creditResult.remaining },
+        'EMAIL_GATEWAY'
+      );
+    }
+
     createdRFQs.push(created);
 
     // Dispatch RFQ creation acknowledgement email to the buyer

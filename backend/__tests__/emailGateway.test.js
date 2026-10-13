@@ -226,6 +226,25 @@ describe('emailGatewayService.processMessage', () => {
     expect(result.rfq.rfqNumber).toBe('RFQ-2026-0001');
   });
 
+  // Email-ingested RFQs must consume a sourcing credit exactly like a
+  // portal/AI-created RFQ — previously they bypassed the credit rule entirely.
+  test('consumes a sourcing credit for the ingested RFQ via the shared store rule', async () => {
+    mockExtraction();
+    jest.spyOn(storeService, 'createRFQ').mockReturnValue({ id: 'rfq-credit', rfqNumber: 'RFQ-CREDIT-1' });
+    const consumeSpy = jest
+      .spyOn(storeService, 'consumeRFQCreditIfApplicable')
+      .mockReturnValue({ consumed: true, remaining: 4 });
+
+    const result = await emailGatewayService.processMessage(raw(), config());
+
+    expect(result.status).toBe(INGESTION_OUTCOME.INGESTED);
+    expect(consumeSpy).toHaveBeenCalledTimes(1);
+    const [account, mode] = consumeSpy.mock.calls[0];
+    expect(account.id).toBe('buyer-acc-101');
+    // The mode passed to the credit rule is the one resolved from the buyer's plan.
+    expect(mode).toBe(EMAIL_GATEWAY_CONFIG.INGESTED_SOURCING_MODE);
+  });
+
   // Confirmed live: an outbound notification (RFQ ack, quote ack/failure)
   // replying to a sender who happens to equal the gateway's own watched
   // address lands right back in that same mailbox — without this guard the

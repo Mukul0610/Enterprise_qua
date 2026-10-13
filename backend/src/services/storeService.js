@@ -505,6 +505,49 @@ class StoreService {
     }
   }
 
+  /**
+   * True when a sourcing mode is V0 (Free Starter), which never consumes a
+   * sourcing credit. Accepts every alias the codebase uses for V0.
+   */
+  isV0SourcingMode(mode) {
+    return mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+  }
+
+  /**
+   * Apply the sourcing-credit rule for a single RFQ creation, regardless of
+   * how the RFQ was raised (portal, AI wizard, or inbound email gateway).
+   *
+   * The rule — identical to the one the portal createRFQ controller enforces:
+   *   • V0 (Free Starter) RFQs consume 0 credits, always allowed.
+   *   • V1/V2/V3 RFQs on the `free_trial` plan consume 1 of the 5 free credits.
+   *   • V1/V2/V3 RFQs on a paid plan (version_1/2/3) consume 0 (quota is by mode).
+   *   • An account with no buyer record (admin/CM-raised) consumes nothing.
+   *
+   * Email-ingested RFQs previously bypassed this entirely by calling createRFQ
+   * directly, so a buyer's sourcing-credit count under-reported every RFQ that
+   * arrived by email. Routing both paths through here keeps the count correct
+   * across all creation methods.
+   *
+   * @returns {{ consumed: boolean, remaining: number|null }} whether a credit
+   *   was deducted and the buyer's remaining free credits (null when no buyer).
+   */
+  consumeRFQCreditIfApplicable(buyerAccount, sourcingMode) {
+    if (!buyerAccount || !buyerAccount.id) return { consumed: false, remaining: null };
+
+    const plan = buyerAccount.subscriptionPlan || 'free_trial';
+    const isPaidPlan = plan === 'version_1' || plan === 'version_2' || plan === 'version_3';
+
+    // V0 and paid plans never draw down the free-trial credit pool.
+    if (this.isV0SourcingMode(sourcingMode) || isPaidPlan) {
+      const current =
+        buyerAccount.remainingFreeRFQs !== undefined ? buyerAccount.remainingFreeRFQs : null;
+      return { consumed: false, remaining: current };
+    }
+
+    const result = this.tryConsumeFreeRFQ(buyerAccount.id);
+    return { consumed: result.ok, remaining: result.remaining };
+  }
+
   // ==========================================
   // 2. VENDORS
   // ==========================================

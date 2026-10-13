@@ -4,6 +4,8 @@ import {
   matchVendorAgainstSignals,
   getCategoryMatchedProcucevVendors,
   selectVendorsForCategories,
+  scoreVendorLocation,
+  rankProcucevVendorsForV3,
 } from '@/lib/vendorMatching';
 import type { VendorEntry } from '@/lib/types';
 
@@ -228,6 +230,99 @@ describe('vendorMatching module', () => {
       expect(selectVendorsForCategories([], ['Cat1'])).toEqual([]);
       expect(selectVendorsForCategories(null as any, ['Cat1'])).toEqual([]);
       expect(selectVendorsForCategories(pool, [])).toEqual([]);
+    });
+  });
+
+  describe('scoreVendorLocation (V3 360° delivery-location component)', () => {
+    const vendorAt = (overrides: Partial<VendorEntry>): VendorEntry =>
+      ({ id: 'v', name: 'V', location: '', pincode: '', city: '', state: '', ...overrides } as unknown as VendorEntry);
+
+    it('scores a same-district PIN prefix highest', () => {
+      const r = scoreVendorLocation(vendorAt({ pincode: '560001' }), { pincode: '560099' });
+      expect(r.score).toBe(100);
+      expect(r.reason).toMatch(/district/i);
+    });
+
+    it('scores a same postal region (first PIN digit) in the middle', () => {
+      const r = scoreVendorLocation(vendorAt({ pincode: '560001' }), { pincode: '590001' });
+      expect(r.score).toBe(70);
+    });
+
+    it('matches on city name in the destination text', () => {
+      const r = scoreVendorLocation(vendorAt({ city: 'Pune' }), { location: 'Pune Plant, Maharashtra' });
+      expect(r.score).toBe(85);
+      expect(r.reason).toMatch(/Pune/);
+    });
+
+    it('matches on state name when city does not match', () => {
+      const r = scoreVendorLocation(vendorAt({ state: 'Gujarat' }), { location: 'Hazira, Gujarat' });
+      expect(r.score).toBe(60);
+    });
+
+    it('matches when the vendor location text mentions a destination token', () => {
+      // No city/state fields set, but the free-text location overlaps the destination.
+      const r = scoreVendorLocation(vendorAt({ location: 'Coimbatore Industrial Estate' }), { location: 'Coimbatore' });
+      expect(r.score).toBe(60);
+      expect(r.reason).toMatch(/Regional/i);
+    });
+
+    it('returns a neutral score when nothing matches', () => {
+      const r = scoreVendorLocation(vendorAt({ location: 'Delhi' }), { location: 'Chennai', pincode: '600001' });
+      expect(r.score).toBe(40);
+      expect(r.reason).toMatch(/Nationwide/i);
+    });
+  });
+
+  describe('rankProcucevVendorsForV3 (top-10 by category + location)', () => {
+    const vendor = (overrides: Partial<VendorEntry>): VendorEntry =>
+      ({
+        id: `v-${Math.random().toString(36).slice(2)}`,
+        name: 'Vendor',
+        majorCategory: 'Engineering Spares - Mechanical',
+        minorCategories: ['Pumps & Accessories'],
+        rating: 4,
+        source: 'procucev_network',
+        contactPerson: 'C',
+        phone: '1',
+        email: 'e@x.com',
+        location: '',
+        pincode: '',
+        ...overrides,
+      } as unknown as VendorEntry);
+
+    const signals = ['engineering spares - mechanical', 'pumps and accessories'];
+
+    it('excludes buyer-uploaded vendors and keeps only the Procucev network', () => {
+      const pool = [
+        vendor({ id: 'proc-1', name: 'Net Co' }),
+        vendor({ id: 'v-buyer-1', name: 'Private Co', source: 'buyer_uploaded' }),
+      ];
+      const ranked = rankProcucevVendorsForV3(pool, signals, {}, 10);
+      expect(ranked.map((r) => r.vendor.id)).toEqual(['proc-1']);
+    });
+
+    it('ranks a geographically closer vendor above an equally-capable distant one', () => {
+      const near = vendor({ id: 'near', name: 'Near Co', pincode: '560001' });
+      const far = vendor({ id: 'far', name: 'Far Co', pincode: '110001' });
+      const ranked = rankProcucevVendorsForV3([far, near], signals, { pincode: '560045' }, 10);
+      expect(ranked[0].vendor.id).toBe('near');
+      expect(ranked[0].overallScore).toBeGreaterThanOrEqual(ranked[1].overallScore);
+    });
+
+    it('caps the result at the requested limit', () => {
+      const pool = Array.from({ length: 25 }, (_, i) => vendor({ id: `proc-${i}`, name: `Co ${i}` }));
+      expect(rankProcucevVendorsForV3(pool, signals, {}, 10)).toHaveLength(10);
+    });
+
+    it('falls back to a neutral category baseline when there are no signals yet', () => {
+      const pool = [vendor({ id: 'proc-x', name: 'Baseline Co' })];
+      const ranked = rankProcucevVendorsForV3(pool, [], {}, 10);
+      expect(ranked).toHaveLength(1);
+      expect(ranked[0].categoryScore).toBeGreaterThan(0);
+    });
+
+    it('returns an empty list for a non-array input', () => {
+      expect(rankProcucevVendorsForV3(null as any, signals, {}, 10)).toEqual([]);
     });
   });
 });

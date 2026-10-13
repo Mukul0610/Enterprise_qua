@@ -31,7 +31,12 @@ import {
 import { PINCODE_PATTERN, isDummyPincode, validatePincode, PostOfficeDetail, resolveLocationFromPostalResult } from '@/lib/validationSchemas';
 import { getMajorCategories, getMinorCategories, dominantMajorCategory } from '@/lib/categoryTaxonomy';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
-import { extractRfqCategorySignals, matchVendorAgainstSignals } from '@/lib/vendorMatching';
+import {
+  extractRfqCategorySignals,
+  matchVendorAgainstSignals,
+  rankProcucevVendorsForV3,
+  type RankedProcucevVendor,
+} from '@/lib/vendorMatching';
 import type {
   ManualRFQForm,
   ManualRFQLineItem,
@@ -423,6 +428,11 @@ export default function IngestionWizard({
     router = null;
   }
   const [selectedVendorIds, setSelectedVendorIds] = useState<string[]>([]);
+  // V3 (Autonomous) only — the top-ranked Procucev network vendors for this RFQ
+  // (by category relevance + delivery location) and the buyer's picks from them.
+  const [procucevV3Ranked, setProcucevV3Ranked] = useState<RankedProcucevVendor[]>([]);
+  const [procucevV3Loading, setProcucevV3Loading] = useState(false);
+  const [selectedProcucevV3Ids, setSelectedProcucevV3Ids] = useState<string[]>([]);
   const [confirmationRfq, setConfirmationRfq] = useState<any | null>(null);
   const [submitAttempted, setSubmitAttempted] = useState(false);
   const [isDispatching, setIsDispatching] = useState(false);
@@ -501,6 +511,56 @@ export default function IngestionWizard({
       }
       setAllVendorsLoadingMore(false);
     });
+  };
+
+  // ── V3 (Autonomous): top-10 Procucev network vendors by category + location ──
+  // Fetches the Procucev network pool for the RFQ's primary category (server
+  // paginated so it scales past the bootstrap snapshot), then ranks it 360°
+  // (category relevance + delivery proximity + rating) and keeps the top 10.
+  // Re-runs when the mode, category, or delivery location changes.
+  const procucevV3FetchSeqRef = useRef(0);
+  useEffect(() => {
+    if (form.sourcingMode !== 'mode_3') {
+      setProcucevV3Ranked([]);
+      return;
+    }
+    const { signals } = extractRfqCategorySignals(form);
+    const seq = ++procucevV3FetchSeqRef.current;
+    setProcucevV3Loading(true);
+    // Pull a generous page so the client-side 360° ranking has a real pool to
+    // order; the server narrows by category, the client picks the top 10.
+    void fetchAllVendors({
+      page: 1,
+      pageSize: 100,
+      search: '',
+      category: isAllCategories ? '' : selectedMajorCategory,
+    }).then((result) => {
+      if (seq !== procucevV3FetchSeqRef.current) return;
+      if (result.success) {
+        const ranked = rankProcucevVendorsForV3(
+          result.candidates,
+          signals,
+          { location: form.deliveryLocation, pincode: form.deliveryPincode },
+          10
+        );
+        setProcucevV3Ranked(ranked);
+        // Drop any prior selection that is no longer in the new top-10.
+        setSelectedProcucevV3Ids((prev) => prev.filter((id) => ranked.some((r) => r.vendor.id === id)));
+      } else {
+        setProcucevV3Ranked([]);
+      }
+      setProcucevV3Loading(false);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-rank only on the inputs that change the ranking
+  }, [form.sourcingMode, selectedMajorCategory, isAllCategories, form.deliveryLocation, form.deliveryPincode]);
+
+  const toggleProcucevV3 = (id: string) => {
+    setSelectedProcucevV3Ids((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const procucevV3AllSelected =
+    procucevV3Ranked.length > 0 && procucevV3Ranked.every((r) => selectedProcucevV3Ids.includes(r.vendor.id));
+  const toggleAllProcucevV3 = () => {
+    setSelectedProcucevV3Ids(procucevV3AllSelected ? [] : procucevV3Ranked.map((r) => r.vendor.id));
   };
 
   /**
@@ -999,6 +1059,20 @@ export default function IngestionWizard({
 
         if (matchingVendors.length > 0) {
           mode1AssignedVendors = matchingVendors.map(toAssignedVendorEntry);
+        }
+      }
+
+      // V3 (Autonomous): fold in the Procucev network vendors the buyer explicitly
+      // picked from the 360°-ranked top-10 panel, de-duplicated against the private
+      // roster already assembled above. These are honoured on top of the backend's
+      // own autonomous category match for mode_3.
+      if (form.sourcingMode === 'mode_3' && selectedProcucevV3Ids.length > 0) {
+        const alreadyAssigned = new Set((mode1AssignedVendors || []).map((v) => v.id));
+        const picked = procucevV3Ranked
+          .filter((r) => selectedProcucevV3Ids.includes(r.vendor.id) && !alreadyAssigned.has(r.vendor.id))
+          .map((r) => toAssignedVendorEntry(r.vendor));
+        if (picked.length > 0) {
+          mode1AssignedVendors = [...(mode1AssignedVendors || []), ...picked];
         }
       }
 
@@ -2510,6 +2584,96 @@ export default function IngestionWizard({
                             </div>
                           </div>
                         ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Top 10 Procucev Network Vendors (360° category + location ranking) ── */}
+                  <div className="space-y-2 pt-1" data-testid="procucev-v3-panel">
+                    <div className="flex items-center justify-between gap-2 flex-wrap">
+                      <h4 className="text-xs font-bold text-slate-800 dark:text-gray-200 flex items-center gap-1.5">
+                        <Sparkles size={13} className="text-indigo-600 dark:text-indigo-400" />
+                        <span>Top Procucev Network Vendors</span>
+                        <span className="text-[10px] font-semibold text-slate-500 dark:text-gray-400">
+                          (ranked by category &amp; delivery location)
+                        </span>
+                      </h4>
+                      {procucevV3Ranked.length > 0 && (
+                        <div className="flex items-center gap-3 text-[11px]">
+                          <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                            {selectedProcucevV3Ids.length} of {procucevV3Ranked.length} selected
+                          </span>
+                          <button
+                            type="button"
+                            data-testid="procucev-v3-select-all"
+                            onClick={toggleAllProcucevV3}
+                            className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
+                          >
+                            {procucevV3AllSelected ? 'Deselect all' : 'Select all'}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
+                    {procucevV3Loading ? (
+                      <div className="p-3.5 text-center text-[11px] text-slate-400 dark:text-gray-500">
+                        Ranking Procucev network vendors…
+                      </div>
+                    ) : procucevV3Ranked.length === 0 ? (
+                      <div className="p-3.5 text-center rounded-xl bg-white dark:bg-gray-900/60 border border-slate-200 dark:border-gray-800 text-[11px] text-slate-500">
+                        No Procucev network vendors matched this RFQ&apos;s category yet.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 max-h-60 overflow-y-auto pr-1">
+                        {procucevV3Ranked.map((r, i) => {
+                          const isSelected = selectedProcucevV3Ids.includes(r.vendor.id);
+                          return (
+                            <button
+                              type="button"
+                              key={r.vendor.id || i}
+                              data-testid="procucev-v3-vendor"
+                              aria-pressed={isSelected}
+                              onClick={() => toggleProcucevV3(r.vendor.id)}
+                              className={`text-left p-3 rounded-xl border space-y-1.5 shadow-2xs transition-colors ${
+                                isSelected
+                                  ? 'bg-indigo-50 dark:bg-indigo-950/50 border-indigo-400 dark:border-indigo-600'
+                                  : 'bg-white dark:bg-gray-900 border-indigo-200/70 dark:border-indigo-900/50 hover:border-indigo-300'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="flex items-center gap-1.5 min-w-0">
+                                  <span
+                                    className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
+                                      isSelected ? 'bg-indigo-600 border-indigo-600 text-white' : 'border-slate-300 dark:border-gray-600'
+                                    }`}
+                                  >
+                                    {isSelected && <Check size={11} />}
+                                  </span>
+                                  {/* Double-blind: the vendor's name and sourcing
+                                      category are shown, not its contact details. */}
+                                  <span className="text-xs font-bold text-slate-900 dark:text-white truncate">{r.vendor.name}</span>
+                                </span>
+                                <span className="badge badge-indigo text-[8px] font-bold shrink-0">#{i + 1}</span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span
+                                  data-testid="procucev-v3-vendor-category"
+                                  className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-indigo-100/70 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800 truncate max-w-full"
+                                  title={r.vendor.majorCategory || r.matchedCategories[0] || 'General Industrial'}
+                                >
+                                  {r.vendor.majorCategory || r.matchedCategories[0] || 'General Industrial'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-gray-400">
+                                <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                  {r.overallScore}% match
+                                </span>
+                                <span aria-hidden="true">·</span>
+                                <span className="truncate">{r.locationReason}</span>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
                     )}
                   </div>

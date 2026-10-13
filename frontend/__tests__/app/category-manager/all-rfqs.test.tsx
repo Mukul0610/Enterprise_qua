@@ -78,6 +78,31 @@ describe('AllRFQsConsole', () => {
     expect(screen.getByText(/1,50,000|150,000/)).toBeInTheDocument();
   });
 
+  it('shows the latest vendor quotation submission date, and a placeholder when none exist', async () => {
+    const quoted = makeRfq({
+      id: '010',
+      title: 'Quoted RFQ',
+      status: 'Quotes Received',
+      quotesCount: 2,
+      buyerAccountName: 'Alpha Buyer Co',
+      quotes: [
+        { vendorId: 'v-1', vendorName: 'Early Vendor', submittedAt: '2026-10-01T09:00:00.000Z' },
+        // The later timestamp is the one that must surface as "latest".
+        { vendorId: 'v-2', vendorName: 'Late Vendor', submittedAt: '2026-10-05T14:30:00.000Z' },
+      ] as RFQItem['quotes'],
+    });
+    mockFetch.mockResolvedValue({ success: true, rfqs: [quoted, ROWS[0]] });
+
+    render(<AllRFQsConsole />);
+    await waitFor(() => expect(screen.getByText('Quoted RFQ')).toBeInTheDocument());
+
+    const cells = screen.getAllByTestId('all-rfqs-latest-quote');
+    // Latest of the two quotes is the 5 Oct timestamp — rendered with month + year.
+    expect(cells.some((c) => /Oct 2026/.test(c.textContent || ''))).toBe(true);
+    // The quote-less RFQ shows the placeholder instead of a date.
+    expect(screen.getByText(S.latestQuoteNone)).toBeInTheDocument();
+  });
+
   it('filters by free-text search', async () => {
     render(<AllRFQsConsole />);
     await waitFor(() => expect(screen.getByText('Copper Cable')).toBeInTheDocument());
