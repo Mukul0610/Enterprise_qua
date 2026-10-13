@@ -154,11 +154,10 @@ export default function VendorSubscriptionCenter() {
       subtext: 'Marketplace Expansion',
       originalPrice: '₹25,000',
       price: '₹7,499',
-      // The amount actually charged server-side (ZOHO_SUBSCRIPTION_PRICING in
-      // backend/src/config/constants.js) hasn't changed — only the displayed
-      // card price has. Keeping this separate so the payment button never
-      // promises an amount the backend won't actually collect.
-      chargeAmount: '₹2',
+      // Must match the actual GST-inclusive amount Zoho charges
+      // (computeZohoPlanAmount in backend/src/config/constants.js), so the
+      // payment button never promises an amount the backend won't collect.
+      chargeAmount: '₹7,499',
       billing: 'per year',
       description: 'Expand your market reach. Access & download open RFQs across the entire Procucev Network Marketplace.',
       badge: 'Popular for Growth',
@@ -182,7 +181,7 @@ export default function VendorSubscriptionCenter() {
       subtext: 'Item Catalogue & High Volume',
       originalPrice: '₹50,000',
       price: '₹14,999',
-      chargeAmount: '₹5',
+      chargeAmount: '₹14,999',
       billing: 'per year',
       description: 'Complete tier for high-volume suppliers. Build your Item Catalogue and capture maximum marketplace demand.',
       badge: 'Full Suite',

@@ -474,7 +474,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
       fireEvent.click(connectBtn);
       expect(screen.getByText(/Secure Payment/i)).toBeInTheDocument();
 
-      const payBtn = screen.getByRole('button', { name: /Pay ₹2/i });
+      const payBtn = screen.getByRole('button', { name: /Pay ₹7,499/i });
       await act(async () => {
         fireEvent.click(payBtn);
         await Promise.resolve();
@@ -670,7 +670,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
       });
 
       fireEvent.click(screen.getByRole('button', { name: /Switch to Connect Model/i }));
-      const payBtn = screen.getByRole('button', { name: /Pay ₹2/i });
+      const payBtn = screen.getByRole('button', { name: /Pay ₹7,499/i });
       await act(async () => {
         fireEvent.click(payBtn);
         await Promise.resolve();
@@ -703,7 +703,7 @@ describe('Vendor Screens Comprehensive Suite', () => {
       });
 
       fireEvent.click(screen.getByRole('button', { name: /Switch to Connect Model/i }));
-      const payBtn = screen.getByRole('button', { name: /Pay ₹2/i });
+      const payBtn = screen.getByRole('button', { name: /Pay ₹7,499/i });
       await act(async () => {
         fireEvent.click(payBtn);
         await Promise.resolve();

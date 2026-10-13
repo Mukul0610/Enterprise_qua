@@ -86,7 +86,7 @@ describe('SubscriptionCenter (real AppProvider integration)', () => {
       expect.objectContaining({ method: 'PUT' })
     );
 
-    const payBtn = screen.getByText(/Pay ₹5/i);
+    const payBtn = screen.getByText(/Pay ₹19,999/i);
     await act(async () => {
       fireEvent.click(payBtn);
       await Promise.resolve();

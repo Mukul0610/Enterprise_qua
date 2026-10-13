@@ -12,10 +12,13 @@ const PLAN_LABEL: Record<string, string> = {
   version_3: 'Version 3: Autonomous AI Sourcing Plan',
 };
 
+// Must match the actual GST-inclusive amount Zoho charges
+// (computeZohoBuyerPlanAmount in backend/src/config/constants.js), so this
+// confirmation modal never promises a different amount than what's billed.
 const PLAN_PRICE: Record<string, string> = {
-  version_1: '₹2',
-  version_2: '₹5',
-  version_3: '₹8',
+  version_1: '₹14,999',
+  version_2: '₹19,999',
+  version_3: '₹24,999',
 };
 
 export default function SubscriptionCenter() {
