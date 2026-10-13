@@ -490,6 +490,27 @@ describe('Store Service & Business Operations', () => {
       }
     });
 
+    test('bulk-imported (CM upload) vendor gets a login identity but never a credentials email', async () => {
+      const findSpy = jest.spyOn(identityQueries, 'findUserByEmail').mockResolvedValue(null);
+      const identitySpy = jest
+        .spyOn(identityQueries, 'insertVendorAccount')
+        .mockResolvedValue({ created: true });
+      const sendSpy = jest.spyOn(mailerService, 'sendVendorIngestionEmail').mockResolvedValue({ sent: true });
+
+      try {
+        await storeService.bulkAddVendors([row({ rowNumber: 1, email: 'cm-upload-no-email@example.com' })]);
+
+        expect(identitySpy).toHaveBeenCalled();
+        expect(sendSpy).not.toHaveBeenCalled();
+        const created = (await storeService.getVendors()).find((v) => v.email === 'cm-upload-no-email@example.com');
+        expect(created.onboardingEmailStatus).toBe('skipped');
+      } finally {
+        findSpy.mockRestore();
+        identitySpy.mockRestore();
+        sendSpy.mockRestore();
+      }
+    });
+
     test('imported vendors carry the source-tracking and default fields a bulk-Excel import implies', async () => {
       await storeService.bulkAddVendors([row({ rowNumber: 1, email: 'tagged@example.com' })]);
       const created = (await storeService.getVendors()).find((v) => v.email === 'tagged@example.com');

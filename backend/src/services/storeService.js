@@ -696,11 +696,11 @@ class StoreService {
    * and no-ops if one is already there, so this and addVendor's own
    * background attempt don't race into a double-create.
    */
-  async provisionVendorOnboarding(vendor, actorEmail = null) {
-    return this._provisionVendorOnboarding(vendor, actorEmail);
+  async provisionVendorOnboarding(vendor, actorEmail = null, options = {}) {
+    return this._provisionVendorOnboarding(vendor, actorEmail, options);
   }
 
-  async _provisionVendorOnboarding(vendor, actorEmail = null) {
+  async _provisionVendorOnboarding(vendor, actorEmail = null, { skipEmail = false } = {}) {
     // Real, previously-shipped bug found live: identityQueries.insertVendorAccount
     // unconditionally resets password + phone on an *existing* identity
     // account when one is found for the email — correct for the CLI
@@ -774,6 +774,20 @@ class StoreService {
     }
 
     this.updateVendor(vendor.id, { tempPassword });
+
+    if (skipEmail) {
+      // CM bulk-upload path: the login account is still created so the
+      // vendor can be given/reset credentials later, but no automated
+      // credentials email goes out for this import channel.
+      this.updateVendor(vendor.id, { onboardingEmailStatus: 'skipped' });
+      logger.info(
+        `Identity created for ${vendor.email} via CM bulk upload; onboarding email intentionally skipped`,
+        { vendorId: vendor.id },
+        'STORE_SERVICE'
+      );
+      return { status: 'skipped' };
+    }
+
     const emailPayload = mailerService.buildVendorOnboardingEmail({
       to: vendor.email,
       recipientName: vendor.contactPerson || vendor.name,
@@ -972,7 +986,9 @@ class StoreService {
           this.updateVendor(vendor.id, { onboardingEmailStatus: 'account_exists' });
         } else if (vendor.email) {
           try {
-            const onboarding = await this.provisionVendorOnboarding(vendor, 'vendor-bulk-import');
+            const onboarding = await this.provisionVendorOnboarding(vendor, 'vendor-bulk-import', {
+              skipEmail: true,
+            });
             importedResult.onboardingEmailStatus = onboarding?.status || 'failed';
             if (onboarding?.error) importedResult.onboardingError = onboarding.error;
           } catch (err) {
