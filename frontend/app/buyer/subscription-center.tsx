@@ -115,7 +115,7 @@ export default function SubscriptionCenter() {
       subtext: 'Features of Version 1 Only',
       originalPrice: '₹50,000',
       price: '₹14,999',
-      billing: 'per year',
+      billing: 'per month',
       description: 'Streamline procurement across your private pre-approved vendor roster (Mode 1 only) with working-hour multi-channel follow-ups.',
       colorClass: 'from-indigo-650 to-indigo-750 text-indigo-600 border-indigo-200 dark:border-indigo-900',
       shadowClass: 'shadow-indigo-500/10',
@@ -136,7 +136,7 @@ export default function SubscriptionCenter() {
       subtext: 'Features of Version 1 & 2 Included',
       originalPrice: '₹60,000',
       price: '₹19,999',
-      billing: 'per year',
+      billing: 'per month',
       description: 'Cumulative plan giving you full access to BOTH Version 1 and Version 2 (Mode 1 & Mode 2) with hybrid platform network discovery.',
       colorClass: 'from-sky-600 to-blue-600 text-sky-600 border-sky-200 dark:border-sky-900',
       shadowClass: 'shadow-sky-500/10',
@@ -157,7 +157,7 @@ export default function SubscriptionCenter() {
       subtext: 'Features of Version 1, 2 & 3 Included',
       originalPrice: '₹75,000',
       price: '₹24,999',
-      billing: 'per year',
+      billing: 'per month',
       description: 'Ultimate all-inclusive tier giving you full access to Version 1, Version 2, AND Version 3 (Mode 1, Mode 2 & Mode 3) with autonomous AI governance.',
       colorClass: 'from-purple-600 to-indigo-650 text-purple-600 border-purple-200 dark:border-purple-900',
       shadowClass: 'shadow-purple-500/10',
@@ -264,6 +264,9 @@ export default function SubscriptionCenter() {
                   </span>
                   <span className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white">{p.price}</span>
                   <span className="text-[10px] text-slate-400 dark:text-gray-500 font-medium">{p.billing}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400 w-full">
+                    #Annual Billing Only
+                  </span>
                 </div>
 
                 <p className="text-xs text-slate-500 dark:text-gray-400 leading-relaxed min-h-[40px]">

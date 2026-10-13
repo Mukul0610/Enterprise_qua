@@ -325,6 +325,11 @@ export default function VendorSubscriptionCenter() {
                   )}
                   <span className="text-3xl font-black text-slate-900 dark:text-white">{p.price}</span>
                   <span className="text-[11px] text-slate-400 dark:text-gray-500 font-medium">{p.billing}</span>
+                  {p.originalPrice && (
+                    <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600 dark:text-amber-400 w-full">
+                      #Annual Billing Only
+                    </span>
+                  )}
                 </div>
 
                 <p className="text-xs text-slate-500 dark:text-gray-400 leading-relaxed min-h-[48px]">
