@@ -7,6 +7,7 @@ const { logger } = require('./loggerService');
 const {
   UNAUTHORIZED_BUYER_NOTIFICATION,
   RFQ_ACKNOWLEDGEMENT_NOTIFICATION,
+  RFQ_NOT_CREATED_NOTIFICATION,
   VENDOR_CREDITS_EXHAUSTED_NOTIFICATION,
 } = require('../config/constants');
 
@@ -1823,6 +1824,43 @@ async function sendRfqAcknowledgementEmail(params) {
   return deliver(message, 'buyer RFQ acknowledgement');
 }
 
+/**
+ * Tells a registered buyer their emailed requirement did NOT become an RFQ, and
+ * why. `reason` is a key of RFQ_NOT_CREATED_NOTIFICATION.REASONS.
+ */
+function buildRfqNotCreatedEmail({ to, buyerName, reason, originalSubject, count, max }) {
+  const template =
+    RFQ_NOT_CREATED_NOTIFICATION.REASONS[reason] || RFQ_NOT_CREATED_NOTIFICATION.REASONS.PROCESSING_FAILED;
+  const reasonText = template.replace('{count}', String(count ?? '')).replace('{max}', String(max ?? ''));
+  const name = escapeHtml(buyerName || 'Valued Buyer');
+  const portalUrl = buyerPortalUrl();
+
+  const inner = `
+    <p>Hi <strong>${name}</strong>,</p>
+    <p>We received your email${originalSubject ? ` <strong>“${escapeHtml(originalSubject)}”</strong>` : ''}, but <strong>no RFQ has been created</strong> from it.</p>
+    <div style="background: #fef2f2; padding: 14px 16px; border-radius: 6px; border: 1px solid #fecaca; margin: 18px 0;">
+      <p style="margin: 0; color: #991b1b;">${escapeHtml(reasonText)}</p>
+    </div>
+    <p style="margin: 20px 0;">
+      <a href="${portalUrl}" style="background: #0284c7; color: #ffffff; padding: 10px 20px; border-radius: 6px; text-decoration: none; font-weight: bold; display: inline-block;">Open the Buyer Portal</a>
+    </p>
+    <p style="margin-top: 24px;">Regards,<br/><strong>${RFQ_ACKNOWLEDGEMENT_NOTIFICATION.TEAM_SIGNATURE}</strong></p>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject: RFQ_NOT_CREATED_NOTIFICATION.SUBJECT,
+    text: `Hi ${buyerName || 'Valued Buyer'},\n\nWe received your email${originalSubject ? ` "${originalSubject}"` : ''}, but no RFQ has been created from it.\n\n${reasonText}\n\nBuyer Portal: ${portalUrl}\n\n${RFQ_ACKNOWLEDGEMENT_NOTIFICATION.TEAM_SIGNATURE}`,
+    html: wrapEmail(RFQ_NOT_CREATED_NOTIFICATION.HEADLINE, RFQ_NOT_CREATED_NOTIFICATION.SUBLINE, inner),
+  };
+}
+
+async function sendRfqNotCreatedEmail(params = {}) {
+  if (!params.to) return { sent: false, reason: 'missing recipient email' };
+  return deliver(asAutoReply(buildRfqNotCreatedEmail(params)), 'buyer RFQ not-created notice');
+}
+
 function isConfigured() {
   return (
     gmailIdentities().length > 0 ||
@@ -1862,6 +1900,8 @@ module.exports = {
   sendVendorIngestionEmail,
   buildRfqAcknowledgementEmail,
   sendRfqAcknowledgementEmail,
+  sendRfqNotCreatedEmail,
+  buildRfqNotCreatedEmail,
   buildQuoteAcknowledgementEmail,
   sendQuoteAcknowledgementEmail,
   buildQuoteFailureEmail,

@@ -26,6 +26,7 @@ const emailIngestionService = require('./emailIngestionService');
 const geminiService = require('./geminiService');
 const rfqIngestionService = require('./rfqIngestionService');
 const storeService = require('./storeService');
+const rfqAttachmentService = require('./rfqAttachmentService');
 const domainQueries = require('../db/domainQueries');
 const mailerService = require('./mailerService');
 const emailGatewayQueries = require('../db/emailGatewayQueries');
@@ -585,6 +586,7 @@ const AUTO_REPLY_KIND = {
   PORTAL_REDIRECT: 'PORTAL_REDIRECT',
   QUOTE_ACK: 'QUOTE_ACK',
   RFQ_ACK: 'RFQ_ACK',
+  RFQ_NOT_CREATED: 'RFQ_NOT_CREATED',
 };
 
 // The ledger status each notice kind is recorded under, the window, and how many
@@ -605,6 +607,19 @@ const AUTO_REPLY_COOLDOWN = {
   [AUTO_REPLY_KIND.VENDOR_ISSUE]: { statuses: [INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED], ...VENDOR_NOTICE_LIMIT },
   [AUTO_REPLY_KIND.CREDITS_EXHAUSTED]: { statuses: [INGESTION_OUTCOME.CREDITS_EXHAUSTED], ...VENDOR_NOTICE_LIMIT },
   [AUTO_REPLY_KIND.PORTAL_REDIRECT]: { statuses: [INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED], ...VENDOR_NOTICE_LIMIT },
+  // A registered buyer is told each time an email of theirs did not become an
+  // RFQ, up to a few an hour — enough for someone correcting and resending,
+  // not enough for a machine loop.
+  [AUTO_REPLY_KIND.RFQ_NOT_CREATED]: {
+    statuses: [
+      INGESTION_OUTCOME.NO_LINE_ITEMS,
+      INGESTION_OUTCOME.LINE_ITEMS_EXCEED_LIMIT,
+      INGESTION_OUTCOME.RFQ_CREDITS_EXHAUSTED,
+    ],
+    windowMs: 60 * 60 * 1000,
+    maxPerWindow: 3,
+    perRfq: false,
+  },
 };
 
 // Subjects of the gateway's own notices. Mail arriving with one of these (or a
@@ -617,6 +632,8 @@ const OWN_NOTICE_SUBJECT_PREFIXES = [
   'portal bidding required for rfq',
   'inquiry logged for rfq',
   'action required: category mismatch',
+  'action required – your rfq email could not be processed',
+  'great news! your requirement has been converted into rfq',
 ];
 
 const recentAutoReplies = new Map();
@@ -667,8 +684,12 @@ async function shouldSendAutoReply(message, kind, { rfqNumber = null, config = {
   const cooldown = AUTO_REPLY_COOLDOWN[kind];
   if (!cooldown) return { allowed: true };
 
-  if (kind === AUTO_REPLY_KIND.UNAUTHORIZED_SENDER) {
+  if (kind === AUTO_REPLY_KIND.UNAUTHORIZED_SENDER || kind === AUTO_REPLY_KIND.RFQ_NOT_CREATED) {
+    // A buyer answering our acknowledgement ("Re: Great news! ... RFQ #123 —
+    // thanks") has no line items in it; that is not a failed RFQ to report.
     if (isOwnNoticeSubject(message.subject)) return { allowed: false, reason: 'reply to our own notice' };
+  }
+  if (kind === AUTO_REPLY_KIND.UNAUTHORIZED_SENDER) {
     if (platformDomains().includes(from.split('@')[1])) return { allowed: false, reason: 'platform domain' };
   }
 
@@ -718,6 +739,112 @@ async function sendAutoReply(message, kind, send, { rfqNumber = null, config = {
     logger.error(failureLog || `Failed to send ${kind} auto-reply`, mailErr, 'EMAIL_GATEWAY');
     return false;
   }
+}
+
+/** Gemini outcomes that say nothing about the email, only that extraction could not run right now. */
+function isRetryableExtraction(status) {
+  const { AI_FAILED, QUOTA_EXCEEDED, NOT_CONFIGURED } = geminiService.EXTRACTION_STATUS;
+  return status === AI_FAILED || status === QUOTA_EXCEEDED || status === NOT_CONFIGURED;
+}
+
+/**
+ * Thrown for a failure worth retrying on a later poll. The poller retries every
+ * thrown error; this one also carries who sent the message and what to do once
+ * the retries run out (tell the buyer), so a requirement is never dropped silently.
+ */
+class RetryableIngestionError extends Error {
+  constructor(messageText, { message, onGiveUp } = {}) {
+    super(messageText);
+    this.name = 'RetryableIngestionError';
+    this.fromAddress = (message && message.fromAddress) || null;
+    this.subject = (message && message.subject) || null;
+    this.onGiveUp = onGiveUp || null;
+  }
+}
+
+function buyerDisplayName(buyerAccount, message) {
+  return (
+    (buyerAccount && (buyerAccount.contactPerson || buyerAccount.organizationName)) ||
+    (message && message.fromName) ||
+    'Valued Buyer'
+  );
+}
+
+/** Tell a registered buyer their email did not become an RFQ, within the auto-reply guards. */
+function notifyRfqNotCreated(message, reason, { buyerAccount = null, config = {}, count, max } = {}) {
+  return sendAutoReply(
+    message,
+    AUTO_REPLY_KIND.RFQ_NOT_CREATED,
+    () =>
+      mailerService.sendRfqNotCreatedEmail({
+        to: message.fromAddress,
+        buyerName: buyerDisplayName(buyerAccount, message),
+        reason,
+        originalSubject: message.subject,
+        count,
+        max,
+      }),
+    { config, failureLog: 'Failed to dispatch RFQ-not-created notice to buyer' }
+  );
+}
+
+/**
+ * Whether the buyer can pay for `needed` RFQs at this sourcing mode — the same
+ * rule the portal applies: V0 and paid plans are free, a free trial draws one
+ * credit per V1/V2/V3 RFQ and is refused once the credits are gone.
+ */
+function checkRfqCredits(buyerAccount, sourcingMode, needed) {
+  if (!buyerAccount || !buyerAccount.id) return { ok: true, applies: false };
+  const plan = buyerAccount.subscriptionPlan || 'free_trial';
+  const isPaidPlan = plan === 'version_1' || plan === 'version_2' || plan === 'version_3';
+  const isV0 = sourcingMode === 'mode_0' || sourcingMode === 'v0' || sourcingMode === 'version_0';
+  if (isPaidPlan || isV0) return { ok: true, applies: false };
+  const remaining = buyerAccount.remainingFreeRFQs !== undefined ? Number(buyerAccount.remainingFreeRFQs) : 5;
+  return { ok: remaining >= needed, applies: true, remaining, needed };
+}
+
+/**
+ * Store the documents attached to the buyer's email on the RFQ, the same way a
+ * portal upload is stored. Best-effort: a file that is the wrong type, too large,
+ * or cannot be written is logged and left off — it never stops the RFQ.
+ */
+async function storeEmailAttachments(message) {
+  const saved = [];
+  for (const attachment of (message && message.attachments) || []) {
+    // Every role is kept ('inline' means "sent to Gemini inline", which is what
+    // a PDF requisition is); saveAttachment's MIME allow-list decides what is
+    // storable, exactly as for a portal upload.
+    if (!attachment || !attachment.content) continue;
+    try {
+      const result = await withTimeout(
+        rfqAttachmentService.saveAttachment({
+          fileName: attachment.fileName,
+          mimeType: attachment.contentType,
+          content: Buffer.isBuffer(attachment.content)
+            ? attachment.content.toString('base64')
+            : String(attachment.content),
+        }),
+        POLL_CALL_TIMEOUT_MS,
+        'RFQ attachment upload'
+      );
+      if (result.status === rfqAttachmentService.ATTACHMENT_STATUS.SAVED) {
+        saved.push(result.attachment);
+      } else {
+        logger.warn(
+          `Email attachment ${attachment.fileName} not stored on the RFQ (${result.status})`,
+          { fileName: attachment.fileName, contentType: attachment.contentType },
+          'EMAIL_GATEWAY'
+        );
+      }
+    } catch (err) {
+      logger.warn(
+        `Email attachment ${attachment.fileName} not stored on the RFQ: ${err.message}`,
+        { fileName: attachment.fileName },
+        'EMAIL_GATEWAY'
+      );
+    }
+  }
+  return saved;
 }
 
 /**
@@ -1226,12 +1353,30 @@ async function processMessage(rawSource, config = resolveConfig()) {
     return { status: INGESTION_OUTCOME.SENDER_NOT_ALLOWED, detail: authorisation.reason, message };
   }
 
-  const extraction = await withTimeout(
-    geminiService.extractLineItems(prepared.extractionInput),
-    POLL_CALL_TIMEOUT_MS,
-    'Gemini line-item extraction'
-  );
+  // A transient Gemini failure (timeout, rate limit, outage, missing key) says
+  // nothing about the email. It is thrown so the poller retries it; once the
+  // retries run out the buyer is told, instead of the requirement being
+  // recorded as "no line items" and dropped after one try.
+  const notifyContext = { buyerAccount: authorisation.buyerAccount, config };
+  const giveUpNotice = () => notifyRfqNotCreated(message, 'PROCESSING_FAILED', notifyContext);
+  let extraction;
+  try {
+    extraction = await withTimeout(
+      geminiService.extractLineItems(prepared.extractionInput),
+      POLL_CALL_TIMEOUT_MS,
+      'Gemini line-item extraction'
+    );
+  } catch (err) {
+    throw new RetryableIngestionError(err.message, { message, onGiveUp: giveUpNotice });
+  }
+  if (isRetryableExtraction(extraction.status)) {
+    throw new RetryableIngestionError(
+      EMAIL_GATEWAY_MESSAGES.EXTRACTION_RETRYABLE.replace('{status}', extraction.status),
+      { message, onGiveUp: giveUpNotice }
+    );
+  }
   if (extraction.status !== geminiService.EXTRACTION_STATUS.SUCCESS) {
+    await notifyRfqNotCreated(message, 'NO_LINE_ITEMS', notifyContext);
     return {
       status: INGESTION_OUTCOME.NO_LINE_ITEMS,
       detail: EMAIL_GATEWAY_MESSAGES.EXTRACTION_FAILED.replace('{status}', extraction.status),
@@ -1243,6 +1388,7 @@ async function processMessage(rawSource, config = resolveConfig()) {
   const groups = emailGateway.processLineItemsAndGroups(extraction.lineItems, extraction, buyerLocation);
 
   if (groups.length === 0) {
+    await notifyRfqNotCreated(message, 'NO_LINE_ITEMS', notifyContext);
     return {
       status: INGESTION_OUTCOME.NO_LINE_ITEMS,
       detail: EMAIL_GATEWAY_MESSAGES.NO_ITEMS_ACCEPTED,
@@ -1261,6 +1407,11 @@ async function processMessage(rawSource, config = resolveConfig()) {
         { count: group.items.length, max: EMAIL_GATEWAY_CONFIG.MAX_LINE_ITEMS_PER_RFQ },
         'EMAIL_GATEWAY'
       );
+      await notifyRfqNotCreated(message, 'TOO_MANY_LINE_ITEMS', {
+        ...notifyContext,
+        count: group.items.length,
+        max: EMAIL_GATEWAY_CONFIG.MAX_LINE_ITEMS_PER_RFQ,
+      });
       return {
         status: INGESTION_OUTCOME.LINE_ITEMS_EXCEED_LIMIT,
         detail,
@@ -1269,11 +1420,49 @@ async function processMessage(rawSource, config = resolveConfig()) {
     }
   }
 
+  // The portal refuses a V1/V2/V3 RFQ once a free trial's credits are gone;
+  // email used to create it anyway. Checked for every RFQ this email would raise
+  // before any is created, so the buyer never gets half a requirement.
+  const sourcingMode = resolveBuyerSourcingMode(authorisation.buyerAccount);
+  const credits = checkRfqCredits(authorisation.buyerAccount, sourcingMode, groups.length);
+  if (!credits.ok) {
+    logger.warn(
+      'Email RFQ refused: free trial RFQ credits exhausted',
+      { buyerAccountId: authorisation.buyerAccount.id, sourcingMode, remaining: credits.remaining, needed: credits.needed },
+      'EMAIL_GATEWAY'
+    );
+    await notifyRfqNotCreated(message, 'CREDITS_EXHAUSTED', notifyContext);
+    return {
+      status: INGESTION_OUTCOME.RFQ_CREDITS_EXHAUSTED,
+      detail: EMAIL_GATEWAY_MESSAGES.RFQ_CREDITS_EXHAUSTED_DETAIL
+        .replace('{remaining}', String(credits.remaining))
+        .replace('{needed}', String(credits.needed)),
+      message,
+    };
+  }
+
   const createdRFQs = [];
   let totalAccepted = 0;
   let totalNeedsReview = 0;
+  // Uploaded once, when the first RFQ is actually created, and shared by every
+  // RFQ the email raises.
+  let attachmentsPromise = null;
+  const emailAttachments = () => {
+    if (!attachmentsPromise) attachmentsPromise = storeEmailAttachments(message);
+    return attachmentsPromise;
+  };
 
-  for (const group of groups) {
+  for (const [groupIndex, group] of groups.entries()) {
+    // An email whose processing failed after some of its RFQs were created is
+    // retried in full; the ledger row written for each created RFQ stops it
+    // being raised (and charged, and acknowledged) a second time.
+    const groupKey = message.messageId ? `${message.messageId}#rfq-${groupIndex}` : null;
+    const alreadyCreated = groupKey ? await emailGatewayQueries.findProcessed(groupKey) : null;
+    if (alreadyCreated) {
+      createdRFQs.push({ id: alreadyCreated.rfq_id, rfqNumber: alreadyCreated.rfq_number });
+      continue;
+    }
+
     const { draft, classification } = await rfqIngestionService.buildRFQDraft({
       lineItems: group.items,
       title: extraction.documentTitle || message.subject,
@@ -1295,8 +1484,6 @@ async function processMessage(rawSource, config = resolveConfig()) {
     totalAccepted += classification.accepted;
     totalNeedsReview += classification.needsReview;
 
-    const sourcingMode = resolveBuyerSourcingMode(authorisation.buyerAccount);
-
     const created = storeService.createRFQ(
       {
         title: draft.title,
@@ -1315,10 +1502,22 @@ async function processMessage(rawSource, config = resolveConfig()) {
         deliveryCity: draft.deliveryCity,
         deliveryState: draft.deliveryState,
         deliveryPincode: draft.deliveryPincode,
-        attachments: [],
+        attachments: await emailAttachments(),
       },
       authorisation.buyerAccount
     );
+
+    if (groupKey) {
+      await emailGatewayQueries.recordProcessed({
+        messageId: groupKey,
+        status: INGESTION_OUTCOME.RFQ_GROUP_CREATED,
+        detail: `RFQ ${groupIndex + 1} of ${groups.length} raised from this email`,
+        fromAddress: message.fromAddress,
+        subject: message.subject,
+        rfqId: created.id,
+        rfqNumber: created.rfqNumber,
+      });
+    }
 
     // Email-ingested RFQs must draw down sourcing credits the same way a
     // portal/AI-created RFQ does — the HTTP createRFQ controller is bypassed
@@ -1338,15 +1537,9 @@ async function processMessage(rawSource, config = resolveConfig()) {
     // Dispatch RFQ creation acknowledgement email to the buyer
     if (message.fromAddress) {
       try {
-        const buyerName =
-          authorisation.buyerAccount?.contactPerson ||
-          authorisation.buyerAccount?.organizationName ||
-          message.fromName ||
-          'Valued Buyer';
-
         await mailerService.sendRfqAcknowledgementEmail({
           to: message.fromAddress,
-          buyerName,
+          buyerName: buyerDisplayName(authorisation.buyerAccount, message),
           rfqNumber: created.rfqNumber,
           rfqTitle: created.title,
         });
@@ -1363,6 +1556,7 @@ async function processMessage(rawSource, config = resolveConfig()) {
   }
 
   if (createdRFQs.length === 0) {
+    await notifyRfqNotCreated(message, 'NO_LINE_ITEMS', notifyContext);
     return {
       status: INGESTION_OUTCOME.NO_LINE_ITEMS,
       detail: EMAIL_GATEWAY_MESSAGES.NO_ITEMS_ACCEPTED,
@@ -1584,9 +1778,20 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
               messageId: exhausted ? dedupeKey : `${dedupeKey}#attempt-${attempt}`,
               status: INGESTION_OUTCOME.FAILED,
               detail: `${err.message} (attempt ${attempt}/${EMAIL_GATEWAY_MAX_ATTEMPTS})`,
+              fromAddress: err.fromAddress || null,
+              subject: err.subject || null,
             })
             .catch(() => {});
-          if (exhausted) await markRead(ref.id, 'Gmail mark-read (failed)');
+          if (exhausted) {
+            await markRead(ref.id, 'Gmail mark-read (failed)');
+            // Out of retries: tell the buyer their requirement was not raised,
+            // rather than leaving them waiting for an acknowledgement.
+            if (typeof err.onGiveUp === 'function') {
+              await Promise.resolve()
+                .then(() => err.onGiveUp())
+                .catch((notifyErr) => logger.error('Failed to send give-up notice to buyer', notifyErr, 'EMAIL_GATEWAY'));
+            }
+          }
           outcomes.push({ uid: ref.id, messageId: dedupeKey, status: INGESTION_OUTCOME.FAILED, willRetry: !exhausted });
         }
       }
@@ -1883,6 +2088,9 @@ const emailGateway = {
   shouldSendAutoReply,
   sendAutoReply,
   extractHeaderMessageId,
+  checkRfqCredits,
+  storeEmailAttachments,
+  RetryableIngestionError,
   AUTO_REPLY_KIND,
   EMAIL_GATEWAY_MAX_ATTEMPTS,
   EMAIL_GATEWAY_LEDGER_UNAVAILABLE,
