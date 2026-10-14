@@ -3208,7 +3208,7 @@ class StoreService {
         name: v.name,
         email: v.email || null,
         contactPerson: v.contactPerson || null,
-        phone: v.phone || null,
+        phone: v.phone || v.mobile || v.mobileNumber || null,
         source: v.source || 'procucev_network',
       }));
 
@@ -3224,6 +3224,24 @@ class StoreService {
       procucevVendorCount: merged.length,
       ...(followUpData ? { followUpData } : {}),
     }) || { ...rfq, assignedVendors: merged, procucevVendorCount: merged.length, followUpData };
+
+    // Schedule multi-channel / 5-minute SMS chasers for newly assigned V0 vendors
+    const resolvedAdditions = additions.map((v) => {
+      const full = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+      return {
+        ...v,
+        phone: full.phone || full.mobile || full.mobileNumber || v.phone,
+        email: full.email || v.email,
+        name: full.name || v.name,
+        contactPerson: full.contactPerson || v.contactPerson,
+      };
+    });
+
+    rfqChaserScheduler.scheduleRFQChasers(
+      updated,
+      resolvedAdditions,
+      (vendor) => this.checkVendorQuotationEligibility(vendor)
+    );
 
     logger.info(
       `V0 RFQ ${rfq.rfqNumber}: assigned ${merged.length} Procucev vendors from DB match (${additions.length} added)`,
@@ -3465,6 +3483,24 @@ class StoreService {
       action: `Invited ${newlyInvited.length} vendor(s) to ${rfq.rfqNumber}`,
       rfqNumber: rfq.rfqNumber,
     });
+
+    // Schedule multi-channel / 5-minute SMS chasers for newly invited vendors
+    const resolvedNewlyInvited = newlyInvited.map((v) => {
+      const full = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+      return {
+        ...v,
+        phone: full.phone || full.mobile || full.mobileNumber || v.phone,
+        email: full.email || v.email,
+        name: full.name || v.name,
+        contactPerson: full.contactPerson || v.contactPerson,
+      };
+    });
+
+    rfqChaserScheduler.scheduleRFQChasers(
+      updatedRFQ,
+      resolvedNewlyInvited,
+      (vendor) => this.checkVendorQuotationEligibility(vendor)
+    );
 
     return {
       updatedRFQ,
