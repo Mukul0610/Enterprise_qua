@@ -28,11 +28,16 @@ export function installApiFetchPatch(): void {
   if (win.__apiFetchPatched) return;
   win.__apiFetchPatched = true;
 
-  const originalFetch = window.fetch.bind(window);
-  window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
+  const originalFetch = window.fetch;
+  const patchedFetch = (input: RequestInfo | URL, init?: RequestInit) => {
     if (typeof input === 'string' && input.startsWith('/api/')) {
       return originalFetch(`${backendUrl}${input}`, init);
     }
     return originalFetch(input, init);
   };
+  if (originalFetch) {
+    Object.setPrototypeOf(patchedFetch, originalFetch);
+    Object.assign(patchedFetch, originalFetch);
+  }
+  window.fetch = patchedFetch as typeof window.fetch;
 }

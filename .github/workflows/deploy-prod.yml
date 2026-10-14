@@ -49,8 +49,7 @@ jobs:
       - name: Build Frontend (Vinext)
         run: npm run build:vinext
         env:
-          NEXT_PUBLIC_BACKEND_URL: "https://procucev-enterprise-backend.srinivas-mukku.workers.dev"
-          NODE_BACKEND_URL: "https://procucev-enterprise-backend.srinivas-mukku.workers.dev"
+          WRANGLER_ENV: prod
         working-directory: frontend
 
       - name: Deploy Frontend to Cloudflare (Production Environment)
