@@ -37,6 +37,12 @@ const INGESTION_OUTCOME = {
   // One RFQ raised from one delivery-location group of an email, keyed
   // `<Message-ID>#rfq-<n>`, so a retried email does not raise it a second time.
   RFQ_GROUP_CREATED: 'RFQ_GROUP_CREATED',
+  // An RFQ acknowledgement the buyer has not been sent yet (every mail provider
+  // failed), keyed `<RFQ key>#ack`. The poller retries it until it goes out
+  // (ACK_SENT) or is too old to be useful (ACK_ABANDONED).
+  ACK_PENDING: 'ACK_PENDING',
+  ACK_SENT: 'ACK_SENT',
+  ACK_ABANDONED: 'ACK_ABANDONED',
 };
 
 
@@ -142,6 +148,29 @@ async function findProcessed(messageId) {
     { d1: true }
   );
   return rows[0] || null;
+}
+
+/**
+ * Oldest-first ledger rows in one status, for work the poller retries (pending
+ * acknowledgements). Empty on a ledger error: a retry can always wait a poll.
+ */
+async function listByStatus(status, limit = 5) {
+  if (!status || !pool.hasStorage()) return [];
+  const capped = Math.min(Math.max(Number(limit) || 5, 1), 50);
+  try {
+    return await pool.rows(
+      `select message_id, rfq_id, rfq_number, from_address, subject, status, detail, processed_at
+         from email_ingestion_log
+        where status = $1
+        order by processed_at asc
+        limit $2`,
+      [String(status), capped],
+      { d1: true }
+    );
+  } catch (err) {
+    logger.error('Email ingestion ledger could not be listed by status', err, 'EMAIL_GATEWAY');
+    return [];
+  }
 }
 
 /**
@@ -251,6 +280,7 @@ module.exports = {
   countRecentOutcomes,
   countFailedAttempts,
   findProcessed,
+  listByStatus,
   toLedgerTimestamp,
   listRecent,
   countsByStatus,

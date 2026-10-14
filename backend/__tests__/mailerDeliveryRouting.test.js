@@ -146,6 +146,39 @@ describe('mailerService delivery routing', () => {
     expect(sends.map((s) => s.token)).toEqual(['buyer']);
   });
 
+  test('buyer mail borrows the quote-alert mailbox when the buyer mailbox is throttled, replying to the buyer mailbox', async () => {
+    const { mailer, sends } = loadMailer(
+      {
+        GMAIL_REFRESH_TOKEN: 'buyer',
+        GMAIL_SENDER_EMAIL: 'buyer@procucev.com',
+        VENDOR_GMAIL_REFRESH_TOKEN: 'vendor',
+        QUOTE_ALERT_GMAIL_REFRESH_TOKEN: 'quote',
+        QUOTE_ALERT_GMAIL_SENDER_EMAIL: 'alerts@procucev.com',
+      },
+      { buyer: rateLimited }
+    );
+    const res = await mailer.sendRfqAcknowledgementEmail({ to: 'b@example.com', rfqNumber: 'R', rfqTitle: 'T' });
+    expect(res).toEqual({ sent: true, messageId: 'id-quote' });
+    expect(sends.map((s) => s.token)).toEqual(['buyer', 'quote']);
+    expect(sends[1].raw).toContain('From: "Procucev Enterprise" <alerts@procucev.com>');
+    // The acknowledgement's own Reply-To (the RFQ intake address) is kept.
+    expect(sends[1].raw).toMatch(/Reply-To: RFQ@procucev\.com/i);
+  });
+
+  test('a borrowed send with no reply-to of its own replies to the buyer mailbox', async () => {
+    const withSender = loadMailer(
+      { GMAIL_REFRESH_TOKEN: 'buyer', GMAIL_SENDER_EMAIL: 'buyer@procucev.com', QUOTE_ALERT_GMAIL_REFRESH_TOKEN: 'quote' },
+      { buyer: rateLimited }
+    );
+    await withSender.mailer.sendRfqNotCreatedEmail({ to: 'b@example.com', reason: 'NO_LINE_ITEMS' });
+    expect(withSender.sends.map((s) => s.token)).toEqual(['buyer', 'quote']);
+    expect(withSender.sends[1].raw).toMatch(/Reply-To: buyer@procucev\.com/i);
+
+    const withoutSender = loadMailer({ GMAIL_REFRESH_TOKEN: 'buyer', QUOTE_ALERT_GMAIL_REFRESH_TOKEN: 'quote' }, { buyer: rateLimited });
+    await withoutSender.mailer.sendRfqNotCreatedEmail({ to: 'b@example.com', reason: 'NO_LINE_ITEMS' });
+    expect(withoutSender.sends[1].raw).toMatch(/Reply-To: .*manav\.procucev@gmail\.com/i);
+  });
+
   test('vendor mail sent from a borrowed mailbox keeps CC and replies to the vendor gateway', async () => {
     const { mailer, sends } = loadMailer(
       { GMAIL_REFRESH_TOKEN: 'buyer', VENDOR_GMAIL_REFRESH_TOKEN: 'vendor', VENDOR_EMAIL_GATEWAY_ADDRESS: 'quotes@procucev.com' },

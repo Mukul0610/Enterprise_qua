@@ -540,3 +540,143 @@ describe('vendor unlock and credit queries have a SQLite spelling for D1', () =>
     expect(query.mock.calls[0][1]).toEqual(['t1', 'v1', null, 'DEBIT', 1, 4, null]);
   });
 });
+
+describe('acknowledgements that could not be sent are retried later', () => {
+  const cooling = () => Object.assign(new Error('Every mail provider is cooling down'), { code: 'MAIL_PROVIDERS_COOLING_DOWN' });
+
+  test('a failed acknowledgement is queued against the RFQ', async () => {
+    mockExtraction();
+    jest.spyOn(storeService, 'createRFQ').mockReturnValue({ id: 'rfq-q', rfqNumber: 'RFQ-Q', title: 'Pumps' });
+    ack.mockRejectedValue(cooling());
+
+    const result = await emailGatewayService.processMessage(raw(), config());
+
+    expect(result.status).toBe(INGESTION_OUTCOME.INGESTED);
+    expect(emailGatewayQueries.recordProcessed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: `${MESSAGE_ID}#rfq-0#ack`,
+        status: INGESTION_OUTCOME.ACK_PENDING,
+        fromAddress: SENDER,
+        rfqNumber: 'RFQ-Q',
+        subject: 'Pumps',
+        detail: JSON.stringify({ buyerName: 'L&T Heavy Engineering', rfqTitle: 'Pumps' }),
+      })
+    );
+  });
+
+  test('without a Message-ID it is keyed on the RFQ id; with no key nothing is queued', async () => {
+    await emailGatewayService.queueAcknowledgement('rfq-77', { to: SENDER, rfqNumber: 'N', rfqTitle: 'T', buyerName: 'B' });
+    expect(emailGatewayQueries.recordProcessed).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'rfq-77#ack' }));
+    emailGatewayQueries.recordProcessed.mockClear();
+    await emailGatewayService.queueAcknowledgement(null, { to: SENDER });
+    expect(emailGatewayQueries.recordProcessed).not.toHaveBeenCalled();
+  });
+
+  describe('retryPendingAcknowledgements', () => {
+    const NOW = Date.parse('2026-10-14T17:00:00Z');
+    const row = (overrides = {}) => ({
+      message_id: '<m@x>#rfq-0#ack',
+      rfq_number: 'RFQ-1',
+      from_address: SENDER,
+      subject: 'Pumps',
+      detail: JSON.stringify({ buyerName: 'Asha', rfqTitle: 'Pumps' }),
+      processed_at: '2026-10-14 16:50:00',
+      ...overrides,
+    });
+
+    test('sends a pending acknowledgement and marks it sent', async () => {
+      jest.spyOn(emailGatewayQueries, 'listByStatus').mockResolvedValue([row()]);
+      const outcome = await emailGatewayService.retryPendingAcknowledgements({ now: NOW });
+      expect(ack).toHaveBeenCalledWith({ to: SENDER, buyerName: 'Asha', rfqNumber: 'RFQ-1', rfqTitle: 'Pumps' });
+      expect(emailGatewayQueries.recordProcessed).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: '<m@x>#rfq-0#ack', status: INGESTION_OUTCOME.ACK_SENT })
+      );
+      expect(outcome).toEqual({ sent: 1, abandoned: 0, stillPending: 0 });
+    });
+
+    test('drops one older than 48 hours, or with no recipient or readable time', async () => {
+      jest.spyOn(emailGatewayQueries, 'listByStatus').mockResolvedValue([
+        row({ processed_at: '2026-10-12 10:00:00' }),
+        row({ from_address: null }),
+        row({ processed_at: 'not a date' }),
+      ]);
+      const outcome = await emailGatewayService.retryPendingAcknowledgements({ now: NOW });
+      expect(ack).not.toHaveBeenCalled();
+      expect(outcome.abandoned).toBe(3);
+      expect(emailGatewayQueries.recordProcessed).toHaveBeenCalledWith(
+        expect.objectContaining({ status: INGESTION_OUTCOME.ACK_ABANDONED })
+      );
+    });
+
+    test('stops when every provider is cooling down, carries on past other failures', async () => {
+      jest
+        .spyOn(emailGatewayQueries, 'listByStatus')
+        .mockResolvedValue([row(), row({ message_id: 'b#ack' }), row({ message_id: 'c#ack' })]);
+      ack.mockRejectedValueOnce(new Error('one provider hiccup')).mockRejectedValueOnce(cooling());
+      const outcome = await emailGatewayService.retryPendingAcknowledgements({ now: NOW });
+      expect(ack).toHaveBeenCalledTimes(2);
+      expect(outcome).toEqual({ sent: 0, abandoned: 0, stillPending: 2 });
+      expect(emailGatewayQueries.recordProcessed).not.toHaveBeenCalled();
+    });
+
+    test('tolerates unreadable saved details and Date / ISO timestamps', async () => {
+      jest.spyOn(emailGatewayQueries, 'listByStatus').mockResolvedValue([
+        row({ detail: '{not json', processed_at: new Date(NOW - 60000) }),
+        row({ detail: null, processed_at: '2026-10-14T16:59:00Z' }),
+      ]);
+      const outcome = await emailGatewayService.retryPendingAcknowledgements({ now: NOW });
+      expect(ack).toHaveBeenCalledWith(expect.objectContaining({ rfqTitle: 'Pumps', buyerName: undefined }));
+      expect(outcome.sent).toBe(2);
+    });
+
+    test('nothing pending', async () => {
+      jest.spyOn(emailGatewayQueries, 'listByStatus').mockResolvedValue([]);
+      await expect(emailGatewayService.retryPendingAcknowledgements()).resolves.toEqual({ sent: 0, abandoned: 0, stillPending: 0 });
+    });
+  });
+
+  describe('the buyer poll retries pending acknowledgements', () => {
+    beforeEach(() => {
+      jest.spyOn(mailerService, 'getGmailOAuthClient').mockReturnValue({});
+      const list = jest.fn().mockResolvedValue({ data: { messages: [] } });
+      jest.spyOn(googleapis.google, 'gmail').mockReturnValue({ users: { messages: { list, get: jest.fn(), modify: jest.fn() } } });
+    });
+
+    test('on the buyer inbox', async () => {
+      const retry = jest
+        .spyOn(emailGatewayService, 'retryPendingAcknowledgements')
+        .mockResolvedValue({ sent: 1, abandoned: 0, stillPending: 0 });
+      const result = await emailGatewayService.pollViaGmailApi(config());
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(result.acknowledgements).toEqual({ sent: 1, abandoned: 0, stillPending: 0 });
+    });
+
+    test('not on the vendor inbox', async () => {
+      const retry = jest.spyOn(emailGatewayService, 'retryPendingAcknowledgements');
+      await emailGatewayService.pollViaGmailApi({ ...config(), isVendorMailbox: true });
+      expect(retry).not.toHaveBeenCalled();
+    });
+
+    test('a retry failure never breaks the poll', async () => {
+      jest.spyOn(emailGatewayService, 'retryPendingAcknowledgements').mockRejectedValue(new Error('boom'));
+      const result = await emailGatewayService.pollViaGmailApi(config());
+      expect(result.skipped).toBe(false);
+      expect(result.acknowledgements).toBeNull();
+      expect(logger.error).toHaveBeenCalledWith('Retrying pending RFQ acknowledgements failed', expect.any(Error), 'EMAIL_GATEWAY');
+    });
+  });
+});
+
+describe('emailGatewayQueries.listByStatus', () => {
+  test('rows oldest first and capped; empty without a status, a store, or on error', async () => {
+    await expect(emailGatewayQueries.listByStatus('')).resolves.toEqual([]);
+    jest.spyOn(dbPool, 'hasStorage').mockReturnValue(false);
+    await expect(emailGatewayQueries.listByStatus('ACK_PENDING')).resolves.toEqual([]);
+
+    dbPool.hasStorage.mockReturnValue(true);
+    const rows = jest.spyOn(dbPool, 'rows').mockResolvedValueOnce([{ message_id: 'a' }]).mockRejectedValueOnce(new Error('down'));
+    await expect(emailGatewayQueries.listByStatus('ACK_PENDING', 500)).resolves.toEqual([{ message_id: 'a' }]);
+    expect(rows).toHaveBeenCalledWith(expect.stringContaining('order by processed_at asc'), ['ACK_PENDING', 50], { d1: true });
+    await expect(emailGatewayQueries.listByStatus('ACK_PENDING', 0)).resolves.toEqual([]);
+  });
+});
