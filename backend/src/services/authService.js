@@ -745,7 +745,7 @@ async function verifyOtp(email, code, ipAddress, mobile) {
  * Register a new user / enterprise entity. The only path that creates an account.
  */
 async function registerUser(payload, ipAddress) {
-  const { name, email, password, mobile, orgName, role, emailOtp, mobileOtp, code } = payload;
+  const { name, email, password, mobile, orgName, role, city, state, pincode, gstin, emailOtp, mobileOtp, code } = payload;
   if (!email) throw new Error(AUTH_MESSAGES.REGISTRATION_EMAIL_REQUIRED);
   if (!password) throw new Error(AUTH_MESSAGES.EMAIL_PASSWORD_REQUIRED);
   if (!mobile) throw new Error(AUTH_MESSAGES.MOBILE_REQUIRED);
@@ -843,6 +843,56 @@ async function registerUser(payload, ipAddress) {
 
   if (!result.created) {
     throw new Error(AUTH_MESSAGES.ACCOUNT_ALREADY_EXISTS);
+  }
+
+  if (isVendor) {
+    try {
+      const existingVendor = await storeService.getVendorByIdWithDBFallback(normalizedEmail, 'all');
+      if (!existingVendor) {
+        const vendorData = {
+          name: orgName || name,
+          brandName: orgName || name,
+          email: normalizedEmail,
+          phone: mobile,
+          contactPerson: name,
+          gst: gstin || '',
+          gstin: gstin || '',
+          city: city || '',
+          state: state || '',
+          pincode: pincode || '',
+          country: 'India',
+          location: [city, state && pincode ? `${state} ${pincode}` : state, 'India'].filter(Boolean).join(', '),
+          source: 'self_registration',
+          status: 'PREFERRED ENTERPRISE SUPPLIER',
+          subscriptionPlan: 'premium',
+          freeQuotationCredits: 3,
+          majorCategory: 'Mechanical & Fluid Equipment',
+          minorCategories: [],
+          vendorSelectedCategories: [],
+          clientMappedCategories: [],
+        };
+        const createdVendor = storeService.addVendor(vendorData, normalizedEmail);
+        if (createdVendor) {
+          await storeService.confirmVendorPersisted(createdVendor);
+        }
+      } else {
+        storeService.updateVendor(existingVendor.id, {
+          ...(gstin ? { gst: gstin, gstin } : {}),
+          ...(city ? { city } : {}),
+          ...(state ? { state } : {}),
+          ...(pincode ? { pincode } : {}),
+          ...(name ? { contactPerson: name } : {}),
+          ...(mobile ? { phone: mobile } : {}),
+          ...(orgName ? { name: orgName, brandName: orgName } : {}),
+        });
+      }
+    } catch (vendorSyncErr) {
+      logger.warn(
+        'Failed to sync vendor registration profile into storeService',
+        { error: vendorSyncErr.message, email: normalizedEmail },
+        'AUTH_SERVICE'
+      );
+    }
   }
 
   const newUser = {

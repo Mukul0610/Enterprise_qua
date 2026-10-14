@@ -55,6 +55,7 @@ export default function LoginPage() {
     setInitialSetupModalOpen,
     initialSetupCompleted,
     addBuyerAccount,
+    refreshFromDB,
   } = useApp();
 
   const [authTab, setAuthTab] = useState<'login' | 'register'>('login');
@@ -491,6 +492,10 @@ export default function LoginPage() {
         setActiveSubscription('free_trial');
         setRemainingFreeRFQs(5);
         setInitialSetupModalOpen(true);
+      } else if (selectedRegRole === 'vendor') {
+        if (typeof refreshFromDB === 'function') {
+          void refreshFromDB();
+        }
       }
 
       showToast(

@@ -186,11 +186,11 @@ export default function VendorProfilePage() {
         setBrandName(v.brandName || '');
         if (v.orgType) setOrgType(v.orgType);
         setPanNumber(v.pan || '');
-        setGstNumber(v.gst || '');
+        setGstNumber(v.gst || v.gstin || '');
         setMsmeNumber(v.msme || '');
         setWebsite(v.website || '');
         setAnnualTurnover(v.annualTurnover || '');
-        setFactoryAddress(v.factoryAddress || '');
+        setFactoryAddress(v.factoryAddress || v.address || '');
         setCity(v.city || '');
         setState(v.state || '');
         setPincode(v.pincode || '');
@@ -198,7 +198,7 @@ export default function VendorProfilePage() {
         setContactName(v.contactPerson || '');
         setContactDesignation(v.contactDesignation || '');
         setContactEmail(email);
-        setContactPhone(v.phone || '');
+        setContactPhone(v.phone || v.mobile || '');
         setLoadedClientCats(v.clientMappedCategories || []);
 
         const { majors, minorMap } = groupMinorCategories(v.vendorSelectedCategories || []);

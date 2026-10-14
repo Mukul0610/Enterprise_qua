@@ -995,15 +995,54 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
         ? targetRfq.lineItems
         : [];
   const itemCount = rfqItems.length;
-  const extraction = await geminiService.extractQuotationFromEmail(
-    {
-      bodyText: message.bodyText || message.textBody || message.text,
-      subject: message.subject,
-      fromAddress: message.fromAddress,
-      attachments: message.attachments || [],
-    },
-    targetRfq
-  );
+  let extraction = null;
+  try {
+    extraction = await geminiService.extractQuotationFromEmail(
+      {
+        bodyText: message.bodyText || message.textBody || message.text,
+        subject: message.subject,
+        fromAddress: message.fromAddress,
+        attachments: message.attachments || [],
+      },
+      targetRfq
+    );
+  } catch (extractErr) {
+    logger.error('AI quotation extraction failed with error', extractErr, 'EMAIL_GATEWAY');
+    extraction = null;
+  }
+
+  if (!extraction) {
+    logger.warn(
+      `Vendor quote from ${vendorRecord.name} for RFQ ${targetRfq.rfqNumber} failed AI extraction`,
+      { rfqNumber: targetRfq.rfqNumber, vendorId: vendorRecord.id, fromAddress: message.fromAddress },
+      'EMAIL_GATEWAY'
+    );
+
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.QUOTE_FAILURE,
+      () =>
+        mailerService.sendQuoteFailureEmail(message.fromAddress, {
+          rfqNumber: targetRfq.rfqNumber,
+          rfqTitle: targetRfq.title,
+          vendorName: vendorRecord.name,
+          reason: 'Quotation parsing failed due to AI extraction errors. Please ensure all quotation parameters are clearly stated.',
+          missingFields: ['Quotation Details / AI Extraction'],
+          cc: ccList.length > 0 ? ccList.join(', ') : (buyerEmail || undefined),
+        }),
+      { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor quote failure email' }
+    );
+
+    return {
+      status: INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED,
+      detail: EMAIL_GATEWAY_MESSAGES.QUOTE_VALIDATION_FAILED_DETAIL
+        .replace('{rfqNumber}', targetRfq.rfqNumber)
+        .replace('{vendorName}', vendorRecord.name)
+        .replace('{reason}', 'AI extraction error'),
+      message,
+      rfq: targetRfq,
+    };
+  }
 
   const rfqQty = rfqItems.reduce((acc, it) => acc + (Number(it.quantity) || 1), 0) || 1;
 
@@ -1199,7 +1238,6 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
         rfqTitle: targetRfq.title,
         vendorName: vendorRecord.name,
         quote,
-        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
       }),
     { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor quote acknowledgement email' }
   );

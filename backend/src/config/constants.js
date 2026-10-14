@@ -941,16 +941,29 @@ const BUYER_SUBSCRIPTION_TO_SOURCING_MODE = {
  * @returns {string} Sourcing mode ('mode_0' | 'mode_1' | 'mode_2' | 'mode_3')
  */
 function resolveBuyerSourcingMode(buyerAccountOrPlan) {
-  const plan =
-    typeof buyerAccountOrPlan === 'object' && buyerAccountOrPlan !== null
-      ? buyerAccountOrPlan.subscriptionPlan
-      : buyerAccountOrPlan;
+  let plan = null;
+  let remainingFreeRFQs = undefined;
 
+  if (typeof buyerAccountOrPlan === 'object' && buyerAccountOrPlan !== null) {
+    plan = buyerAccountOrPlan.subscriptionPlan;
+    remainingFreeRFQs = buyerAccountOrPlan.remainingFreeRFQs;
+  } else if (typeof buyerAccountOrPlan === 'string') {
+    plan = buyerAccountOrPlan;
+  }
+
+  // 1. Subscription-based version assignment takes priority:
+  // V1 for V1 subscribers, V2 for V2 subscribers, V3 for V3 subscribers, V0 for V0 subscribers.
   if (typeof plan === 'string') {
     const normalized = plan.trim().toLowerCase();
     if (BUYER_SUBSCRIPTION_TO_SOURCING_MODE[normalized]) {
       return BUYER_SUBSCRIPTION_TO_SOURCING_MODE[normalized];
     }
+  }
+
+  // 2. For buyers without a subscription (free trial / no active plan):
+  // Assign V2 for the first 5 free RFQs and switch to V0 after free credits are exhausted.
+  if (remainingFreeRFQs !== undefined && Number(remainingFreeRFQs) <= 0) {
+    return 'mode_0';
   }
 
   return EMAIL_GATEWAY_CONFIG.INGESTED_SOURCING_MODE || 'mode_2';

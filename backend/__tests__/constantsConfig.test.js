@@ -307,6 +307,19 @@ describe('resolveBuyerSourcingMode', () => {
       expect(resolveBuyerSourcingMode(value)).toBe('mode_2');
     }
   });
+
+  test('prioritizes active subscription over remaining free RFQ credits', () => {
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'version_1', remainingFreeRFQs: 0 })).toBe('mode_1');
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'version_2', remainingFreeRFQs: 0 })).toBe('mode_2');
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'version_3', remainingFreeRFQs: 0 })).toBe('mode_3');
+  });
+
+  test('for buyers without a subscription, assigns mode_2 for free credits and switches to mode_0 when exhausted', () => {
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'free_trial', remainingFreeRFQs: 5 })).toBe('mode_2');
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'free_trial', remainingFreeRFQs: 1 })).toBe('mode_2');
+    expect(resolveBuyerSourcingMode({ subscriptionPlan: 'free_trial', remainingFreeRFQs: 0 })).toBe('mode_0');
+    expect(resolveBuyerSourcingMode({ remainingFreeRFQs: 0 })).toBe('mode_0');
+  });
 });
 
 describe('formatMessage', () => {

@@ -16,7 +16,22 @@ describe('Evaluation Service & Scoring Math', () => {
       const ranked = evaluateQuotes(quotes);
       expect(ranked[1].isBestPrice).toBe(true);
       expect(ranked[0].isBestPrice).toBe(false);
+      expect(ranked[1].rankLabel).toBe('L1');
+      expect(ranked[0].rankLabel).toBe('L2');
+      expect(ranked[2].rankLabel).toBe('L3');
       expect(ranked[1].aiMatchScore).toBeGreaterThan(ranked[2].aiMatchScore);
+    });
+
+    test('assigns L1, L2 ranking in ascending order based on comparable total including taxes and charges', () => {
+      const quotes = [
+        { vendorName: 'Vendor A', unitPrice: 50000, totalPrice: 50000000, taxes: 9000000, deliveryCharges: 0 },
+        { vendorName: 'Vendor B', unitPrice: 1000, totalPrice: 1000000, taxes: 0, deliveryCharges: 0 },
+      ];
+      const ranked = evaluateQuotes(quotes);
+      expect(ranked[1].rankLabel).toBe('L1');
+      expect(ranked[1].isBestPrice).toBe(true);
+      expect(ranked[0].rankLabel).toBe('L2');
+      expect(ranked[0].isBestPrice).toBe(false);
     });
 
     test('handles empty quotes array gracefully', () => {

@@ -257,19 +257,18 @@ describe('the buyer is told when no RFQ was created', () => {
 });
 
 describe('free trial credits are enforced the same way as on the portal', () => {
-  test('a free trial with no credits left is refused and told why', async () => {
+  test('a free trial with no credits left switches to V0 and is ingested as a V0 RFQ', async () => {
     storeService.getBuyerAccountByEmail.mockReturnValue(buyerAccount({ remainingFreeRFQs: 0 }));
     mockExtraction();
-    const create = jest.spyOn(storeService, 'createRFQ');
+    const create = jest.spyOn(storeService, 'createRFQ').mockReturnValue({ id: 'rfq-v0', rfqNumber: 'RFQ-V0-1' });
 
     const result = await emailGatewayService.processMessage(raw(), config());
 
-    expect(result.status).toBe(INGESTION_OUTCOME.RFQ_CREDITS_EXHAUSTED);
-    expect(result.detail).toBe(
-      EMAIL_GATEWAY_MESSAGES.RFQ_CREDITS_EXHAUSTED_DETAIL.replace('{remaining}', '0').replace('{needed}', '1')
+    expect(result.status).toBe(INGESTION_OUTCOME.INGESTED);
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ sourcingMode: 'mode_0' }),
+      expect.anything()
     );
-    expect(create).not.toHaveBeenCalled();
-    expect(notice).toHaveBeenCalledWith(expect.objectContaining({ reason: 'CREDITS_EXHAUSTED' }));
   });
 
   test('an email needing more RFQs than the credits left is refused as a whole', async () => {

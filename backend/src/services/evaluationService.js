@@ -10,13 +10,38 @@
 function evaluateQuotes(quotes = []) {
   if (!Array.isArray(quotes) || quotes.length === 0) return [];
 
-  // Find lowest price
-  const validPrices = quotes.map((q) => Number(q.totalPrice || q.unitPrice || 0)).filter((p) => p > 0);
+  // Comparable total quotation amount including applicable taxes and charges
+  const getComparableAmount = (q) => {
+    const base = Number(q.totalPrice) > 0 ? Number(q.totalPrice) : Number(q.unitPrice || 0);
+    const taxes = Number(q.taxes || 0);
+    const delivery = Number(q.deliveryCharges || 0);
+    return base + taxes + delivery;
+  };
+
+  const validPrices = quotes.map(getComparableAmount).filter((p) => p > 0);
   const minPrice = validPrices.length > 0 ? Math.min(...validPrices) : 0;
 
-  return quotes.map((q) => {
-    const currentPrice = Number(q.totalPrice || q.unitPrice || 0);
+  // Rank in ascending order of comparable total quotation amount (L1 = lowest price, L2 = 2nd lowest)
+  const sortedQuotes = [...quotes].sort((a, b) => {
+    const diff = getComparableAmount(a) - getComparableAmount(b);
+    if (diff !== 0) return diff;
+    return (Number(a.leadTimeDays) || 0) - (Number(b.leadTimeDays) || 0);
+  });
+
+  const quoteRanks = new Map();
+  sortedQuotes.forEach((q, idx) => {
+    const key = q.vendorId || q.id || q.vendorName || String(idx);
+    quoteRanks.set(key, {
+      rank: idx + 1,
+      rankLabel: `L${idx + 1}`,
+    });
+  });
+
+  return quotes.map((q, idx) => {
+    const currentPrice = getComparableAmount(q);
     const isBestPrice = currentPrice === minPrice && minPrice > 0;
+    const key = q.vendorId || q.id || q.vendorName || String(idx);
+    const rankInfo = quoteRanks.get(key) || { rank: 1, rankLabel: 'L1' };
 
     // Price Score: Inverse ratio to minimum price
     const priceScore = currentPrice > 0 ? Math.min(100, Math.round((minPrice / currentPrice) * 100)) : 80;
@@ -38,6 +63,9 @@ function evaluateQuotes(quotes = []) {
     return {
       ...q,
       isBestPrice,
+      rank: rankInfo.rank,
+      rankLabel: rankInfo.rankLabel,
+      comparableTotal: currentPrice,
       aiMatchScore,
       scoreBreakdown: {
         price: { score: priceScore, weighted: priceWeight, maxWeight: 45 },

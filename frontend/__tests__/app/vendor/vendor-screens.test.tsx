@@ -483,10 +483,6 @@ describe('Vendor Screens Comprehensive Suite', () => {
         '/api/vendors/v-mock-apex/payment-link',
         expect.objectContaining({ method: 'POST', body: JSON.stringify({ plan: 'connect' }) })
       );
-
-      // Reset Quota Counter — unrelated to payment, still switches instantly.
-      const resetBtn = screen.getByRole('button', { name: /Reset Quota Counter/i });
-      fireEvent.click(resetBtn);
       authClient.setSession(null);
     });
 

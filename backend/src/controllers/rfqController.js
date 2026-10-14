@@ -62,6 +62,15 @@ const ATTACHMENT_ERRORS = {
   WRITE_FAILED: 'The document could not be stored. Try again, and if it persists the storage volume may be full.',
 };
 
+async function resolveVendorForUser(user) {
+  if (!user || !user.email) return null;
+  let vendor = storeService.getVendorById(user.email, 'all');
+  if (!vendor) {
+    vendor = await storeService.getVendorByIdWithDBFallback(user.email, 'all');
+  }
+  return vendor || null;
+}
+
 /**
  * Which RFQs a caller may see.
  *
@@ -80,12 +89,7 @@ async function resolveRfqReadScope(req) {
     return { role, restricted: true, buyerAccountId: account ? account.id : null };
   }
   if (role === 'vendor') {
-    // 'all': resolving the caller's own vendor identity by session email, not
-    // filtering a buyer-scoped list — getVendorById otherwise refuses to
-    // resolve any vendor that has a buyerId set (i.e. every buyer-uploaded
-    // vendor), which silently made every RFQ invisible to them regardless of
-    // addedByBuyerCompany matching or being invited.
-    const vendor = storeService.getVendorById(req.user.email, 'all');
+    const vendor = await resolveVendorForUser(req.user);
     return { role, restricted: true, vendor: vendor || null };
   }
   return { role, restricted: false };
@@ -99,10 +103,38 @@ async function resolveRfqReadScope(req) {
  * "not found" covers both, so a caller can't enumerate other parties' RFQ ids.
  * CM/admin are unrestricted.
  */
+function canVendorViewRfq(vendor, rfq) {
+  if (!vendor || !rfq) return false;
+  if (storeService.vendorCoversRFQ(vendor, rfq)) return true;
+
+  const mode = String(rfq.sourcingMode || '').trim().toLowerCase();
+  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+  const isV2 = mode === 'mode_2' || mode === 'v2' || mode === 'version_2';
+
+  if (storeService.isProcucevVendor(vendor)) {
+    if (isV0 || isV2) {
+      const signals = storeService._rfqCategorySignals(rfq);
+      if (signals.length > 0 && signals.some((c) => storeService.vendorCoversCategory(vendor, c))) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Whether the caller may read or write this specific RFQ.
+ *
+ * A buyer requesting an RFQ outside their own account, or a vendor requesting
+ * one outside their category, gets the same 404 as an id that doesn't exist —
+ * "not found" covers both, so a caller can't enumerate other parties' RFQ ids.
+ * CM/admin are unrestricted.
+ */
 async function canAccessRfq(req, rfq) {
   const scope = await resolveRfqReadScope(req);
   if (!scope.restricted) return true;
-  if (scope.role === 'vendor') return storeService.vendorCoversRFQ(scope.vendor, rfq);
+  if (scope.role === 'vendor') return canVendorViewRfq(scope.vendor, rfq);
   return !!scope.buyerAccountId && rfq.buyerAccountId === scope.buyerAccountId;
 }
 
@@ -156,7 +188,7 @@ function applyQuotesVisibility(rfq, role) {
 function scopedRfqList(scope) {
   const all = storeService.getRFQs();
   if (!scope.restricted) return all;
-  if (scope.role === 'vendor') return all.filter((rfq) => storeService.vendorCoversRFQ(scope.vendor, rfq));
+  if (scope.role === 'vendor') return all.filter((rfq) => canVendorViewRfq(scope.vendor, rfq));
   const buyerRfqs = all.filter((rfq) => !!scope.buyerAccountId && rfq.buyerAccountId === scope.buyerAccountId);
   return buyerRfqs.map((rfq) => applyQuotesVisibility(rfq, scope.role));
 }
@@ -960,7 +992,7 @@ async function uploadQuoteAttachment(req, res, next) {
       return res.status(403).json({ success: false, error: 'Only vendors can attach bid documents.' });
     }
     const rfq = await storeService.getRFQByIdAsync(req.params.id);
-    const vendor = storeService.getVendorById(req.user.email, 'all');
+    const vendor = await resolveVendorForUser(req.user);
     if (!rfq || !(await canAccessRfq(req, rfq)) || !vendor) {
       return res.status(404).json({ success: false, error: 'RFQ or vendor profile not found.' });
     }
@@ -1008,7 +1040,7 @@ async function downloadQuoteAttachment(req, res, next) {
     }
 
     if (req.user?.role === 'vendor') {
-      const vendor = storeService.getVendorById(req.user.email, 'all');
+      const vendor = await resolveVendorForUser(req.user);
       if (!vendor || quote.vendorId !== vendor.id) {
         return res.status(404).json({ success: false, error: 'Document not found.' });
       }
@@ -1136,7 +1168,7 @@ async function addQuote(req, res, next) {
     }
     // 'all': resolving the caller's own vendor identity, not a buyer-scoped
     // list — see resolveRfqReadScope above for why the scope arg matters.
-    const vendorRecord = storeService.getVendorById(req.user.email, 'all');
+    const vendorRecord = await resolveVendorForUser(req.user);
     if (!vendorRecord) {
       return res.status(400).json({ success: false, error: 'Create your vendor profile before submitting a quote.' });
     }
@@ -1267,7 +1299,7 @@ async function downloadRFQ(req, res, next) {
     }
 
     if (req.user && req.user.role === 'vendor') {
-      const requestingVendor = storeService.getVendorById(req.user.email, 'all');
+      const requestingVendor = await resolveVendorForUser(req.user);
       if (!requestingVendor) {
         return res.status(400).json({ success: false, error: 'Vendor profile not found.' });
       }
@@ -1285,7 +1317,7 @@ async function downloadRFQ(req, res, next) {
         });
       }
 
-      const vendor = storeService.getVendorById(requestingVendor.id, 'all');
+      const vendor = (await resolveVendorForUser(req.user)) || requestingVendor;
       const emailPayload = generateStandardRFQEmail(rfq, vendor);
       return res.json({
         success: true,
@@ -1317,7 +1349,7 @@ async function generateEmailPreview(req, res, next) {
     }
 
     if (req.user && req.user.role === 'vendor') {
-      const requestingVendor = storeService.getVendorById(req.user.email, 'all');
+      const requestingVendor = await resolveVendorForUser(req.user);
       if (requestingVendor) {
         const used = requestingVendor.rfqDownloadsUsed || 0;
         storeService.updateVendor(requestingVendor.id, { rfqDownloadsUsed: used + 1 });

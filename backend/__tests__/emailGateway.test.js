@@ -2993,6 +2993,7 @@ describe('emailGatewayService.processVendorQuoteMessage branch coverage', () => 
     expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_INGESTED);
     expect(result.quote.unitPrice).toBe(2500);
     expect(ackSpy).toHaveBeenCalled();
+    expect(ackSpy.mock.calls[0][1].cc).toBeUndefined();
     expect(buyerSpy).toHaveBeenCalled();
   });
 
@@ -3088,6 +3089,27 @@ describe('emailGatewayService.processVendorQuoteMessage branch coverage', () => 
 
     expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED);
     expect(failSpy).toHaveBeenCalled();
+    const buyerEmail = storeService.resolveBuyerEmailForRFQ(rfq);
+    if (buyerEmail) {
+      expect(failSpy.mock.calls[0][1].cc).toContain(buyerEmail);
+    }
+  });
+
+  test('sends quote failure email with buyer CC when AI extraction throws an error', async () => {
+    const rfq = simpleRfq({ id: 'rfq-direct-extract-err', rfqNumber: 'RFQ-DIRECT-ERR', raisedByEmail: 'buyer-lead@corp.com' });
+    storeService.rfqs = [rfq];
+    const vendor = { id: 'vd-extract-err', name: 'Err Vendor', email: 'err@suppliers.com', freeQuotationCredits: 5, quotedRfqIds: [] };
+    storeService.vendors = [vendor];
+
+    jest.spyOn(geminiService, 'extractQuotationFromEmail').mockRejectedValue(new Error('AI extraction failed'));
+    const failSpy = jest.spyOn(mailerService, 'sendQuoteFailureEmail').mockResolvedValue({ sent: true });
+
+    const message = { fromAddress: vendor.email, subject: 'Re: RFQ-DIRECT-ERR', bodyText: 'Here is bid' };
+    const result = await emailGatewayService.processVendorQuoteMessage(message, rfq, vendor);
+
+    expect(result.status).toBe(INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED);
+    expect(failSpy).toHaveBeenCalled();
+    expect(failSpy.mock.calls[0][1].cc).toContain('buyer.direct@corp.com');
   });
 });
 

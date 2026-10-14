@@ -4,7 +4,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useApp } from '@/lib/store';
 import { SubscriptionPaymentModal } from '@/app/components/Modals';
 import { authClient } from '@/lib/authClient';
-import { ShieldCheck, Check, Zap, Layers, AlertCircle, RefreshCw, Download, Package, ArrowRight } from 'lucide-react';
+import { ShieldCheck, Check, Zap, Layers, AlertCircle, Download, Package, ArrowRight } from 'lucide-react';
 
 export default function VendorSubscriptionCenter() {
   const {
@@ -111,11 +111,6 @@ export default function VendorSubscriptionCenter() {
     setPendingPayment({ planId: plan, planName: planLabel(plan), price });
   };
 
-  const handleResetQuota = () => {
-    setVendorRfqDownloadsUsed(0);
-    showToast('Download Quota Reset', 'Quarterly download quota counter reset to 0.', 'info');
-  };
-
   const getMaxQuota = () => {
     if (vendorSubscription === 'connect') return 50;
     if (vendorSubscription === 'select') return 100;
@@ -205,12 +200,6 @@ export default function VendorSubscriptionCenter() {
         <p className="max-w-3xl text-xs leading-relaxed text-slate-500 dark:text-gray-400">
           Compare vendor access tiers, quotation quotas, and catalogue features.
         </p>
-        <button
-          onClick={handleResetQuota}
-          className="btn btn-secondary btn-sm flex items-center gap-1 shrink-0 text-xs"
-        >
-          <RefreshCw size={12} /> Reset Quota Counter (Demo)
-        </button>
       </div>
 
       {/* Active Subscription Status Banner */}

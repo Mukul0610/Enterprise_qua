@@ -92,6 +92,15 @@ export function getLastHistoricalDataError(): string | null {
  * carries no estimated value, exactly as `RFQItem.budget` documents.
  */
 function buildOpportunityFromRFQ(rfq: RFQItem): VendorOpportunity {
+  const mode = String(rfq.sourcingMode || '').toLowerCase();
+  const isNetwork =
+    mode === 'mode_3' ||
+    mode === 'v3' ||
+    mode === 'version_3' ||
+    mode === 'mode_0' ||
+    mode === 'v0' ||
+    mode === 'version_0';
+
   return {
     id: `opp-${rfq.id}`,
     rfqNumber: rfq.rfqNumber,
@@ -100,7 +109,7 @@ function buildOpportunityFromRFQ(rfq: RFQItem): VendorOpportunity {
     buyerAccountId: rfq.buyerAccountId,
     deadline: rfq.targetDeliveryDate || '',
     daysRemaining: daysUntilDate(rfq.targetDeliveryDate),
-    type: rfq.sourcingMode === 'mode_3' ? 'network_marketplace' : 'direct_invitation',
+    type: isNetwork ? 'network_marketplace' : 'direct_invitation',
     estimatedValue: rfq.budget > 0 ? formatCurrency(rfq.budget) : undefined,
     deliveryLocation: rfq.deliveryLocation || '',
     status: rfq.quotes && rfq.quotes.length > 0 ? 'under_review' : 'pending_bid',

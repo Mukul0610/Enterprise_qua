@@ -225,9 +225,12 @@ async function getVendorById(req, res, next) {
       user.role === 'vendor' &&
       user.email &&
       id &&
-      id.toLowerCase() === user.email.toLowerCase()
+      (id.toLowerCase() === user.email.toLowerCase() ||
+        (storeService.getVendorById(id, 'all') &&
+          storeService.getVendorById(id, 'all').email &&
+          storeService.getVendorById(id, 'all').email.toLowerCase() === user.email.toLowerCase()))
     ) {
-      // A vendor looking up their own record by their own email. Without
+      // A vendor looking up their own record by their own email or vendor ID. Without
       // this, storeService.getVendorById's ownership scoping (only ever
       // populated for the 'buyer' role above) requires a scope to return
       // ANY vendor a buyer has uploaded — which every buyer-uploaded vendor

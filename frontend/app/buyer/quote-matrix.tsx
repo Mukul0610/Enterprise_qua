@@ -76,6 +76,34 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
 
   const quotes = currentRFQ.quotes || [];
 
+  // Comparable total quotation amount including applicable taxes and charges
+  const getComparableAmount = (q: QuoteComparison): number => {
+    const totalQty = (currentRFQ?.extractedEntities || []).reduce(
+      (acc: number, it: any) => acc + (Number(it.quantity) || 1),
+      0
+    ) || 1;
+    const base = Number(q.totalPrice) > 0 ? Number(q.totalPrice) : (Number(q.unitPrice) || 0) * totalQty;
+    const taxes = Number(q.taxes) || 0;
+    const delivery = Number(q.deliveryCharges) || 0;
+    return base + taxes + delivery;
+  };
+
+  // Rank in ascending order of comparable total quotation amount (L1 = lowest price, L2 = 2nd lowest)
+  const sortedQuotesForRanking = [...quotes].sort((a, b) => {
+    const diff = getComparableAmount(a) - getComparableAmount(b);
+    if (diff !== 0) return diff;
+    return (Number(a.leadTimeDays) || 0) - (Number(b.leadTimeDays) || 0);
+  });
+
+  const vendorRankMap = new Map<string, { rank: number; label: string; comparableTotal: number }>();
+  sortedQuotesForRanking.forEach((q, idx) => {
+    vendorRankMap.set(q.vendorId, {
+      rank: idx + 1,
+      label: `L${idx + 1}`,
+      comparableTotal: getComparableAmount(q),
+    });
+  });
+
   const handleSelectVendor = (quote: QuoteComparison) => {
     setSelectedVendorForPO(quote);
     setPoModalOpen(true);
@@ -270,15 +298,29 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                           )}
                         </div>
                       </div>
-                      <div className="text-[11px] text-slate-500 dark:text-gray-400 mt-1 flex items-center gap-1.5">
+                      <div className="text-[11px] text-slate-500 dark:text-gray-400 mt-1 flex items-center gap-1.5 flex-wrap">
                         <span className="px-2 py-0.5 rounded bg-slate-200 dark:bg-gray-800 text-[10px] text-slate-700 dark:text-gray-300 font-semibold">
                           {quote.vendorCategory}
                         </span>
-                        {quote.isBestPrice && (
-                          <span className="px-2 py-0.5 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 font-bold text-[10px] border border-emerald-300 dark:border-emerald-800">
-                            Best Price
-                          </span>
-                        )}
+                        {(() => {
+                          const r = vendorRankMap.get(quote.vendorId);
+                          const isL1 = r ? r.rank === 1 : quote.isBestPrice;
+                          const label = r ? r.label : (isL1 ? 'L1' : '');
+                          if (!label) return null;
+                          return (
+                            <span
+                              className={`px-2 py-0.5 rounded font-extrabold text-[10px] border flex items-center gap-1 ${
+                                isL1
+                                  ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                                  : r?.rank === 2
+                                  ? 'bg-blue-100 dark:bg-blue-950 text-blue-800 dark:text-blue-300 border-blue-300 dark:border-blue-800'
+                                  : 'bg-slate-100 dark:bg-gray-800 text-slate-700 dark:text-gray-300 border-slate-300 dark:border-gray-700'
+                              }`}
+                            >
+                              {label}{isL1 ? ' • Best Price' : ''}
+                            </span>
+                          );
+                        })()}
                       </div>
                     </th>
                   ))}
@@ -291,24 +333,28 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                   <td className="p-4 font-bold text-slate-800 dark:text-gray-200 flex items-center gap-2">
                     <IndianRupee size={15} className="text-emerald-600 dark:text-emerald-400" /> Unit Price (₹)
                   </td>
-                  {quotes.map((q) => (
-                    <td
-                      key={q.vendorId}
-                      className={`p-4 ${q.isPreferred ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-x-2 border-indigo-600 dark:border-indigo-500' : ''}`}
-                    >
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-lg font-black text-slate-900 dark:text-white mono">
-                          {formatCurrency(q.unitPrice)}
-                        </span>
-                        {q.isBestPrice && (
-                          <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5">
-                            <TrendingDown size={12} /> Lowest
+                  {quotes.map((q) => {
+                    const r = vendorRankMap.get(q.vendorId);
+                    const isL1 = r ? r.rank === 1 : q.isBestPrice;
+                    return (
+                      <td
+                        key={q.vendorId}
+                        className={`p-4 ${q.isPreferred ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-x-2 border-indigo-600 dark:border-indigo-500' : ''}`}
+                      >
+                        <div className="flex items-baseline gap-2">
+                          <span className="text-lg font-black text-slate-900 dark:text-white mono">
+                            {formatCurrency(q.unitPrice)}
                           </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-400 dark:text-gray-500">Total: {formatCurrency(q.totalPrice)}</span>
-                    </td>
-                  ))}
+                          {isL1 && (
+                            <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-0.5">
+                              <TrendingDown size={12} /> Lowest
+                            </span>
+                          )}
+                        </div>
+                        <span className="text-[10px] text-slate-400 dark:text-gray-500">Total: {formatCurrency(q.totalPrice)}</span>
+                      </td>
+                    );
+                  })}
                 </tr>
 
                 {/* Lead Time */}
@@ -469,11 +515,23 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                     >
                       <div className="flex items-center justify-between gap-1">
                         <span className="font-extrabold text-slate-900 dark:text-white truncate">{quote.vendorName}</span>
-                        {quote.isBestPrice && (
-                          <span className="px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold border border-emerald-300 dark:border-emerald-800">
-                            Overall L1
-                          </span>
-                        )}
+                        {(() => {
+                          const r = vendorRankMap.get(quote.vendorId);
+                          const isL1 = r ? r.rank === 1 : quote.isBestPrice;
+                          const label = r ? (isL1 ? 'OVERALL L1' : r.label) : (isL1 ? 'OVERALL L1' : '');
+                          if (!label) return null;
+                          return (
+                            <span
+                              className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${
+                                isL1
+                                  ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                                  : 'bg-slate-100 dark:bg-gray-800 text-slate-700 dark:text-gray-300 border-slate-300 dark:border-gray-700'
+                              }`}
+                            >
+                              {label}
+                            </span>
+                          );
+                        })()}
                       </div>
                       <div className="text-[9px] font-normal text-slate-400 dark:text-gray-500 normal-case mt-0.5">
                         DPS Breakdown (Rate | Total | Tax | Terms)
@@ -489,12 +547,17 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                     const matched =
                       items.find((li) => li.lineItemId === item.id) ||
                       items.find((li) => (li.itemName || '').trim().toLowerCase() === (item.itemName || '').trim().toLowerCase());
-                    return { quote, matched };
+                    const effectivePrice =
+                      matched && typeof matched.unitPrice === 'number' && matched.unitPrice > 0
+                        ? matched.unitPrice
+                        : typeof quote.unitPrice === 'number' && quote.unitPrice > 0
+                        ? quote.unitPrice
+                        : null;
+                    return { quote, matched, effectivePrice };
                   });
                   const realPrices = prices
-                    .filter((p) => p.matched && typeof p.matched.unitPrice === 'number')
-                    .map((p) => p.matched!.unitPrice)
-                    .filter((p) => p > 0);
+                    .map((p) => p.effectivePrice)
+                    .filter((p): p is number => typeof p === 'number' && p > 0);
                   const lowestPrice = realPrices.length > 0 ? Math.min(...realPrices) : null;
 
                   return (
@@ -508,8 +571,8 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                       <td className="px-3 py-3 text-center mono font-medium text-slate-700 dark:text-gray-300">
                         {item.quantity} {item.unit || 'Nos'}
                       </td>
-                      {prices.map(({ quote, matched }) => {
-                        const isL1 = matched && lowestPrice !== null && matched.unitPrice === lowestPrice;
+                      {prices.map(({ quote, matched, effectivePrice }) => {
+                        const isL1 = effectivePrice !== null && lowestPrice !== null && effectivePrice === lowestPrice;
                         const lineTotal = matched ? matched.totalPrice || matched.unitPrice * (item.quantity || 1) : null;
                         const taxRate = (quote as any).taxRate || (quote.taxes ? 18 : 18);
                         const estTax = lineTotal ? Math.round((lineTotal * taxRate) / 100) : null;
@@ -555,11 +618,18 @@ export default function QuoteMatrix({ onBackToDashboard, scopeToOwnBuyerAccount 
                               </div>
                             ) : (
                               <div className="space-y-1">
-                                <div className="flex items-baseline gap-1">
-                                  <span className="text-slate-400 dark:text-gray-500 mono text-xs">
-                                    {formatCurrency(quote.unitPrice)}
-                                  </span>
-                                  <span className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">(not itemized)</span>
+                                <div className="flex items-baseline justify-between gap-1">
+                                  <div className="flex items-baseline gap-1">
+                                    <span className={`mono text-xs ${isL1 ? 'font-bold text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-gray-500'}`}>
+                                      {formatCurrency(quote.unitPrice)}
+                                    </span>
+                                    <span className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">(not itemized)</span>
+                                  </div>
+                                  {isL1 && (
+                                    <span className="px-1.5 py-0.2 rounded bg-emerald-100 dark:bg-emerald-950 text-emerald-800 dark:text-emerald-300 text-[9px] font-bold border border-emerald-300 dark:border-emerald-800 flex items-center gap-0.5">
+                                      <TrendingDown size={9} /> L1 Lowest
+                                    </span>
+                                  )}
                                 </div>
                                 <div className="text-[10px] text-slate-400 dark:text-gray-500 flex items-center justify-between">
                                   <span>Blended Total:</span>

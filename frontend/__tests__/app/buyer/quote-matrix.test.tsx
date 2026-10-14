@@ -133,6 +133,8 @@ describe('QuoteMatrix Component Tests', () => {
     expect(screen.getByText(/Apex Supplies Ltd./i)).toBeInTheDocument();
     expect(screen.getByText(/Kiran Valve Industries/i)).toBeInTheDocument();
     expect(screen.getByText(formatCurrency(85000))).toBeInTheDocument();
+    expect(screen.getByText(/L1 • Best Price/i)).toBeInTheDocument();
+    expect(screen.getByText('L2')).toBeInTheDocument();
   });
 
   test('renders a line-item-wise comparison row per RFQ item, highlighting the lowest real price, and downloads an Excel file', () => {

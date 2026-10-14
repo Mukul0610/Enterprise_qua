@@ -77,15 +77,32 @@ async function verifyOtp(req, res, next) {
 
 async function register(req, res, next) {
   try {
-    const { name, email, password, mobile, role, orgName, emailOtp, mobileOtp, code } = req.body || {};
+    const { name, email, password, mobile, role, orgName, city, state, pincode, gstin, emailOtp, mobileOtp, code } = req.body || {};
     const ipAddress = getClientIp(req);
 
-    const { isValid, errors } = validatePayload(VALIDATION_SCHEMAS.register, { name, email, password, mobile, role, orgName, emailOtp, mobileOtp, code });
+    const { isValid, errors } = validatePayload(VALIDATION_SCHEMAS.register, {
+      name,
+      email,
+      password,
+      mobile,
+      role,
+      orgName,
+      city,
+      state,
+      pincode,
+      gstin,
+      emailOtp,
+      mobileOtp,
+      code,
+    });
     if (!isValid) {
       return res.status(400).json({ success: false, error: Object.values(errors)[0] });
     }
 
-    const result = await authService.registerUser({ name, email, password, mobile, role, orgName, emailOtp, mobileOtp, code }, ipAddress);
+    const result = await authService.registerUser(
+      { name, email, password, mobile, role, orgName, city, state, pincode, gstin, emailOtp, mobileOtp, code },
+      ipAddress
+    );
     res.status(201).json(result);
   } catch (err) {
     logger.warn(
