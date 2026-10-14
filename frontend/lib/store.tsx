@@ -1220,7 +1220,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     // Update in buyerVendors list
     setBuyerVendors((prev) =>
       prev.map((v) => {
-        if (v.email.toLowerCase() === email.toLowerCase() || v.name.toLowerCase().includes('apex')) {
+        const vEmail = (v.email || '').toLowerCase();
+        const targetEmail = (email || '').toLowerCase();
+        const vName = (v.name || '').toLowerCase();
+        if ((vEmail && targetEmail && vEmail === targetEmail) || (vName && vName.includes('apex'))) {
           return {
             ...v,
             clientMappedCategories: clientCats,
@@ -1271,16 +1274,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
 
     setBuyerVendors((prev) =>
-      prev.map((v) =>
-        v.email.toLowerCase() === vendorEmail.toLowerCase()
+      prev.map((v) => {
+        const vEmail = (v.email || '').toLowerCase();
+        const targetEmail = (vendorEmail || '').toLowerCase();
+        return (vEmail && targetEmail && vEmail === targetEmail)
           ? {
               ...v,
               profileCompletionStatus: 'completed',
               firstLoginCompleted: true,
               minorCategories: updatedCategories || v.minorCategories,
             }
-          : v
-      )
+          : v;
+      })
     );
 
     addFeedItem(
@@ -1578,11 +1583,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       // Dual-Stream resolution
       const clientMapped = (v.clientMappedCategories && v.clientMappedCategories.length > 0 
         ? v.clientMappedCategories 
-        : (v.email.includes('apex') ? clientMappedCategories : v.minorCategories || [])).map(m => m.toLowerCase().trim());
+        : ((v.email || '').includes('apex') ? clientMappedCategories : v.minorCategories || [])).map(m => (m || '').toLowerCase().trim());
         
       const vendorSelected = (v.vendorSelectedCategories && v.vendorSelectedCategories.length > 0 
         ? v.vendorSelectedCategories 
-        : (v.email.includes('apex') ? vendorSelectedCategories : [])).map(m => m.toLowerCase().trim());
+        : ((v.email || '').includes('apex') ? vendorSelectedCategories : [])).map(m => (m || '').toLowerCase().trim());
       
       const allMinors = Array.from(new Set([...clientMapped, ...vendorSelected]));
 
@@ -1654,16 +1659,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const rawList = combined.length > 0 ? combined : vendorPool.slice(0, 4);
       const seen = new Set<string>();
       const deduplicated = rawList.filter((v) => {
-        const key = (v.email || v.name).toLowerCase().trim();
-        if (seen.has(key)) return false;
+        const key = ((v.email || v.name || v.id) || '').toLowerCase().trim();
+        if (!key || seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
       // 1st Priority Rule: Evaluated vendors are given first priority automatically irrespective of rating
       return deduplicated.sort((a, b) => {
-        const aEval = Boolean(a.rating || a.name.includes('Apex'));
-        const bEval = Boolean(b.rating || b.name.includes('Apex'));
+        const aEval = Boolean(a.rating || (a.name && a.name.includes('Apex')));
+        const bEval = Boolean(b.rating || (b.name && b.name.includes('Apex')));
         if (aEval && !bEval) return -1;
         if (!aEval && bEval) return 1;
         return 0;
@@ -1684,16 +1689,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       });
       const seen = new Set<string>();
       const deduplicated = rawList.filter((v) => {
-        const key = (v.email || v.name).toLowerCase().trim();
-        if (seen.has(key)) return false;
+        const key = ((v.email || v.name || v.id) || '').toLowerCase().trim();
+        if (!key || seen.has(key)) return false;
         seen.add(key);
         return true;
       });
 
       // 1st Priority Rule: Evaluated vendors are given first priority automatically irrespective of rating
       return deduplicated.sort((a, b) => {
-        const aEval = Boolean(a.rating || a.name.includes('Apex'));
-        const bEval = Boolean(b.rating || b.name.includes('Apex'));
+        const aEval = Boolean(a.rating || (a.name && a.name.includes('Apex')));
+        const bEval = Boolean(b.rating || (b.name && b.name.includes('Apex')));
         if (aEval && !bEval) return -1;
         if (!aEval && bEval) return 1;
         return 0;
@@ -2314,8 +2319,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const seenKeys = new Set<string>();
     const matchedVendors: VendorEntry[] = [];
     for (const v of rawMatchedVendors) {
-      const key = (v.email || v.name || v.id).toLowerCase().trim();
-      if (!seenKeys.has(key)) {
+      const key = ((v.email || v.name || v.id) || '').toLowerCase().trim();
+      if (key && !seenKeys.has(key)) {
         seenKeys.add(key);
         matchedVendors.push(v);
       }

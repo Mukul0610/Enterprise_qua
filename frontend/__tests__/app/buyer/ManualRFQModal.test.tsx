@@ -389,6 +389,8 @@ describe('ManualRFQModal: saving', () => {
     expect(payload).not.toHaveProperty('rfqNumber');
 
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith(savedRFQ()));
+    expect(screen.getByRole('button', { name: /Done \/ Close/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Done \/ Close/i }));
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -429,6 +431,30 @@ describe('ManualRFQModal: saving', () => {
 
     release({ success: true, rfq: savedRFQ() });
     await waitFor(() => expect(onCreated).toHaveBeenCalled());
+  });
+
+  it('displays confirmation screen for uncategorized V0 RFQ and allows creating another', async () => {
+    rfqClient.createRFQ.mockResolvedValue({
+      success: true,
+      rfq: savedRFQ({
+        rfqNumber: 'RFQ-V0-UNCAT',
+        sourcingMode: 'mode_0',
+        category: '',
+        extractedEntities: [{ id: 'e1', itemName: 'Widgets', quantity: 5, unit: 'pcs', targetDate: '', technicalSpecs: '', confidence: 1, category: '', majorCategory: '', minorCategory: '' }],
+        assignedVendors: [],
+      }),
+    });
+
+    renderModal();
+    fillRow();
+    fillDelivery();
+    clickSave();
+
+    await waitFor(() => expect(screen.getByText(/RFQ Created & Forwarded to Category Manager/i)).toBeInTheDocument());
+    expect(screen.getByText('0 (Pending CM Assignment)')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Create Another RFQ/i }));
+    expect(screen.queryByText(/RFQ Created & Forwarded to Category Manager/i)).not.toBeInTheDocument();
   });
 });
 

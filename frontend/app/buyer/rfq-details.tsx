@@ -15,6 +15,7 @@ import { UI_STRINGS, formatString } from '@/lib/uiStrings';
 import { rfqAttachmentUrl, updateRFQ, replyToRFQInquiry, submitRFQInquiry } from '@/lib/rfqClient';
 import { getVendorPresence } from '@/lib/vendorPresenceClient';
 import QuoteAttachmentLink from '@/app/components/QuoteAttachmentLink';
+import InviteVendorsModal from '@/app/category-manager/InviteVendorsModal';
 import { isBuyerUploaded, isProcucevVendor } from './vendor-summary';
 import { downloadFullQuotesExcel, downloadSingleVendorQuoteExcel } from '@/lib/bidComparisonExport';
 import type {
@@ -413,6 +414,10 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
     activeRfq?.sourcingMode === 'mode_3' ||
     (activeRfq?.sourcingMode as any) === 'v3' ||
     (activeRfq?.sourcingMode as any) === 'version_3';
+  const isV2 =
+    activeRfq?.sourcingMode === 'mode_2' ||
+    (activeRfq?.sourcingMode as any) === 'v2' ||
+    (activeRfq?.sourcingMode as any) === 'version_2';
 
   const handleCloseRFQ = async () => {
     if (!activeRfq || isClosing) return;
@@ -1723,6 +1728,9 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         const procucevVendors = visibleAssigned.filter((v: any) => v.isProcucev);
         const ownVendors = visibleAssigned.filter((v: any) => !v.isProcucev);
 
+        // For V2 RFQs on the buyer side, hide Procucev network vendor details
+        const displayAssigned = (isV2 && !isCategoryManager) ? ownVendors : visibleAssigned;
+
         // Full-detail card (name + contact + email + phone + category). Used for
         // the buyer's own vendors everywhere, and for ALL vendors in the
         // category-manager view (an internal oversight role, no double-blind).
@@ -1793,7 +1801,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         return (
           <Panel
             title="Assigned & Invited Suppliers"
-            count={visibleAssigned.length}
+            count={isCategoryManager ? visibleAssigned.length : displayAssigned.length}
             toolbar={
               <button
                 onClick={() => setInviteModalOpen(true)}
@@ -1804,62 +1812,69 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
             }
           >
             <div className="px-4 pb-4">
-              {visibleAssigned.length === 0 ? (
+              {displayAssigned.length === 0 ? (
                 emptyState
               ) : isCategoryManager ? (
-                // ── Category Manager: two tabs, full details for every vendor ──
-                <div className="space-y-3" data-testid="cm-supplier-tabs">
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      data-testid="cm-tab-procucev"
-                      onClick={() => setSupplierTab('procucev')}
-                      className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
-                        supplierTab === 'procucev'
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 hover:text-slate-800 dark:hover:text-gray-200'
-                      }`}
-                    >
-                      Procucev Vendors ({procucevVendors.length})
-                    </button>
-                    <button
-                      type="button"
-                      data-testid="cm-tab-own"
-                      onClick={() => setSupplierTab('own')}
-                      className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
-                        supplierTab === 'own'
-                          ? 'bg-indigo-600 text-white'
-                          : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 hover:text-slate-800 dark:hover:text-gray-200'
-                      }`}
-                    >
-                      Buyer&apos;s Own Vendors ({ownVendors.length})
-                    </button>
+                isV0 ? (
+                  // ── Category Manager: V0 RFQ flow renders vendor cards directly without tabs ──
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5" data-testid="v0-cm-vendor-cards">
+                    {visibleAssigned.map((v: any) => renderFullCard(v))}
                   </div>
+                ) : (
+                  // ── Category Manager: two tabs, full details for every vendor ──
+                  <div className="space-y-3" data-testid="cm-supplier-tabs">
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        data-testid="cm-tab-procucev"
+                        onClick={() => setSupplierTab('procucev')}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                          supplierTab === 'procucev'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 hover:text-slate-800 dark:hover:text-gray-200'
+                        }`}
+                      >
+                        Procucev Vendors ({procucevVendors.length})
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="cm-tab-own"
+                        onClick={() => setSupplierTab('own')}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors ${
+                          supplierTab === 'own'
+                            ? 'bg-indigo-600 text-white'
+                            : 'bg-slate-100 dark:bg-gray-800 text-slate-500 dark:text-gray-400 hover:text-slate-800 dark:hover:text-gray-200'
+                        }`}
+                      >
+                        Buyer&apos;s Own Vendors ({ownVendors.length})
+                      </button>
+                    </div>
 
-                  {(() => {
-                    const tabVendors = supplierTab === 'procucev' ? procucevVendors : ownVendors;
-                    if (tabVendors.length === 0) {
+                    {(() => {
+                      const tabVendors = supplierTab === 'procucev' ? procucevVendors : ownVendors;
+                      if (tabVendors.length === 0) {
+                        return (
+                          <div className="p-4 text-center rounded-xl bg-slate-50 dark:bg-gray-950/40 border border-slate-200 dark:border-gray-800">
+                            <p className="text-[11px] text-slate-500 dark:text-gray-400">
+                              {supplierTab === 'procucev'
+                                ? 'No Procucev network vendors on this RFQ.'
+                                : "No buyer's own vendors on this RFQ."}
+                            </p>
+                          </div>
+                        );
+                      }
                       return (
-                        <div className="p-4 text-center rounded-xl bg-slate-50 dark:bg-gray-950/40 border border-slate-200 dark:border-gray-800">
-                          <p className="text-[11px] text-slate-500 dark:text-gray-400">
-                            {supplierTab === 'procucev'
-                              ? 'No Procucev network vendors on this RFQ.'
-                              : "No buyer's own vendors on this RFQ."}
-                          </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                          {tabVendors.map((v: any) => renderFullCard(v))}
                         </div>
                       );
-                    }
-                    return (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                        {tabVendors.map((v: any) => renderFullCard(v))}
-                      </div>
-                    );
-                  })()}
-                </div>
+                    })()}
+                  </div>
+                )
               ) : (
-                // ── Buyer view: Procucev double-blind, own vendors full detail ──
+                // ── Buyer view: Procucev double-blind, own vendors full detail (hidden if V2) ──
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
-                  {visibleAssigned.map((v: any) => (v.isProcucev ? renderConfidentialCard(v) : renderFullCard(v)))}
+                  {displayAssigned.map((v: any) => (v.isProcucev ? renderConfidentialCard(v) : renderFullCard(v)))}
                 </div>
               )}
             </div>
@@ -2164,7 +2179,7 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
       </Panel>
 
       {/* Vendor Inquiries & Clarifications Chat Desk */}
-      {(!isVendor ? !isV0 : true) && (
+      {!isV0 && (
         <Panel
           title={isVendor ? 'Direct Clarification & Inquiry with Buyer' : 'Vendor Inquiries & Clarifications'}
         count={isVendor ? undefined : vendorChannels.length}
@@ -2756,12 +2771,27 @@ export default function RFQDetails({ rfq, onBack, onEdit, onDelete, onUpdate, is
         </div>
       )}
 
+      {/* Category Manager Platform Vendor Assignment Modal */}
+      {isCategoryManager && inviteModalOpen && (
+        <InviteVendorsModal
+          isOpen={inviteModalOpen}
+          rfq={activeRfq}
+          onClose={() => setInviteModalOpen(false)}
+          onInvited={(updatedRfq, count) => {
+            setLocalRfq(updatedRfq);
+            if (onUpdate) onUpdate(updatedRfq);
+            setInviteModalOpen(false);
+            showToast('Suppliers Assigned', `${count} supplier(s) have been assigned to RFQ ${updatedRfq.rfqNumber}.`, 'success');
+          }}
+        />
+      )}
+
       {/* Buyer Private Vendor Invite Modal */}
-      {!isVendor && inviteModalOpen && (
+      {!isCategoryManager && !isVendor && inviteModalOpen && (
         <BuyerInviteSuppliersModal
           isOpen={inviteModalOpen}
           onClose={() => setInviteModalOpen(false)}
-          rfq={activeRfq}
+          rfq={activeRfq!}
           onInvited={(updatedRfq) => {
             setLocalRfq(updatedRfq);
             if (onUpdate) onUpdate(updatedRfq);

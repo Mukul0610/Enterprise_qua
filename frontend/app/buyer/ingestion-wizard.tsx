@@ -3151,9 +3151,32 @@ export default function IngestionWizard({
             </div>
 
             <div className="space-y-1.5">
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">RFQ Dispatched Successfully!</h3>
+              <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                {(() => {
+                  const mode = confirmationRfq.sourcingMode as any;
+                  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                  const hasCat = rfqHasCategorySignal(confirmationRfq);
+                  return (isV0 && !hasCat) ? 'RFQ Created & Forwarded to Category Manager' : 'RFQ Dispatched Successfully!';
+                })()}
+              </h3>
               <p className="text-sm text-slate-500 dark:text-gray-400 max-w-md mx-auto">
-                RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been created and invitations have been dispatched to matched vendors.
+                {(() => {
+                  const mode = confirmationRfq.sourcingMode as any;
+                  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                  const hasCat = rfqHasCategorySignal(confirmationRfq);
+                  if (isV0 && !hasCat) {
+                    return (
+                      <>
+                        Your V0 RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been submitted without a category and forwarded to the <strong>Category Manager</strong> for manual vendor assignment.
+                      </>
+                    );
+                  }
+                  return (
+                    <>
+                      RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been created and invitations have been dispatched to matched vendors.
+                    </>
+                  );
+                })()}
               </p>
             </div>
 
@@ -3164,7 +3187,9 @@ export default function IngestionWizard({
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Category</span>
-                <span className="text-xs font-bold text-slate-800 dark:text-gray-200 truncate block">{confirmationRfq.category || confirmationRfq.title}</span>
+                <span className="text-xs font-bold text-slate-800 dark:text-gray-200 truncate block">
+                  {confirmationRfq.category || (((confirmationRfq.sourcingMode as any) === 'mode_0' || (confirmationRfq.sourcingMode as any) === 'v0' || (confirmationRfq.sourcingMode as any) === 'version_0') ? (!rfqHasCategorySignal(confirmationRfq) ? 'Uncategorized (Pending CM)' : confirmationRfq.title) : confirmationRfq.title)}
+                </span>
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Items / Budget</span>
@@ -3179,9 +3204,17 @@ export default function IngestionWizard({
                     : 'Mode & Vendors'}
                 </span>
                 <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {V2_V3_SOURCING_MODES.includes(String(confirmationRfq.sourcingMode || ''))
-                    ? resolveOwnVendorCount(confirmationRfq)
-                    : resolveConfirmationVendorCount(confirmationRfq)}
+                  {(() => {
+                    const mode = confirmationRfq.sourcingMode as any;
+                    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                    const hasCat = rfqHasCategorySignal(confirmationRfq);
+                    if (isV0 && !hasCat && (!confirmationRfq.assignedVendors || confirmationRfq.assignedVendors.length === 0)) {
+                      return '0 (Pending CM Assignment)';
+                    }
+                    return V2_V3_SOURCING_MODES.includes(String(confirmationRfq.sourcingMode || ''))
+                      ? resolveOwnVendorCount(confirmationRfq)
+                      : resolveConfirmationVendorCount(confirmationRfq);
+                  })()}
                 </span>
               </div>
               {/* Dedicated Procucev network vendor count — only V2 (Hybrid) and

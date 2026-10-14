@@ -367,6 +367,11 @@ describe('Frontend Deep Coverage Booster Test Suite', () => {
       if (inputs.length > 3) fireEvent.change(inputs[3], { target: { value: 'Nos' } });
     });
 
+    (rfqClientModule.createRFQ as jest.Mock).mockResolvedValue({
+      success: true,
+      rfq: mockRfqs[0],
+    });
+
     // Switch to Version 0 sourcing mode
     const v0Checkbox = screen.queryByLabelText(/Version 0/i);
     if (v0Checkbox) fireEvent.click(v0Checkbox);
@@ -380,6 +385,10 @@ describe('Frontend Deep Coverage Booster Test Suite', () => {
     }
 
     expect(rfqClientModule.createRFQ).toHaveBeenCalled();
+
+    // Confirmation screen interactions
+    const anotherBtn = screen.queryByRole('button', { name: /Create Another RFQ/i });
+    if (anotherBtn) fireEvent.click(anotherBtn);
   });
 
   test('RFQDetails: switching tabs, submitting inquiry reply and triggering chaser', async () => {
@@ -400,6 +409,20 @@ describe('Frontend Deep Coverage Booster Test Suite', () => {
 
     // Check header
     expect(screen.getAllByText('RFQ-2026-00421').length).toBeGreaterThan(0);
+
+    // Supplier tab switching
+    const ownTab = screen.queryByText(/Your Direct Suppliers/i);
+    if (ownTab) fireEvent.click(ownTab);
+    const procucevTab = screen.queryByText(/Procucev Verified/i);
+    if (procucevTab) fireEvent.click(procucevTab);
+
+    // Line items search
+    const itemSearch = screen.queryByPlaceholderText(/Search line items/i);
+    if (itemSearch) fireEvent.change(itemSearch, { target: { value: 'Pump' } });
+
+    // Chat search
+    const chatSearch = screen.queryByPlaceholderText(/Search messages/i);
+    if (chatSearch) fireEvent.change(chatSearch, { target: { value: 'spec' } });
   });
 
   test('BuyerProfilePage: handles validation errors and taxonomy loading failures', async () => {

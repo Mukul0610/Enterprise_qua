@@ -169,6 +169,7 @@ function CategoryManagerRFQDetailsView() {
         onBack={onBack}
         onEdit={() => setIsEditing(true)}
         onDelete={() => setIsDeleting(true)}
+        onUpdate={(updatedRfq) => setState({ status: 'loaded', rfq: updatedRfq })}
       />
       <RFQEditModal rfq={isEditing ? rfq : null} onClose={() => setIsEditing(false)} onSave={handleSave} />
       <RFQDeleteDialog

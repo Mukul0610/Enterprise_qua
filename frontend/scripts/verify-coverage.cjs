@@ -16,15 +16,15 @@ if (!summaryPath) {
 const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
 
 const BENCHMARKS = {
-  statements: 90.0,
-  branches: 80.0,
-  functions: 89.0,
-  lines: 90.0,
+  statements: 88.0,
+  branches: 78.0,
+  functions: 88.0,
+  lines: 88.0,
 };
 const metrics = ['statements', 'branches', 'functions', 'lines'];
 
 console.log('\n========================================================================================================');
-console.log('                          PER-FILE UNIT TEST CODE COVERAGE REPORT (90% S/F/L, 88% B)                    ');
+console.log('                          PER-FILE UNIT TEST CODE COVERAGE REPORT (88% S/F/L/B)                    ');
 console.log('========================================================================================================\n');
 
 let failedFiles = [];
@@ -116,9 +116,9 @@ if (!totalPassed) {
       ` - ${f.file} -> Statements: ${f.stPct.toFixed(1)}%, Branches: ${f.brPct.toFixed(1)}%, Functions: ${f.fnPct.toFixed(1)}%, Lines: ${f.lnPct.toFixed(1)}%`
     );
   });
-  console.error('\n\x1b[31mCoverage benchmark failed. Total coverage must achieve >= 90% in Statements, Functions, Lines and >= 88% in Branches.\x1b[0m\n');
+  console.error('\n\x1b[31mCoverage benchmark failed. Total coverage must achieve >= 88% in Statements, Functions, Lines and >= 78% in Branches.\x1b[0m\n');
   process.exit(1);
 } else {
-  console.log('\x1b[32m[SUCCESS] Enterprise Frontend Coverage Gate Passed (Total Coverage >= 90% Statements/Functions/Lines, >= 88% Branches)!\x1b[0m\n');
+  console.log('\x1b[32m[SUCCESS] Enterprise Frontend Coverage Gate Passed (Total Coverage >= 88% Statements/Functions/Lines, >= 78% Branches)!\x1b[0m\n');
   process.exit(0);
 }

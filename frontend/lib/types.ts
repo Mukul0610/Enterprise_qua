@@ -532,6 +532,8 @@ export interface RFQItem {
   assignedVendors?: RFQAssignedVendor[];
   /** Count of Procucev network vendors associated with this RFQ version */
   procucevVendorCount?: number;
+  /** Whether RFQ is pending manual vendor assignment by a Category Manager */
+  needsCategoryManagerAssignment?: boolean;
   inquiries?: RFQInquiry[];
   quotesHidden?: boolean;
   quotesHiddenUntil?: string;
