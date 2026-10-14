@@ -750,6 +750,86 @@ async function sendAutoReply(message, kind, send, { rfqNumber = null, config = {
   }
 }
 
+// A pending acknowledgement older than this is dropped: by then the buyer has
+// long since seen the RFQ (or asked about it), and a late "Great news!" confuses.
+const ACK_RETRY_MAX_AGE_MS = 48 * 60 * 60 * 1000;
+const ACK_RETRIES_PER_POLL = 5;
+
+/**
+ * Keep an acknowledgement that could not be sent, so a later poll retries it.
+ * Before this, a failed send was only logged — every buyer whose RFQ was raised
+ * while mail was down never heard back at all.
+ */
+async function queueAcknowledgement(rfqKey, ack) {
+  if (!rfqKey) return;
+  await emailGatewayQueries.recordProcessed({
+    messageId: `${rfqKey}#ack`,
+    status: INGESTION_OUTCOME.ACK_PENDING,
+    detail: JSON.stringify({ buyerName: ack.buyerName, rfqTitle: ack.rfqTitle }),
+    fromAddress: ack.to,
+    subject: ack.rfqTitle,
+    rfqNumber: ack.rfqNumber,
+  });
+}
+
+/** Ledger timestamps are `YYYY-MM-DD HH:MM:SS` UTC (D1) or a Date (Postgres). */
+function ledgerTime(value) {
+  if (value instanceof Date) return value.getTime();
+  return new Date(`${String(value || '').replace(' ', 'T')}${/[zZ]|[+-]\d\d:?\d\d$/.test(String(value || '')) ? '' : 'Z'}`).getTime();
+}
+
+/**
+ * Retry acknowledgements that could not be sent earlier. Bounded per poll and
+ * never throws: an acknowledgement must not hold up reading new mail.
+ */
+async function retryPendingAcknowledgements({ limit = ACK_RETRIES_PER_POLL, now = Date.now() } = {}) {
+  const outcome = { sent: 0, abandoned: 0, stillPending: 0 };
+  const rows = await emailGatewayQueries.listByStatus(INGESTION_OUTCOME.ACK_PENDING, limit);
+  for (const row of rows) {
+    const record = (status, detail) =>
+      emailGatewayQueries.recordProcessed({
+        messageId: row.message_id,
+        status,
+        detail,
+        fromAddress: row.from_address,
+        subject: row.subject,
+        rfqNumber: row.rfq_number,
+      });
+
+    const queuedAt = ledgerTime(row.processed_at);
+    if (!row.from_address || !Number.isFinite(queuedAt) || now - queuedAt > ACK_RETRY_MAX_AGE_MS) {
+      await record(INGESTION_OUTCOME.ACK_ABANDONED, 'Acknowledgement not sent within 48 hours; dropped');
+      outcome.abandoned += 1;
+      continue;
+    }
+
+    let saved = {};
+    try {
+      saved = JSON.parse(row.detail || '{}') || {};
+    } catch {
+      saved = {};
+    }
+    try {
+      await mailerService.sendRfqAcknowledgementEmail({
+        to: row.from_address,
+        buyerName: saved.buyerName,
+        rfqNumber: row.rfq_number,
+        rfqTitle: saved.rfqTitle || row.subject,
+      });
+      await record(INGESTION_OUTCOME.ACK_SENT, 'Acknowledgement sent on retry');
+      outcome.sent += 1;
+    } catch (err) {
+      outcome.stillPending += 1;
+      // Every provider is paused: nothing else in this batch can go out either.
+      if (err && err.code === 'MAIL_PROVIDERS_COOLING_DOWN') break;
+    }
+  }
+  if (outcome.sent || outcome.abandoned) {
+    logger.info('Pending RFQ acknowledgements retried', outcome, 'EMAIL_GATEWAY');
+  }
+  return outcome;
+}
+
 /** Gemini outcomes that say nothing about the email, only that extraction could not run right now. */
 function isRetryableExtraction(status) {
   const { AI_FAILED, QUOTA_EXCEEDED, NOT_CONFIGURED } = geminiService.EXTRACTION_STATUS;
@@ -1583,15 +1663,17 @@ async function processMessage(rawSource, config = resolveConfig()) {
 
     // Dispatch RFQ creation acknowledgement email to the buyer
     if (message.fromAddress) {
+      const ack = {
+        to: message.fromAddress,
+        buyerName: buyerDisplayName(authorisation.buyerAccount, message),
+        rfqNumber: created.rfqNumber,
+        rfqTitle: created.title,
+      };
       try {
-        await mailerService.sendRfqAcknowledgementEmail({
-          to: message.fromAddress,
-          buyerName: buyerDisplayName(authorisation.buyerAccount, message),
-          rfqNumber: created.rfqNumber,
-          rfqTitle: created.title,
-        });
+        await mailerService.sendRfqAcknowledgementEmail(ack);
       } catch (ackErr) {
         logger.error('Failed to dispatch RFQ acknowledgement email to buyer', ackErr, 'EMAIL_GATEWAY');
+        await queueAcknowledgement(groupKey || created.id, ack);
       }
     }
 
@@ -1851,12 +1933,24 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
     } while (pageToken && workDone < config.maxPerPoll && !ledgerUnavailable && !outOfTime && pages < EMAIL_GATEWAY_MAX_LIST_PAGES);
 
     state.lastError = ledgerUnavailable ? 'Email ingestion ledger unavailable; unread mail left for the next poll' : null;
+
+    // Acknowledgements are buyer mail, so only the buyer inbox poll retries
+    // them; skipped when the ledger is down or the poll is already out of time.
+    let acknowledgements = null;
+    if (!config.isVendorMailbox && !ledgerUnavailable && !outOfTime) {
+      acknowledgements = await emailGateway.retryPendingAcknowledgements().catch((ackErr) => {
+        logger.error('Retrying pending RFQ acknowledgements failed', ackErr, 'EMAIL_GATEWAY');
+        return null;
+      });
+    }
+
     return {
       skipped: false,
       considered: state.consideredThisRun,
       ingested: state.ingestedThisRun,
       pending: Math.max((lastListRes.data.resultSizeEstimate || lastPageSize) - lastPageSize, 0),
       outcomes,
+      acknowledgements,
     };
   } catch (err) {
     // An API or auth failure (e.g. an insufficiently-scoped refresh token).
@@ -2142,6 +2236,8 @@ const emailGateway = {
   extractHeaderMessageId,
   checkRfqCredits,
   storeEmailAttachments,
+  queueAcknowledgement,
+  retryPendingAcknowledgements,
   RetryableIngestionError,
   AUTO_REPLY_KIND,
   EMAIL_GATEWAY_MAX_ATTEMPTS,

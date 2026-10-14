@@ -397,6 +397,11 @@ function isQuoteAlertGmailApiConfigured() {
   return Boolean(getEnv('GMAIL_CLIENT_ID')) && Boolean(getEnv('GMAIL_CLIENT_SECRET')) && Boolean(getEnv('QUOTE_ALERT_GMAIL_REFRESH_TOKEN'));
 }
 
+/** Where replies to buyer mail should go when it is sent from a borrowed mailbox. */
+function buyerReplyAddress() {
+  return getEnv('GMAIL_SENDER_EMAIL') || fromAddress();
+}
+
 function gmailFromAddress(identity) {
   if (identity.sender) return `"Procucev Enterprise" <${identity.sender}>`;
   return identity.id === 'vendor' ? vendorFromAddress() : fromAddress();
@@ -481,6 +486,28 @@ function deliveryPlan(channel, critical) {
       run: (message) => provider.send(message, provider.fromAddress() || (channel === DELIVERY_CHANNEL.VENDOR ? vendorFromAddress() : fromAddress())),
     });
   });
+
+  // Last resort for buyer mail: borrow the quote-alert mailbox, which has its own
+  // Google sending quota and sends little. Without this, one throttled buyer
+  // mailbox stopped every buyer email (live: every RFQ acknowledgement failed for
+  // hours while the quote-alert mailbox sat idle). The vendor mailbox is never
+  // borrowed for buyer mail — its quota is kept for vendor RFQ invites. Replies
+  // are pointed back at the buyer mailbox.
+  if (channel === DELIVERY_CHANNEL.BUYER && !critical) {
+    const used = new Set(route.map((identity) => identity.id));
+    ['quoteAlert']
+      .filter((id) => !used.has(id))
+      .map((id) => findGmailIdentity(id))
+      .filter(Boolean)
+      .forEach((identity) => {
+        steps.push({
+          key: gmailProviderKey(identity),
+          label: `Gmail API (${identity.id}, borrowed)`,
+          run: (message) =>
+            sendViaGmailIdentity(identity, { ...message, replyTo: message.replyTo || buyerReplyAddress() }),
+        });
+      });
+  }
 
   // Raw SMTP cannot open a socket on Cloudflare Workers; it is only a step off it.
   if (!mailTransport.isWorkersRuntime()) {
