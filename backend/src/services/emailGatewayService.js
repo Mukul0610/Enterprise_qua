@@ -59,6 +59,15 @@ const { INGESTION_OUTCOME } = emailGatewayQueries;
 // going silent.
 const POLL_STALE_AFTER_MS = 2 * 60 * 1000;
 const POLL_CALL_TIMEOUT_MS = 20 * 1000;
+// Gemini gets longer than the other calls: it retries across models inside its
+// own budget, and a 20s cap cut off ordinary extractions mid-answer (live:
+// "Gemini line-item extraction timed out after 20000ms" on a plain requisition).
+const EXTRACTION_TIMEOUT_MS = 45 * 1000;
+// No new message is started once a poll has run this long, so a poll that hits
+// slow extractions still ends well inside POLL_STALE_AFTER_MS (worst case ≈
+// this + one message fetch + one extraction + creation) and never overlaps the
+// next cron run. Whatever is left stays unread for the next poll.
+const POLL_WORK_BUDGET_MS = 30 * 1000;
 // A message whose processing throws is retried on this many polls before it is
 // recorded as FAILED and marked read.
 const EMAIL_GATEWAY_MAX_ATTEMPTS = 3;
@@ -1363,7 +1372,7 @@ async function processMessage(rawSource, config = resolveConfig()) {
   try {
     extraction = await withTimeout(
       geminiService.extractLineItems(prepared.extractionInput),
-      POLL_CALL_TIMEOUT_MS,
+      EXTRACTION_TIMEOUT_MS,
       'Gemini line-item extraction'
     );
   } catch (err) {
@@ -1652,6 +1661,7 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
     let pages = 0;
     let workDone = 0;
     let ledgerUnavailable = false;
+    let outOfTime = false;
     let lastListRes;
     let lastPageSize = 0;
     const seen = new Set();
@@ -1675,6 +1685,10 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
       lastPageSize = messages.length;
       for (const ref of messages) {
         if (workDone >= config.maxPerPoll || ledgerUnavailable) break;
+        if (Date.now() - startedAt >= POLL_WORK_BUDGET_MS) {
+          outOfTime = true;
+          break;
+        }
         if (seen.has(ref.id)) continue;
         seen.add(ref.id);
         state.consideredThisRun += 1;
@@ -1796,7 +1810,7 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
         }
       }
       pageToken = listRes.data.nextPageToken;
-    } while (pageToken && workDone < config.maxPerPoll && !ledgerUnavailable && pages < EMAIL_GATEWAY_MAX_LIST_PAGES);
+    } while (pageToken && workDone < config.maxPerPoll && !ledgerUnavailable && !outOfTime && pages < EMAIL_GATEWAY_MAX_LIST_PAGES);
 
     state.lastError = ledgerUnavailable ? 'Email ingestion ledger unavailable; unread mail left for the next poll' : null;
     return {
@@ -2093,6 +2107,7 @@ const emailGateway = {
   RetryableIngestionError,
   AUTO_REPLY_KIND,
   EMAIL_GATEWAY_MAX_ATTEMPTS,
+  POLL_WORK_BUDGET_MS,
   EMAIL_GATEWAY_LEDGER_UNAVAILABLE,
   resetAutoReplyMemory: () => recentAutoReplies.clear(),
   pollOnce,
