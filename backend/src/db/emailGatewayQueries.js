@@ -41,8 +41,12 @@ const INGESTION_OUTCOME = {
  * an outage skips a requisition rather than risking a duplicate RFQ reaching
  * vendors. The message stays unflagged in the mailbox, so it is picked up on a
  * later poll once the database is reachable again.
+ *
+ * `strict: true` throws instead of guessing, for the inbox poller: it marks
+ * "already processed" messages read, so a guessed `true` during an outage
+ * would silently drop every message that arrived in it.
  */
-async function hasProcessed(messageId) {
+async function hasProcessed(messageId, { strict = false } = {}) {
   if (!messageId) return false;
   const key = String(messageId);
   if (process.env.NODE_ENV !== 'test' && memoryProcessedMessageIds.has(key)) return true;
@@ -59,8 +63,70 @@ async function hasProcessed(messageId) {
     return false;
   } catch (err) {
     logger.error('Email ingestion ledger could not be read', err, 'EMAIL_GATEWAY');
+    if (strict) throw err;
     return true;
   }
+}
+
+/**
+ * How many earlier messages from this sender ended in one of `statuses` since
+ * `since` (optionally for one RFQ). Drives the auto-reply cooldown, so a sender
+ * that keeps writing — or an auto-responder replying to our replies — gets one
+ * notice per window instead of one per message.
+ *
+ * Throws on a ledger error; the caller decides which way to fail.
+ */
+async function countRecentOutcomes({ fromAddress, statuses = [], rfqNumber = null, since }) {
+  if (!fromAddress || statuses.length === 0) return 0;
+  const params = [String(fromAddress).trim().toLowerCase(), toLedgerTimestamp(since)];
+  const statusPlaceholders = statuses.map((status) => {
+    params.push(status);
+    return `$${params.length}`;
+  });
+  let rfqClause = '';
+  if (rfqNumber) {
+    params.push(String(rfqNumber));
+    rfqClause = ` and rfq_number = $${params.length}`;
+  }
+  const rows = await pool.rows(
+    `select CAST(count(*) AS INTEGER) as total
+       from email_ingestion_log
+      where lower(from_address) = $1
+        and processed_at >= $2
+        and status in (${statusPlaceholders.join(', ')})${rfqClause}`,
+    params,
+    { d1: true }
+  );
+  return Number((rows[0] && rows[0].total) || 0);
+}
+
+/**
+ * Failed attempts already recorded for a message (rows keyed
+ * `<messageKey>#attempt-<n>`), so a transient failure is retried a bounded
+ * number of times instead of being dropped after the first one.
+ */
+async function countFailedAttempts(messageKey) {
+  if (!messageKey) return 0;
+  try {
+    const rows = await pool.rows(
+      'select CAST(count(*) AS INTEGER) as total from email_ingestion_log where message_id like $1',
+      [`${String(messageKey)}#attempt-%`],
+      { d1: true }
+    );
+    return Number((rows[0] && rows[0].total) || 0);
+  } catch (err) {
+    logger.error('Email ingestion attempt count could not be read', err, 'EMAIL_GATEWAY');
+    return 0;
+  }
+}
+
+/**
+ * CURRENT_TIMESTAMP is stored as `YYYY-MM-DD HH:MM:SS` (UTC) in D1, so cutoffs
+ * are compared in that same text form; Postgres casts it the same way.
+ */
+function toLedgerTimestamp(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  return date.toISOString().replace('T', ' ').slice(0, 19);
 }
 
 /**
@@ -158,6 +224,9 @@ module.exports = {
   INGESTION_OUTCOME,
   hasProcessed,
   recordProcessed,
+  countRecentOutcomes,
+  countFailedAttempts,
+  toLedgerTimestamp,
   listRecent,
   countsByStatus,
 };

@@ -295,6 +295,14 @@ const AUTH_MESSAGES = {
     'Your session could not be confirmed because the database is unreachable. Try again in a moment; if it persists, sign in again.',
   OTP_STORAGE_FAILED:
     'The verification code could not be saved, so it has not been sent. Try requesting a new code in a moment.',
+  // Delivery is confirmed before "sent" is reported, so a failed send is told to
+  // the visitor instead of leaving them waiting for a code that never arrives.
+  OTP_DELIVERY_FAILED:
+    'We could not deliver your verification code by email or SMS right now. Please try again in a few minutes.',
+  OTP_EMAIL_DELIVERY_FAILED:
+    'We could not send the verification email right now, so registration cannot be verified. Please try again in a few minutes.',
+  OTP_SMS_DELIVERY_FAILED:
+    'We could not send the verification SMS right now, so registration cannot be verified. Please try again in a few minutes.',
   ACCOUNT_INACTIVE:
     'This account is marked inactive. Ask an administrator to re-activate it before signing in.',
   ACCOUNT_PENDING_APPROVAL:

@@ -17,6 +17,9 @@ describe('Vendor Free-Credit and Subscription Validation Flow', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // No earlier notice in the ledger, so the auto-reply cooldown allows one.
+    emailGatewayService.resetAutoReplyMemory();
+    jest.spyOn(emailGatewayQueries, 'countRecentOutcomes').mockResolvedValue(0);
 
     // Reset vendors array and create a test vendor
     storeService.vendors = [];

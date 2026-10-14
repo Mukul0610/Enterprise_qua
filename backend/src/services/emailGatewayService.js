@@ -58,6 +58,22 @@ const { INGESTION_OUTCOME } = emailGatewayQueries;
 // going silent.
 const POLL_STALE_AFTER_MS = 2 * 60 * 1000;
 const POLL_CALL_TIMEOUT_MS = 20 * 1000;
+// A message whose processing throws is retried on this many polls before it is
+// recorded as FAILED and marked read.
+const EMAIL_GATEWAY_MAX_ATTEMPTS = 3;
+// Unread messages already in the ledger are skipped without using up
+// maxPerPoll, so a poll may page past them — bounded so one run stays short.
+const EMAIL_GATEWAY_MAX_LIST_PAGES = 5;
+const EMAIL_GATEWAY_LEDGER_UNAVAILABLE = 'LEDGER_UNAVAILABLE';
+
+/** The Message-ID header of a raw RFC 822 message, angle brackets included, or ''. */
+function extractHeaderMessageId(rawSource) {
+  const text = Buffer.isBuffer(rawSource) ? rawSource.toString('utf8') : String(rawSource || '');
+  const headerEnd = text.search(/\r?\n\r?\n/);
+  const headers = (headerEnd === -1 ? text : text.slice(0, headerEnd)).replace(/\r?\n[ \t]+/g, ' ');
+  const match = headers.match(/^message-id:\s*(<[^>\s]+>)/im);
+  return match ? match[1] : '';
+}
 
 function pollInFlight(state) {
   return state.isPolling && Date.now() - state.pollStartedAt < POLL_STALE_AFTER_MS;
@@ -543,16 +559,165 @@ function isOutgoingSystemMessage(message, config = {}) {
 function isSystemOrAutomatedSender(email) {
   if (!email) return false;
   const lower = String(email).trim().toLowerCase();
+  const [localPart = '', domain = ''] = lower.split('@');
   return (
-    lower.startsWith('no-reply@') ||
-    lower.startsWith('noreply@') ||
-    lower.startsWith('mailer-daemon@') ||
-    lower.startsWith('postmaster@') ||
+    AUTOMATED_LOCAL_PART_PATTERN.test(localPart) ||
+    AUTOMATED_SUBDOMAIN_PATTERN.test(domain) ||
     lower.endsWith('@accounts.google.com') ||
     lower.endsWith('@google.com') ||
     lower.endsWith('@notifications.google.com') ||
     lower.endsWith('@googlemail.com')
   );
+}
+
+// Mailboxes no person reads: no-reply@, notifications@, newsletter@, bounces+x@ ...
+const AUTOMATED_LOCAL_PART_PATTERN =
+  /^(no[-_.]?reply|do[-_.]?not[-_.]?reply|mailer[-_.]?daemon|mail[-_.]?daemon|postmaster|bounces?|notifications?|notify|alerts?|newsletters?|news|updates|digest|marketing|automated|auto[-_.]?confirm)([-+_.].*)?$/;
+// Bulk-sending subdomains: news.fly.io, messages.mongodb.com, updates.miro.com ...
+const AUTOMATED_SUBDOMAIN_PATTERN = /^(email|messages?|updates?|news|newsletters?|notifications?|alerts?|marketing|bounces?|mailer)\.[^.]+\.[^.]+/;
+
+/** Kinds of automatic reply the gateway sends, each with its own guard window. */
+const AUTO_REPLY_KIND = {
+  UNAUTHORIZED_SENDER: 'UNAUTHORIZED_SENDER',
+  QUOTE_FAILURE: 'QUOTE_FAILURE',
+  VENDOR_ISSUE: 'VENDOR_ISSUE',
+  CREDITS_EXHAUSTED: 'CREDITS_EXHAUSTED',
+  PORTAL_REDIRECT: 'PORTAL_REDIRECT',
+  QUOTE_ACK: 'QUOTE_ACK',
+  RFQ_ACK: 'RFQ_ACK',
+};
+
+// The ledger status each notice kind is recorded under, the window, and how many
+// notices one sender may get inside it. An unregistered sender gets one a day.
+// A vendor notice is per RFQ and allows a few, because a vendor who replies to
+// it without fixing the problem should be told again — the cap only stops a
+// machine loop (one a minute) from becoming sixty an hour. Acknowledgements of
+// real work have no cap.
+const VENDOR_NOTICE_LIMIT = { windowMs: 60 * 60 * 1000, maxPerWindow: 3, perRfq: true };
+const AUTO_REPLY_COOLDOWN = {
+  [AUTO_REPLY_KIND.UNAUTHORIZED_SENDER]: {
+    statuses: [INGESTION_OUTCOME.SENDER_NOT_ALLOWED],
+    windowMs: 24 * 60 * 60 * 1000,
+    maxPerWindow: 1,
+    perRfq: false,
+  },
+  [AUTO_REPLY_KIND.QUOTE_FAILURE]: { statuses: [INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED], ...VENDOR_NOTICE_LIMIT },
+  [AUTO_REPLY_KIND.VENDOR_ISSUE]: { statuses: [INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED], ...VENDOR_NOTICE_LIMIT },
+  [AUTO_REPLY_KIND.CREDITS_EXHAUSTED]: { statuses: [INGESTION_OUTCOME.CREDITS_EXHAUSTED], ...VENDOR_NOTICE_LIMIT },
+  [AUTO_REPLY_KIND.PORTAL_REDIRECT]: { statuses: [INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED], ...VENDOR_NOTICE_LIMIT },
+};
+
+// Subjects of the gateway's own notices. Mail arriving with one of these (or a
+// Re:/Fwd: of it) is our notice coming back — answering it is how the
+// rfq@procucev.com loop sent ~2,000 notices a day.
+const OWN_NOTICE_SUBJECT_PREFIXES = [
+  'enterprise qua - buyer registration required',
+  'action required – quotation could not be processed',
+  'action required – 5 free quotation credits exhausted',
+  'portal bidding required for rfq',
+  'inquiry logged for rfq',
+  'action required: category mismatch',
+];
+
+const recentAutoReplies = new Map();
+
+function stripReplyPrefixes(subject) {
+  return String(subject || '')
+    .trim()
+    .replace(/^((re|fw|fwd|aw|wg|sv|antw)\s*(\[\d+\])?\s*:\s*)+/i, '')
+    .trim()
+    .toLowerCase();
+}
+
+function isOwnNoticeSubject(subject) {
+  const stripped = stripReplyPrefixes(subject);
+  return OWN_NOTICE_SUBJECT_PREFIXES.some((prefix) => stripped.startsWith(prefix));
+}
+
+/** Domains the platform itself sends from (PLATFORM_EMAIL_DOMAINS, default procucev.com). */
+function platformDomains() {
+  return String(process.env.PLATFORM_EMAIL_DOMAINS || 'procucev.com')
+    .split(',')
+    .map((domain) => domain.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Decide whether an automatic reply may be sent for this inbound message.
+ *
+ * Every guard exists because its absence caused a live mail storm:
+ *   - automated senders and mail carrying auto-submitted / mailing-list headers
+ *     never get a reply (newsletters were answered every minute);
+ *   - our own notices coming back are never answered (the rfq@procucev.com loop);
+ *   - the platform's own domain never gets an "unregistered sender" notice;
+ *   - one notice per sender (and RFQ) per window, checked against the ledger so
+ *     it holds across Worker isolates, plus an in-memory check for bursts inside
+ *     one poll before the ledger row is written.
+ *
+ * Fails closed: when the ledger cannot be read, the notice is skipped — losing
+ * one notice is harmless, an unbounded loop is not.
+ */
+async function shouldSendAutoReply(message, kind, { rfqNumber = null, config = {} } = {}) {
+  const from = String((message && message.fromAddress) || '').trim().toLowerCase();
+  if (!from) return { allowed: false, reason: 'no sender address' };
+  if (isSystemOrAutomatedSender(from)) return { allowed: false, reason: 'automated sender address' };
+  if (isOutgoingSystemMessage(message, config)) return { allowed: false, reason: 'platform sender' };
+  if (message.automatedReason) return { allowed: false, reason: `automated message (${message.automatedReason})` };
+
+  const cooldown = AUTO_REPLY_COOLDOWN[kind];
+  if (!cooldown) return { allowed: true };
+
+  if (kind === AUTO_REPLY_KIND.UNAUTHORIZED_SENDER) {
+    if (isOwnNoticeSubject(message.subject)) return { allowed: false, reason: 'reply to our own notice' };
+    if (platformDomains().includes(from.split('@')[1])) return { allowed: false, reason: 'platform domain' };
+  }
+
+  const now = Date.now();
+  const memoryKey = `${kind}|${from}|${cooldown.perRfq ? rfqNumber || '' : ''}`;
+  const sentInWindow = (recentAutoReplies.get(memoryKey) || []).filter((sentAt) => now - sentAt < cooldown.windowMs);
+  if (sentInWindow.length >= cooldown.maxPerWindow) {
+    return { allowed: false, reason: 'notice limit reached for this sender' };
+  }
+
+  try {
+    const recent = await emailGatewayQueries.countRecentOutcomes({
+      fromAddress: from,
+      statuses: cooldown.statuses,
+      rfqNumber: cooldown.perRfq ? rfqNumber : null,
+      since: new Date(now - cooldown.windowMs),
+    });
+    if (recent >= cooldown.maxPerWindow) return { allowed: false, reason: 'notice limit reached for this sender' };
+  } catch (err) {
+    logger.warn('Auto-reply cooldown could not be checked — skipping the notice', { errorMessage: err.message, kind }, 'EMAIL_GATEWAY');
+    return { allowed: false, reason: 'cooldown unavailable' };
+  }
+
+  recentAutoReplies.set(memoryKey, [...sentInWindow, now]);
+  if (recentAutoReplies.size > 5000) recentAutoReplies.clear();
+  return { allowed: true };
+}
+
+/**
+ * Send one automatic reply if the guards allow it; never throws. Returns true
+ * when the reply was handed to the mailer.
+ */
+async function sendAutoReply(message, kind, send, { rfqNumber = null, config = {}, failureLog } = {}) {
+  const decision = await emailGateway.shouldSendAutoReply(message, kind, { rfqNumber, config });
+  if (!decision.allowed) {
+    logger.info(
+      `Auto-reply ${kind} suppressed for ${message && message.fromAddress}: ${decision.reason}`,
+      { subject: message && message.subject, rfqNumber },
+      'EMAIL_GATEWAY'
+    );
+    return false;
+  }
+  try {
+    await send();
+    return true;
+  } catch (mailErr) {
+    logger.error(failureLog || `Failed to send ${kind} auto-reply`, mailErr, 'EMAIL_GATEWAY');
+    return false;
+  }
 }
 
 /**
@@ -662,18 +827,20 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
       rfqNumber: targetRfq.rfqNumber,
     });
 
-    try {
-      await mailerService.sendVendorCreditsExhaustedEmail(message.fromAddress, {
-        rfq: targetRfq,
-        rfqNumber: targetRfq.rfqNumber,
-        rfqTitle: targetRfq.title,
-        vendorName: vendorRecord.name,
-        upgradeUrl: typeof mailerService.vendorUpgradeUrl === 'function' ? mailerService.vendorUpgradeUrl() : undefined,
-        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-      });
-    } catch (mailErr) {
-      logger.error('Failed to send vendor credits exhausted email', mailErr, 'EMAIL_GATEWAY');
-    }
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.CREDITS_EXHAUSTED,
+      () =>
+        mailerService.sendVendorCreditsExhaustedEmail(message.fromAddress, {
+          rfq: targetRfq,
+          rfqNumber: targetRfq.rfqNumber,
+          rfqTitle: targetRfq.title,
+          vendorName: vendorRecord.name,
+          upgradeUrl: typeof mailerService.vendorUpgradeUrl === 'function' ? mailerService.vendorUpgradeUrl() : undefined,
+          cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+        }),
+      { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor credits exhausted email' }
+    );
 
     return {
       status: INGESTION_OUTCOME.CREDITS_EXHAUSTED,
@@ -733,19 +900,21 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
       }
     }
 
-    try {
-      await mailerService.sendVendorIssueAcknowledgementEmail(message.fromAddress, {
-        rfq: targetRfq,
-        rfqNumber: targetRfq.rfqNumber,
-        rfqTitle: targetRfq.title,
-        vendorName: vendorRecord.name,
-        issueMessage: emailText.slice(0, 500),
-        reason: 'Quotation creation has failed and no bid was generated because your email contains an issue or clarification query regarding the RFQ.',
-        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-      });
-    } catch (mailErr) {
-      logger.error('Failed to send vendor issue acknowledgment email', mailErr, 'EMAIL_GATEWAY');
-    }
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.VENDOR_ISSUE,
+      () =>
+        mailerService.sendVendorIssueAcknowledgementEmail(message.fromAddress, {
+          rfq: targetRfq,
+          rfqNumber: targetRfq.rfqNumber,
+          rfqTitle: targetRfq.title,
+          vendorName: vendorRecord.name,
+          issueMessage: emailText.slice(0, 500),
+          reason: 'Quotation creation has failed and no bid was generated because your email contains an issue or clarification query regarding the RFQ.',
+          cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+        }),
+      { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor issue acknowledgment email' }
+    );
 
     return {
       status: INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED,
@@ -764,15 +933,17 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
       'EMAIL_GATEWAY'
     );
 
-    try {
-      await mailerService.sendComplexRfqPortalRedirectEmail(message.fromAddress, {
-        rfq: targetRfq,
-        vendorName: vendorRecord.name,
-        itemCount,
-      });
-    } catch (mailErr) {
-      logger.error('Failed to send complex RFQ portal redirect email', mailErr, 'EMAIL_GATEWAY');
-    }
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.PORTAL_REDIRECT,
+      () =>
+        mailerService.sendComplexRfqPortalRedirectEmail(message.fromAddress, {
+          rfq: targetRfq,
+          vendorName: vendorRecord.name,
+          itemCount,
+        }),
+      { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send complex RFQ portal redirect email' }
+    );
 
     return {
       status: INGESTION_OUTCOME.PORTAL_SUBMISSION_REQUIRED,
@@ -812,18 +983,20 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
       'EMAIL_GATEWAY'
     );
 
-    try {
-      await mailerService.sendQuoteFailureEmail(message.fromAddress, {
-        rfqNumber: targetRfq.rfqNumber,
-        rfqTitle: targetRfq.title,
-        vendorName: vendorRecord.name,
-        reason: 'Unit Price (₹) is mandatory and must be greater than 0.',
-        missingFields: ['Unit Price (₹)'],
-        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-      });
-    } catch (mailErr) {
-      logger.error('Failed to send vendor quote failure email', mailErr, 'EMAIL_GATEWAY');
-    }
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.QUOTE_FAILURE,
+      () =>
+        mailerService.sendQuoteFailureEmail(message.fromAddress, {
+          rfqNumber: targetRfq.rfqNumber,
+          rfqTitle: targetRfq.title,
+          vendorName: vendorRecord.name,
+          reason: 'Unit Price (₹) is mandatory and must be greater than 0.',
+          missingFields: ['Unit Price (₹)'],
+          cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+        }),
+      { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor quote failure email' }
+    );
 
     return {
       status: INGESTION_OUTCOME.QUOTE_VALIDATION_FAILED,
@@ -881,17 +1054,19 @@ async function processVendorQuoteMessage(message, targetRfq, vendorRecord) {
     }
   );
 
-  try {
-    await mailerService.sendQuoteAcknowledgementEmail(message.fromAddress, {
-      rfqNumber: targetRfq.rfqNumber,
-      rfqTitle: targetRfq.title,
-      vendorName: vendorRecord.name,
-      quote,
-      cc: ccList.length > 0 ? ccList.join(', ') : undefined,
-    });
-  } catch (mailErr) {
-    logger.error('Failed to send vendor quote acknowledgement email', mailErr, 'EMAIL_GATEWAY');
-  }
+  await sendAutoReply(
+    message,
+    AUTO_REPLY_KIND.QUOTE_ACK,
+    () =>
+      mailerService.sendQuoteAcknowledgementEmail(message.fromAddress, {
+        rfqNumber: targetRfq.rfqNumber,
+        rfqTitle: targetRfq.title,
+        vendorName: vendorRecord.name,
+        quote,
+        cc: ccList.length > 0 ? ccList.join(', ') : undefined,
+      }),
+    { rfqNumber: targetRfq.rfqNumber, failureLog: 'Failed to send vendor quote acknowledgement email' }
+  );
 
   if (buyerEmail) {
     try {
@@ -1038,16 +1213,16 @@ async function processMessage(rawSource, config = resolveConfig()) {
   // 2. Otherwise process as Inbound Buyer RFQ Requisition
   const authorisation = await resolveSenderAuthorisation(message.fromAddress, config);
   if (!authorisation.allowed) {
-    if (message.fromAddress && !isSystemOrAutomatedSender(message.fromAddress)) {
-      try {
-        await mailerService.sendUnauthorizedBuyerNotificationEmail(message.fromAddress, {
+    await sendAutoReply(
+      message,
+      AUTO_REPLY_KIND.UNAUTHORIZED_SENDER,
+      () =>
+        mailerService.sendUnauthorizedBuyerNotificationEmail(message.fromAddress, {
           subject: message.subject,
           gatewayAddress: config.user || EMAIL_GATEWAY_CONFIG.DEFAULT_GATEWAY_ADDRESS,
-        });
-      } catch (mailErr) {
-        logger.error('Failed to dispatch registration notification to unauthorized sender', mailErr, 'EMAIL_GATEWAY');
-      }
-    }
+        }),
+      { config, failureLog: 'Failed to dispatch registration notification to unauthorized sender' }
+    );
     return { status: INGESTION_OUTCOME.SENDER_NOT_ALLOWED, detail: authorisation.reason, message };
   }
 
@@ -1263,115 +1438,167 @@ async function pollViaGmailApi(config = resolveConfig(), options = {}) {
     // sufficient for correctness without a time bound that can't be kept
     // reliably on this platform; a pre-existing backlog is handled by
     // marking it read once out of band, not by a bound in this query.
-    const listRes = await withTimeout(
-      gmail.users.messages.list({
-        userId: 'me',
-        q: 'is:unread',
-        maxResults: config.maxPerPoll,
-      }),
-      POLL_CALL_TIMEOUT_MS,
-      'Gmail inbox list'
-    );
-    state.lastConnectedAt = new Date().toISOString();
+    // Every message the poll finishes with is marked read, whatever its outcome.
+    // Previously only INGESTED/QUOTE_INGESTED/CREDITS_EXHAUSTED/SKIPPED_OUTBOUND
+    // were, and the "already processed?" check used a different key
+    // (gmail-<id>) from the one the outcome was recorded under (the Message-ID
+    // header) — so every rejected message (unregistered sender, invalid RFQ, no
+    // line items) stayed unread and was processed again on every poll: a new
+    // notice to the same newsletter every minute, a Gemini call every minute,
+    // and, once ten such messages piled up, no slot left in `maxPerPoll` for a
+    // real requisition behind them.
+    const markRead = (id, label) =>
+      withTimeout(
+        gmail.users.messages.modify({ userId: 'me', id, requestBody: { removeLabelIds: ['UNREAD'] } }).catch(() => {}),
+        POLL_CALL_TIMEOUT_MS,
+        label
+      ).catch(() => {});
 
-    const messages = listRes.data.messages || [];
-    for (const ref of messages) {
-      state.consideredThisRun += 1;
-      // Gmail's own message id is already a stable per-message identifier —
-      // no envelope Message-ID header to fall back to parsing here first,
-      // unlike the IMAP path.
-      const dedupeKey = `gmail-${ref.id}`;
-      try {
-        // Ours is the authoritative dedupe check; see emailGatewayQueries.
-        // Read-only check and label change, so a timeout is safe: the message is
-        // retried on a later poll. The ledger writes below are not bounded, since a
-        // timed-out write could let the same message be ingested twice.
-        if (await withTimeout(emailGatewayQueries.hasProcessed(dedupeKey), POLL_CALL_TIMEOUT_MS, 'Ledger check')) {
-          await withTimeout(
-            gmail.users.messages
-              .modify({ userId: 'me', id: ref.id, requestBody: { removeLabelIds: ['UNREAD'] } })
-              .catch(() => {}),
+    let pageToken;
+    let pages = 0;
+    let workDone = 0;
+    let ledgerUnavailable = false;
+    let lastListRes;
+    let lastPageSize = 0;
+    const seen = new Set();
+
+    do {
+      const listRes = await withTimeout(
+        gmail.users.messages.list({
+          userId: 'me',
+          q: 'is:unread',
+          maxResults: config.maxPerPoll,
+          ...(pageToken ? { pageToken } : {}),
+        }),
+        POLL_CALL_TIMEOUT_MS,
+        'Gmail inbox list'
+      );
+      pages += 1;
+      lastListRes = listRes;
+      state.lastConnectedAt = new Date().toISOString();
+
+      const messages = listRes.data.messages || [];
+      lastPageSize = messages.length;
+      for (const ref of messages) {
+        if (workDone >= config.maxPerPoll || ledgerUnavailable) break;
+        if (seen.has(ref.id)) continue;
+        seen.add(ref.id);
+        state.consideredThisRun += 1;
+        const dedupeKey = `gmail-${ref.id}`;
+
+        // Ours is the authoritative dedupe check; see emailGatewayQueries. Strict,
+        // so a ledger outage leaves mail unread for a later poll instead of
+        // marking it read as "already processed" and losing it.
+        let alreadyProcessed;
+        try {
+          alreadyProcessed = await withTimeout(
+            emailGatewayQueries.hasProcessed(dedupeKey, { strict: true }),
             POLL_CALL_TIMEOUT_MS,
-            'Gmail mark-read'
+            'Ledger check'
           );
+        } catch (ledgerErr) {
+          ledgerUnavailable = true;
+          logger.error('Email gateway poll paused: ingestion ledger unavailable', ledgerErr, 'EMAIL_GATEWAY');
+          outcomes.push({ uid: ref.id, messageId: dedupeKey, status: EMAIL_GATEWAY_LEDGER_UNAVAILABLE });
+          break;
+        }
+        if (alreadyProcessed) {
+          await markRead(ref.id, 'Gmail mark-read');
           outcomes.push({ uid: ref.id, messageId: dedupeKey, status: EMAIL_GATEWAY_MESSAGES.ALREADY_PROCESSED });
           continue;
         }
 
-        const full = await withTimeout(
-          gmail.users.messages.get({ userId: 'me', id: ref.id, format: 'raw' }),
-          POLL_CALL_TIMEOUT_MS,
-          'Gmail message fetch'
-        );
-        if (!full.data || !full.data.raw) {
-          outcomes.push({ uid: ref.id, status: INGESTION_OUTCOME.UNREADABLE });
-          continue;
-        }
-        const rawSource = Buffer.from(full.data.raw, 'base64url');
+        workDone += 1;
+        try {
+          const full = await withTimeout(
+            gmail.users.messages.get({ userId: 'me', id: ref.id, format: 'raw' }),
+            POLL_CALL_TIMEOUT_MS,
+            'Gmail message fetch'
+          );
+          if (!full.data || !full.data.raw) {
+            await emailGatewayQueries.recordProcessed({
+              messageId: dedupeKey,
+              status: INGESTION_OUTCOME.UNREADABLE,
+              detail: 'Gmail returned no message body',
+            });
+            await markRead(ref.id, 'Gmail mark-read (unreadable)');
+            outcomes.push({ uid: ref.id, status: INGESTION_OUTCOME.UNREADABLE });
+            continue;
+          }
+          const rawSource = Buffer.from(full.data.raw, 'base64url');
 
-        const result = await emailGateway.processMessage(rawSource, config);
-        const resolvedMessageId = (result.message && result.message.messageId) || dedupeKey;
+          // The same message can reach a watched inbox twice (re-delivered, or
+          // sent to both the buyer and vendor mailboxes); its Message-ID header
+          // is what the outcome is recorded under, so check that too.
+          const headerMessageId = extractHeaderMessageId(rawSource);
+          if (
+            headerMessageId &&
+            (await withTimeout(emailGatewayQueries.hasProcessed(headerMessageId, { strict: true }), POLL_CALL_TIMEOUT_MS, 'Ledger check'))
+          ) {
+            await markRead(ref.id, 'Gmail mark-read (duplicate)');
+            outcomes.push({ uid: ref.id, messageId: headerMessageId, status: EMAIL_GATEWAY_MESSAGES.ALREADY_PROCESSED });
+            continue;
+          }
 
-        await emailGatewayQueries.recordProcessed({
-          messageId: resolvedMessageId,
-          status: result.status,
-          detail: result.detail,
-          fromAddress: result.message ? result.message.fromAddress : null,
-          subject: result.message ? result.message.subject : null,
-          rfqId: result.rfq ? result.rfq.id : null,
-          rfqNumber:
-            result.rfqs && result.rfqs.length > 1
-              ? result.rfqs.map((r) => r.rfqNumber).join(', ')
-              : result.rfq
-              ? result.rfq.rfqNumber
-              : null,
-        });
+          const result = await emailGateway.processMessage(rawSource, config);
+          const resolvedMessageId = (result.message && result.message.messageId) || dedupeKey;
 
-        if (
-          result.status === INGESTION_OUTCOME.INGESTED ||
-          result.status === INGESTION_OUTCOME.QUOTE_INGESTED ||
-          result.status === INGESTION_OUTCOME.CREDITS_EXHAUSTED ||
-          result.status === INGESTION_OUTCOME.SKIPPED_OUTBOUND
-        ) {
-          if (result.status !== INGESTION_OUTCOME.SKIPPED_OUTBOUND && result.status !== INGESTION_OUTCOME.CREDITS_EXHAUSTED) {
+          await emailGatewayQueries.recordProcessed({
+            messageId: resolvedMessageId,
+            status: result.status,
+            detail: result.detail,
+            fromAddress: result.message ? result.message.fromAddress : null,
+            subject: result.message ? result.message.subject : null,
+            rfqId: result.rfq ? result.rfq.id : null,
+            rfqNumber:
+              result.rfqs && result.rfqs.length > 1
+                ? result.rfqs.map((r) => r.rfqNumber).join(', ')
+                : result.rfq
+                ? result.rfq.rfqNumber
+                : null,
+          });
+
+          if (result.status === INGESTION_OUTCOME.INGESTED || result.status === INGESTION_OUTCOME.QUOTE_INGESTED) {
             state.ingestedThisRun += 1;
           }
-          // Marked read only for a message we actually acted on, and only after
-          // the ledger write, so a failed write leaves it to be retried — same
-          // ordering the IMAP path uses and for the same reason.
-          //
-          // Bounded and self-swallowed, same as the "already processed" mark-read
-          // above: by this point recordProcessed has already written the real
-          // outcome, so a slow/failed mark-read here must never reach the outer
-          // catch below — that would overwrite a correct ledger entry with a
-          // false FAILED status for a message that actually succeeded. Worst
-          // case on a timeout: the message is still UNREAD and gets reconsidered
-          // next poll, where the ledger's hasProcessed check (line 1301) already
-          // catches it as ALREADY_PROCESSED and just retries the mark-read.
-          await withTimeout(
-            gmail.users.messages
-              .modify({ userId: 'me', id: ref.id, requestBody: { removeLabelIds: ['UNREAD'] } })
-              .catch(() => {}),
-            POLL_CALL_TIMEOUT_MS,
-            'Gmail mark-read (post-process)'
-          ).catch(() => {});
+          // After the ledger write, bounded and self-swallowed: a slow mark-read
+          // must never reach the catch below and overwrite a correct outcome
+          // with FAILED. If it times out the message is still unread and the
+          // ledger check above catches it next poll.
+          await markRead(ref.id, 'Gmail mark-read (post-process)');
+          outcomes.push({ uid: ref.id, messageId: resolvedMessageId, status: result.status });
+        } catch (err) {
+          // A failure here is usually transient (Gemini or Gmail timeout, D1
+          // hiccup). The message is left unread and retried on later polls, up
+          // to EMAIL_GATEWAY_MAX_ATTEMPTS, instead of being written off — and
+          // marked read — after the first one.
+          const attempt = (await emailGatewayQueries.countFailedAttempts(dedupeKey)) + 1;
+          const exhausted = attempt >= EMAIL_GATEWAY_MAX_ATTEMPTS;
+          logger.error(
+            `Inbound message could not be processed (Gmail API), attempt ${attempt}/${EMAIL_GATEWAY_MAX_ATTEMPTS}`,
+            err,
+            'EMAIL_GATEWAY'
+          );
+          await emailGatewayQueries
+            .recordProcessed({
+              messageId: exhausted ? dedupeKey : `${dedupeKey}#attempt-${attempt}`,
+              status: INGESTION_OUTCOME.FAILED,
+              detail: `${err.message} (attempt ${attempt}/${EMAIL_GATEWAY_MAX_ATTEMPTS})`,
+            })
+            .catch(() => {});
+          if (exhausted) await markRead(ref.id, 'Gmail mark-read (failed)');
+          outcomes.push({ uid: ref.id, messageId: dedupeKey, status: INGESTION_OUTCOME.FAILED, willRetry: !exhausted });
         }
-        outcomes.push({ uid: ref.id, messageId: resolvedMessageId, status: result.status });
-      } catch (err) {
-        logger.error('Inbound message could not be processed (Gmail API)', err, 'EMAIL_GATEWAY');
-        await emailGatewayQueries
-          .recordProcessed({ messageId: dedupeKey, status: INGESTION_OUTCOME.FAILED, detail: err.message })
-          .catch(() => {});
-        outcomes.push({ uid: ref.id, messageId: dedupeKey, status: INGESTION_OUTCOME.FAILED });
       }
-    }
+      pageToken = listRes.data.nextPageToken;
+    } while (pageToken && workDone < config.maxPerPoll && !ledgerUnavailable && pages < EMAIL_GATEWAY_MAX_LIST_PAGES);
 
-    state.lastError = null;
+    state.lastError = ledgerUnavailable ? 'Email ingestion ledger unavailable; unread mail left for the next poll' : null;
     return {
       skipped: false,
       considered: state.consideredThisRun,
       ingested: state.ingestedThisRun,
-      pending: Math.max((listRes.data.resultSizeEstimate || messages.length) - messages.length, 0),
+      pending: Math.max((lastListRes.data.resultSizeEstimate || lastPageSize) - lastPageSize, 0),
       outcomes,
     };
   } catch (err) {
@@ -1609,6 +1836,9 @@ async function getStatus() {
     lastConnectedAt: runtime.lastConnectedAt,
     lastError,
     isPolling: runtime.isPolling,
+    // Which outbound mailboxes/providers can send right now, and which are
+    // cooling down after a rate limit or a rejected credential.
+    mailDelivery: mailerService.getDeliveryHealth(),
     counts: configured ? await emailGatewayQueries.countsByStatus() : {},
     recent: configured ? await emailGatewayQueries.listRecent() : [],
     ingestedStatus: EMAIL_GATEWAY_CONFIG.INGESTED_STATUS,
@@ -1648,6 +1878,15 @@ const emailGateway = {
   resolveVendorFromEmail,
   processVendorQuoteMessage,
   processMessage,
+  isSystemOrAutomatedSender,
+  isOwnNoticeSubject,
+  shouldSendAutoReply,
+  sendAutoReply,
+  extractHeaderMessageId,
+  AUTO_REPLY_KIND,
+  EMAIL_GATEWAY_MAX_ATTEMPTS,
+  EMAIL_GATEWAY_LEDGER_UNAVAILABLE,
+  resetAutoReplyMemory: () => recentAutoReplies.clear(),
   pollOnce,
   pollViaGmailApi,
   pollVendorOnce,

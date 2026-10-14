@@ -49,6 +49,9 @@ describe('Buyer-Specific Vendor Access & Unlimited Quotation Rules', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // No earlier notice in the ledger, so the auto-reply cooldown allows one.
+    emailGatewayService.resetAutoReplyMemory();
+    jest.spyOn(emailGatewayQueries, 'countRecentOutcomes').mockResolvedValue(0);
 
     // Register buyer accounts in storeService
     storeService.buyerAccounts = [buyerAAccount, buyerBAccount];
