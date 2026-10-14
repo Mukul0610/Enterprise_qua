@@ -445,9 +445,17 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       }
       // eslint-disable-next-line no-await-in-loop -- reported per file, so each
       // upload has to resolve before the next is attempted.
-      const result = await uploadRFQAttachment(file);
-      if (result.success && result.data) stored.push(result.data);
-      else failures.push(`${file.name}: ${result.error || ''}`.trim());
+      try {
+        const result = await uploadRFQAttachment(file);
+        if (result.success && result.data) {
+          stored.push(result.data);
+        } else {
+          failures.push(`${file.name}: ${result.error || ''}`.trim());
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err || '');
+        failures.push(`${file.name}: ${message}`.trim());
+      }
     }
 
     if (stored.length > 0) {
@@ -606,8 +614,27 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
       }
     }
 
+    // Upload any pending attached documents to R2 on final RFQ submission if they were not already uploaded
+    const alreadyUploadedFileNames = new Set((form.attachments || []).map((a) => a.fileName));
+    const uploadedAttachments: RFQAttachment[] = [];
+    const filesToUpload = pendingFilesRef.current.filter((f) => !alreadyUploadedFileNames.has(f.name));
+    if (filesToUpload && filesToUpload.length > 0) {
+      for (const file of filesToUpload) {
+        try {
+          const res = await uploadRFQAttachment(file);
+          if (res.success && res.data) {
+            uploadedAttachments.push(res.data);
+          }
+        } catch {
+          // continue with other attachments
+        }
+      }
+    }
+    const finalAttachments = [...(form.attachments || []), ...uploadedAttachments];
+    const formWithFinalAttachments = { ...form, attachments: finalAttachments };
+
     const result = await createRFQ(
-      toRFQCreatePayload(form, mode1AssignedVendors, hasExtracted ? 'ai_extraction' : 'manual_entry')
+      toRFQCreatePayload(formWithFinalAttachments, mode1AssignedVendors, hasExtracted ? 'ai_extraction' : 'manual_entry')
     );
     setIsSaving(false);
 
@@ -623,6 +650,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
 
   const handleClose = () => {
     if (isSaving) return;
+    pendingFilesRef.current = [];
     setSubmitError(null);
     setConfirmationRfq(null);
     onClose();
@@ -890,12 +918,13 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
                       </span>
                     </span>
                     <button
-                      onClick={() =>
+                      onClick={() => {
+                        pendingFilesRef.current = pendingFilesRef.current.filter((f) => f.name !== file.fileName);
                         patchForm(
                           'attachments',
                           form.attachments.filter((a) => a.id !== file.id)
-                        )
-                      }
+                        );
+                      }}
                       aria-label={formatString(MODAL.removeAttachmentAria, { fileName: file.fileName })}
                       className="p-1 rounded text-slate-400 hover:text-rose-600 dark:hover:text-rose-400 shrink-0"
                     >

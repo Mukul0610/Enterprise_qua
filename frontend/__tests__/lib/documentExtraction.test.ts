@@ -398,6 +398,75 @@ describe('isTextFile and isWordDocument', () => {
     rfqClient.stageDocumentForExtraction.mockResolvedValue({ success: true, key: 'staged-test-key' });
   });
 
+  test('buildExtractionRequest falls back to inlineData when staging fails or rejects for safe file sizes', async () => {
+    const { buildExtractionRequest } = require('@/lib/documentExtraction');
+    const rfqClient = require('@/lib/rfqClient');
+
+    // 1. Staging returns success: false
+    rfqClient.stageDocumentForExtraction.mockResolvedValueOnce({
+      success: false,
+      error: 'Object storage temporary error',
+    });
+    const smallFile = new File(['%PDF-1.4 test'], 'small.pdf', { type: 'application/pdf' });
+    const req1 = await buildExtractionRequest(smallFile);
+    expect(req1.fileName).toBe('small.pdf');
+    expect(req1.inlineData).toBeDefined();
+    expect(req1.fileKey).toBeUndefined();
+
+    // 2. Staging promise rejects
+    rfqClient.stageDocumentForExtraction.mockRejectedValueOnce(new Error('Network timeout'));
+    const req2 = await buildExtractionRequest(smallFile);
+    expect(req2.fileName).toBe('small.pdf');
+    expect(req2.inlineData).toBeDefined();
+    expect(req2.fileKey).toBeUndefined();
+  });
+
+  test('buildExtractionRequest throws DocumentStagingError when staging fails for files exceeding MAX_SAFE_INLINE_BYTES', async () => {
+    const { buildExtractionRequest, DocumentStagingError, MAX_SAFE_INLINE_BYTES } = require('@/lib/documentExtraction');
+    const rfqClient = require('@/lib/rfqClient');
+
+    rfqClient.stageDocumentForExtraction.mockResolvedValueOnce({
+      success: false,
+      error: 'R2 storage unavailable',
+    });
+
+    const oversizedBlob = new Blob(['x'.repeat(100)]);
+    Object.defineProperty(oversizedBlob, 'size', { value: MAX_SAFE_INLINE_BYTES + 1024 });
+    const oversizedFile = new File([oversizedBlob], 'large.pdf', { type: 'application/pdf' });
+    Object.defineProperty(oversizedFile, 'size', { value: MAX_SAFE_INLINE_BYTES + 1024 });
+
+    await expect(buildExtractionRequest(oversizedFile)).rejects.toMatchObject({
+      name: 'DocumentStagingError',
+      tooLarge: true,
+    });
+  });
+
+  test('buildExtractionRequest surfaces FileReader failure when inline fallback reading errors', async () => {
+    const { buildExtractionRequest } = require('@/lib/documentExtraction');
+    const rfqClient = require('@/lib/rfqClient');
+
+    rfqClient.stageDocumentForExtraction.mockResolvedValueOnce({
+      success: false,
+      error: 'Staging unavailable',
+    });
+
+    const origFR = global.FileReader;
+    (global as any).FileReader = class MockFailingDataURLReader {
+      onerror: any;
+      onload: any;
+      readAsDataURL() {
+        setTimeout(() => this.onerror(new Error('FileReader corrupted')), 0);
+      }
+    };
+
+    try {
+      const file = new File(['%PDF-data'], 'test.pdf', { type: 'application/pdf' });
+      await expect(buildExtractionRequest(file)).rejects.toThrow();
+    } finally {
+      global.FileReader = origFR;
+    }
+  });
+
   test('extractDocxText returns empty string for non-docx buffer', async () => {
     const { extractDocxText } = require('@/lib/documentExtraction');
     const buf = new Uint8Array([1, 2, 3, 4, 5]).buffer;
