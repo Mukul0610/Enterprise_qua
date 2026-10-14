@@ -1,6 +1,8 @@
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const dns = require('dns');
+const crypto = require('crypto');
+const mailTransport = require('./mailTransport');
 const { logger } = require('./loggerService');
 const {
   UNAUTHORIZED_BUYER_NOTIFICATION,
@@ -196,90 +198,13 @@ function vendorGatewayAddress() {
 }
 
 /**
- * Send one message through the vendor transporter.
- *
- * Falls back to the Gmail API (the same account buyer-side mail already uses
- * — see deliver()) when no dedicated vendor mailbox (VENDOR_SMTP_USER or
- * VENDOR_EMAIL_GATEWAY_USER) is configured, rather than silently no-op'ing.
- * This is the actual
- * fix for vendor onboarding emails never arriving: no vendor mailbox has
- * ever been set up (VENDOR_SMTP_USER/PASSWORD are unset), so every one of
- * these calls was already dropping the email before the Gmail API even
- * existed here — it just never surfaced because deliverVendor no-ops
- * quietly. The email will show as sent from the buyer Gmail account until a
- * dedicated vendor mailbox is authorized the same way (see
- * scripts/get-gmail-refresh-token.js).
+ * Send one message on the vendor channel: the vendor mailbox (Gmail API, then
+ * its own SMTP off Workers), then the shared buyer mailbox and any pooled or
+ * HTTP providers. Replies are always routed to the vendor gateway inbox so
+ * quote replies are ingested whichever mailbox the message left from.
  */
 async function deliverVendor(message, label) {
-  if (process.env.NODE_ENV === 'test') {
-    return { sent: false, reason: 'test environment' };
-  }
-
-  // The dedicated vendor mailbox, same as buyer-side deliver()'s own
-  // Gmail-API-first behavior — takes priority over VENDOR_SMTP_*, which can
-  // never actually send from Cloudflare Workers (see deliverVendor's own
-  // SMTP-failure fallback below for why).
-  if (isVendorGmailApiConfigured()) {
-    return deliverViaVendorGmailApi(message, label);
-  }
-
-  const activeTransporter = getVendorTransporter();
-  if (!activeTransporter) {
-    if (isGmailApiConfigured()) {
-      try {
-        return await deliverViaGmailApi(message, label);
-      } catch (err) {
-        logger.warn(
-          `Vendor fallback to Gmail API failed for ${label} — attempting standard SMTP fallback`,
-          { errorMessage: err?.message, to: message.to },
-          'MAILER_SERVICE'
-        );
-      }
-    }
-    const defaultTransporter = getTransporter();
-    if (defaultTransporter) {
-      try {
-        const info = await defaultTransporter.sendMail(message);
-        logger.info(`${label} sent successfully to ${message.to} via fallback SMTP`, { messageId: info.messageId }, 'MAILER_SERVICE');
-        return { sent: true, messageId: info.messageId };
-      } catch (e) {
-        logger.warn(`Fallback SMTP send failed for ${label}`, { errorMessage: e?.message }, 'MAILER_SERVICE');
-      }
-    }
-    logger.warn(`Vendor SMTP not configured (VENDOR_SMTP_USER/VENDOR_SMTP_PASSWORD unset) — ${label} not sent`, { to: message.to }, 'MAILER_SERVICE');
-    return { sent: false, reason: 'SMTP not configured' };
-  }
-
-  logger.info(`Dispatching ${label} to ${message.to}`, { subject: message.subject }, 'MAILER_SERVICE');
-  try {
-    const info = await activeTransporter.sendMail(message);
-    logger.info(`${label} sent successfully to ${message.to}`, { messageId: info.messageId }, 'MAILER_SERVICE');
-    return { sent: true, messageId: info.messageId };
-  } catch (err) {
-    // Raw SMTP (nodemailer) cannot run on Cloudflare Workers at all — its TLS
-    // socket layer doesn't implement `rejectUnauthorized`, so every send
-    // through a real VENDOR_SMTP_USER/PASSWORD transporter throws "The
-    // options.rejectUnauthorized option is not implemented" the moment one
-    // gets configured (confirmed live: this silently broke every vendor
-    // onboarding/invite email the day VENDOR_SMTP_* secrets were first set,
-    // since before that getVendorTransporter() returned undefined and this
-    // function's own fallback above never got a chance to run). Falling back
-    // to the Gmail API here — the same proven-working path used when no
-    // vendor mailbox is configured at all — rather than letting a transport
-    // this platform can't support take the whole vendor mail path down.
-    if (isGmailApiConfigured()) {
-      logger.warn(
-        `Vendor SMTP send failed for ${label} — falling back to the Gmail API (buyer account)`,
-        { to: message.to, errorMessage: err.message },
-        'MAILER_SERVICE'
-      );
-      return deliverViaGmailApi(message, label);
-    }
-    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
-      return deliverViaMailChannels(message, label);
-    }
-    throw err;
-  }
+  return routeDelivery(message, label, { channel: DELIVERY_CHANNEL.VENDOR });
 }
 
 // ── Autonomous email-gateway: buyer requisition inbound notification ─────────
@@ -356,337 +281,311 @@ function buildRequisitionEmail(to, rfq = {}, fromEmail = '') {
   };
 }
 
-/**
- * Sends one message through Resend's HTTPS API instead of raw SMTP.
- *
- * Render (and several other PaaS hosts) block outbound SMTP (ports
- * 25/465/587) at the network level on every plan — no transporter config
- * (IPv4-forcing, port 465, etc.) can work around that, since the TCP
- * connection itself never completes (ETIMEDOUT/CONN). An HTTPS API call is
- * unaffected. Used automatically whenever RESEND_API_KEY is set; falls back
- * to SMTP otherwise, so local dev (where raw SMTP works fine) is unchanged.
- */
-async function deliverViaResend(message, label) {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.RESEND_FROM_EMAIL || fromAddress();
+// ── Outbound delivery routing ────────────────────────────────────────────────
+//
+// Every send walks an ordered chain of providers and stops at the first that
+// accepts the message:
+//
+//   1. Gmail API identities (OAuth refresh tokens) — the channel's own mailbox
+//      first, then the shared buyer mailbox, then any GMAIL_POOL_* mailboxes.
+//      OTP mail (critical) additionally may use every other configured mailbox,
+//      so a sign-in code is never blocked by one mailbox's daily limit.
+//   2. HTTP providers (Resend, SendGrid, Brevo, MailChannels) — whichever have
+//      an API key set. Plain HTTPS, so they work on Cloudflare Workers.
+//   3. Raw SMTP (nodemailer) — only off Workers, where TCP sockets are usable.
+//
+// A provider that reports a rate limit or a rejected credential is put on a
+// cooldown (see mailTransport) and skipped until it can work again, so one
+// exhausted mailbox no longer adds a guaranteed failure to every send.
+//
+// Confirmed live before this existed: a gateway notification loop exhausted
+// the buyer mailbox's Gmail sending limit, and because the only fallbacks were
+// SMTP (cannot run on Workers) and keyless MailChannels (401), every OTP email
+// failed while the API still reported "OTP sent".
 
-  logger.info(`Dispatching ${label} to ${message.to} via Resend`, { subject: message.subject }, 'MAILER_SERVICE');
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from,
-      to: message.to,
-      subject: message.subject,
-      html: message.html,
-    }),
-  });
+const DELIVERY_CHANNEL = {
+  BUYER: 'buyer',
+  VENDOR: 'vendor',
+  QUOTE_ALERT: 'quoteAlert',
+};
 
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const err = new Error(body.message || `Resend responded ${res.status}`);
-    err.code = 'RESEND_API_ERROR';
-    throw err;
-  }
+// RFC 3834: marks a notice as an automatic reply, so auto-responders (and our
+// own gateway, if the notice is forwarded back into a watched inbox) never
+// answer it. X-Auto-Response-Suppress is Exchange/Outlook's equivalent.
+const AUTO_REPLY_HEADERS = {
+  'Auto-Submitted': 'auto-replied',
+  'X-Auto-Response-Suppress': 'All',
+};
 
-  logger.info(`${label} sent successfully to ${message.to}`, { messageId: body.id }, 'MAILER_SERVICE');
-  return { sent: true, messageId: body.id };
+function asAutoReply(message) {
+  return { ...message, headers: { ...AUTO_REPLY_HEADERS, ...(message.headers || {}) } };
+}
+
+function tokenFingerprint(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex').slice(0, 12);
 }
 
 /**
- * Sends email via MailChannels HTTPS API (natively supported on Cloudflare Workers without raw sockets).
+ * Every Gmail identity the deployment has a refresh token for. They all share
+ * the one OAuth app (GMAIL_CLIENT_ID/SECRET); each token is its own mailbox
+ * with its own sending quota.
  */
-async function deliverViaMailChannels(message, label) {
-  const fromEmail = process.env.SMTP_FROM || process.env.SMTP_USER || 'manav.procucev@gmail.com';
-  const fromName = 'Procucev Enterprise';
-
-  logger.info(`Dispatching ${label} to ${message.to} via MailChannels API`, { subject: message.subject }, 'MAILER_SERVICE');
-  const res = await fetch('https://api.mailchannels.net/tx/v1/send', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      personalizations: [{ to: [{ email: message.to }] }],
-      from: {
-        email: fromEmail,
-        name: fromName,
-      },
-      subject: message.subject,
-      content: [
-        {
-          type: 'text/plain',
-          value: message.text || (message.html ? message.html.replace(/<[^>]+>/g, ' ') : ''),
-        },
-        {
-          type: 'text/html',
-          value: message.html || '',
-        },
-      ],
-    }),
+function gmailIdentities() {
+  if (!getEnv('GMAIL_CLIENT_ID') || !getEnv('GMAIL_CLIENT_SECRET')) return [];
+  const identities = [
+    { id: 'otp', refreshToken: getEnv('OTP_GMAIL_REFRESH_TOKEN'), sender: getEnv('OTP_GMAIL_SENDER_EMAIL') },
+    { id: 'buyer', refreshToken: getEnv('GMAIL_REFRESH_TOKEN'), sender: getEnv('GMAIL_SENDER_EMAIL') },
+    { id: 'vendor', refreshToken: getEnv('VENDOR_GMAIL_REFRESH_TOKEN'), sender: getEnv('VENDOR_GMAIL_SENDER_EMAIL') },
+    { id: 'quoteAlert', refreshToken: getEnv('QUOTE_ALERT_GMAIL_REFRESH_TOKEN'), sender: getEnv('QUOTE_ALERT_GMAIL_SENDER_EMAIL') },
+  ];
+  const poolTokens = mailTransport.splitList(getEnv('GMAIL_POOL_REFRESH_TOKENS'));
+  const poolSenders = mailTransport.splitList(getEnv('GMAIL_POOL_SENDER_EMAILS'));
+  poolTokens.forEach((refreshToken, index) => {
+    identities.push({ id: `pool${index + 1}`, refreshToken, sender: poolSenders[index] });
   });
-
-  if (!res.ok && res.status !== 202) {
-    const errorBody = await res.text().catch(() => '');
-    const err = new Error(`MailChannels responded ${res.status}: ${errorBody}`);
-    err.code = 'MAILCHANNELS_API_ERROR';
-    throw err;
-  }
-
-  logger.info(`${label} sent successfully to ${message.to} via MailChannels`, {}, 'MAILER_SERVICE');
-  return { sent: true, provider: 'mailchannels' };
+  return identities.filter((identity) => Boolean(identity.refreshToken));
 }
 
-let gmailApiDisabled = false;
+function findGmailIdentity(id) {
+  return gmailIdentities().find((identity) => identity.id === id);
+}
 
-/** True when GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN are all set and active. */
+const gmailOAuthClients = new Map();
+
+/** One cached OAuth client per identity, rebuilt when its refresh token changes. */
+function oauthClientFor(identity) {
+  if (!identity) return undefined;
+  const cached = gmailOAuthClients.get(identity.id);
+  if (cached && cached.refreshToken === identity.refreshToken) return cached.client;
+  const client = new google.auth.OAuth2(getEnv('GMAIL_CLIENT_ID'), getEnv('GMAIL_CLIENT_SECRET'));
+  client.setCredentials({ refresh_token: identity.refreshToken });
+  gmailOAuthClients.set(identity.id, { refreshToken: identity.refreshToken, client });
+  return client;
+}
+
+function gmailProviderKey(identity) {
+  return `gmail:${identity.id}:${tokenFingerprint(identity.refreshToken)}`;
+}
+
+/** True when the buyer/system Gmail identity (GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN) is set. */
 function isGmailApiConfigured() {
-  if (gmailApiDisabled) return false;
-  const hasClientId = Boolean(process.env.GMAIL_CLIENT_ID);
-  const hasClientSecret = Boolean(process.env.GMAIL_CLIENT_SECRET);
-  const hasRefreshToken = Boolean(process.env.GMAIL_REFRESH_TOKEN);
-  if (!hasClientId || !hasClientSecret || !hasRefreshToken) {
-    logger.warn(
-      'Gmail API not configured',
-      { hasClientId, hasClientSecret, hasRefreshToken },
-      'MAILER_SERVICE'
-    );
-  }
+  const hasClientId = Boolean(getEnv('GMAIL_CLIENT_ID'));
+  const hasClientSecret = Boolean(getEnv('GMAIL_CLIENT_SECRET'));
+  const hasRefreshToken = Boolean(getEnv('GMAIL_REFRESH_TOKEN'));
   return hasClientId && hasClientSecret && hasRefreshToken;
 }
 
-let gmailOAuthClient;
-let gmailOAuthClientRefreshToken;
-
 function getGmailOAuthClient() {
-  const refreshToken = getEnv('GMAIL_REFRESH_TOKEN');
-  if (gmailOAuthClient && gmailOAuthClientRefreshToken === refreshToken) {
-    return gmailOAuthClient;
-  }
-  if (!isGmailApiConfigured()) return undefined;
-  const clientId = getEnv('GMAIL_CLIENT_ID');
-  const clientSecret = getEnv('GMAIL_CLIENT_SECRET');
-  gmailOAuthClient = new google.auth.OAuth2(clientId, clientSecret);
-  gmailOAuthClient.setCredentials({ refresh_token: refreshToken });
-  gmailOAuthClientRefreshToken = refreshToken;
-  return gmailOAuthClient;
-}
-
-/**
- * Gmail's API takes a full RFC 2822 message, base64url-encoded — there is no
- * separate {to, subject, html} shape like nodemailer/Resend accept. Building
- * it by hand (rather than pulling in a MIME-builder dependency) keeps this
- * to what the three fields this app ever sends actually need.
- */
-function buildRawMimeMessage({ from, to, subject, html, replyTo }) {
-  // RFC 5322 requires Date and treats Message-ID as strongly recommended.
-  // Gmail's own relay normally injects both when a raw message omits them,
-  // but leaving them out is still a real gap some stricter receiving filters
-  // (spam-sensitive or disposable-inbox providers especially) penalize —
-  // cheap to set explicitly rather than rely on the relay's own fallback.
-  const domain = (from.match(/<([^>]+)>/)?.[1] || from).split('@')[1] || 'procucev.com';
-  const headers = [
-    `From: ${from}`,
-    `To: ${to}`,
-    replyTo ? `Reply-To: ${replyTo}` : null,
-    `Subject: =?UTF-8?B?${Buffer.from(subject || '', 'utf8').toString('base64')}?=`,
-    `Date: ${new Date().toUTCString()}`,
-    `Message-ID: <${Date.now()}.${Math.random().toString(36).slice(2)}@${domain}>`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-  ].filter(Boolean);
-  const raw = `${headers.join('\r\n')}\r\n\r\n${html || ''}`;
-  return Buffer.from(raw, 'utf8').toString('base64url');
-}
-
-/**
- * Sends one message through the Gmail API (users.messages.send) instead of
- * raw SMTP. Takes priority over Resend/SMTP when configured — this is the
- * intended replacement for buyer-side outbound mail, not an additional
- * fallback.
- */
-async function deliverViaGmailApi(message, label) {
-  const auth = getGmailOAuthClient();
-  const gmail = google.gmail({ version: 'v1', auth });
-
-  logger.info(`Dispatching ${label} to ${message.to} via Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
-  const sender = getEnv('GMAIL_SENDER_EMAIL');
-  const raw = buildRawMimeMessage({
-    from: sender ? `"Procucev Enterprise" <${sender}>` : fromAddress(),
-    to: message.to,
-    subject: message.subject,
-    html: message.html,
-    replyTo: message.replyTo,
-  });
-  const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
-  logger.info(`${label} sent successfully to ${message.to}`, { messageId: res.data.id }, 'MAILER_SERVICE');
-  return { sent: true, messageId: res.data.id };
+  return isGmailApiConfigured() ? oauthClientFor(findGmailIdentity('buyer')) : undefined;
 }
 
 function isVendorGmailApiConfigured() {
   return Boolean(getEnv('GMAIL_CLIENT_ID')) && Boolean(getEnv('GMAIL_CLIENT_SECRET')) && Boolean(getEnv('VENDOR_GMAIL_REFRESH_TOKEN'));
 }
 
-let vendorGmailOAuthClient;
-let vendorGmailOAuthClientRefreshToken;
-
 function getVendorGmailOAuthClient() {
-  const refreshToken = getEnv('VENDOR_GMAIL_REFRESH_TOKEN');
-  if (vendorGmailOAuthClient && vendorGmailOAuthClientRefreshToken === refreshToken) {
-    return vendorGmailOAuthClient;
-  }
-  if (!isVendorGmailApiConfigured()) return undefined;
-  const clientId = getEnv('GMAIL_CLIENT_ID');
-  const clientSecret = getEnv('GMAIL_CLIENT_SECRET');
-  vendorGmailOAuthClient = new google.auth.OAuth2(clientId, clientSecret);
-  vendorGmailOAuthClient.setCredentials({ refresh_token: refreshToken });
-  vendorGmailOAuthClientRefreshToken = refreshToken;
-  return vendorGmailOAuthClient;
-}
-
-async function deliverViaVendorGmailApi(message, label) {
-  const auth = getVendorGmailOAuthClient();
-  const gmail = google.gmail({ version: 'v1', auth });
-
-  logger.info(`Dispatching ${label} to ${message.to} via vendor Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
-  const sender = getEnv('VENDOR_GMAIL_SENDER_EMAIL');
-  const raw = buildRawMimeMessage({
-    from: sender ? `"Procucev Enterprise" <${sender}>` : vendorFromAddress(),
-    to: message.to,
-    subject: message.subject,
-    html: message.html,
-    replyTo: message.replyTo,
-  });
-  const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
-  logger.info(`${label} sent successfully to ${message.to}`, { messageId: res.data.id }, 'MAILER_SERVICE');
-  return { sent: true, messageId: res.data.id };
+  return isVendorGmailApiConfigured() ? oauthClientFor(findGmailIdentity('vendor')) : undefined;
 }
 
 /**
- * True when a dedicated "quote received" alert-mailbox Gmail identity is
- * configured (manav.procucev@gmail.com). Same reused OAuth "app"
- * (GMAIL_CLIENT_ID/SECRET) with its own refresh token, minted the same way
- * as the buyer/vendor identities — kept as a THIRD, separate identity
- * (rather than reusing VENDOR_GMAIL_REFRESH_TOKEN) so this notification's
- * send volume/quota never shares a bucket with either the buyer's inbound-
- * polling mailbox (navin.procucev@gmail.com, GMAIL_REFRESH_TOKEN) or the
- * existing vendor-outbound mailbox (VENDOR_GMAIL_REFRESH_TOKEN) — changing
- * this is explicitly meant not to touch either of those.
+ * True when the dedicated "quote received" alert mailbox is configured. Kept as
+ * its own identity so that notification's volume never shares a quota with the
+ * buyer inbound-polling mailbox or the vendor-outbound mailbox.
  */
 function isQuoteAlertGmailApiConfigured() {
-  return Boolean(process.env.GMAIL_CLIENT_ID) && Boolean(process.env.GMAIL_CLIENT_SECRET) && Boolean(process.env.QUOTE_ALERT_GMAIL_REFRESH_TOKEN);
+  return Boolean(getEnv('GMAIL_CLIENT_ID')) && Boolean(getEnv('GMAIL_CLIENT_SECRET')) && Boolean(getEnv('QUOTE_ALERT_GMAIL_REFRESH_TOKEN'));
 }
 
-let quoteAlertGmailOAuthClient;
-let quoteAlertGmailOAuthClientRefreshToken;
-
-/** Same staleness problem and fix as getGmailOAuthClient() above. */
-function getQuoteAlertGmailOAuthClient() {
-  if (
-    quoteAlertGmailOAuthClient &&
-    quoteAlertGmailOAuthClientRefreshToken === process.env.QUOTE_ALERT_GMAIL_REFRESH_TOKEN
-  ) {
-    return quoteAlertGmailOAuthClient;
-  }
-  if (!isQuoteAlertGmailApiConfigured()) return undefined;
-  quoteAlertGmailOAuthClient = new google.auth.OAuth2(process.env.GMAIL_CLIENT_ID, process.env.GMAIL_CLIENT_SECRET);
-  quoteAlertGmailOAuthClient.setCredentials({ refresh_token: process.env.QUOTE_ALERT_GMAIL_REFRESH_TOKEN });
-  quoteAlertGmailOAuthClientRefreshToken = process.env.QUOTE_ALERT_GMAIL_REFRESH_TOKEN;
-  return quoteAlertGmailOAuthClient;
+function gmailFromAddress(identity) {
+  if (identity.sender) return `"Procucev Enterprise" <${identity.sender}>`;
+  return identity.id === 'vendor' ? vendorFromAddress() : fromAddress();
 }
 
-/** Same as deliverViaGmailApi, but signed in as the dedicated quote-alert mailbox. */
-async function deliverViaQuoteAlertGmailApi(message, label) {
-  const auth = getQuoteAlertGmailOAuthClient();
-  const gmail = google.gmail({ version: 'v1', auth });
-
-  logger.info(`Dispatching ${label} to ${message.to} via quote-alert Gmail API`, { subject: message.subject }, 'MAILER_SERVICE');
-  const raw = buildRawMimeMessage({
-    from: process.env.QUOTE_ALERT_GMAIL_SENDER_EMAIL ? `"Procucev Enterprise" <${process.env.QUOTE_ALERT_GMAIL_SENDER_EMAIL}>` : fromAddress(),
+async function sendViaGmailIdentity(identity, message) {
+  const gmail = google.gmail({ version: 'v1', auth: oauthClientFor(identity) });
+  const raw = mailTransport.buildRawMimeMessage({
+    from: gmailFromAddress(identity),
     to: message.to,
+    cc: message.cc,
+    bcc: message.bcc,
     subject: message.subject,
     html: message.html,
+    text: message.text,
     replyTo: message.replyTo,
+    inReplyTo: message.inReplyTo,
+    references: message.references,
+    headers: message.headers,
   });
   const res = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
-  logger.info(`${label} sent successfully to ${message.to}`, { messageId: res.data.id }, 'MAILER_SERVICE');
-  return { sent: true, messageId: res.data.id };
+  return { messageId: res.data.id };
+}
+
+/** The Gmail identities to try for a channel, in order. */
+function gmailRouteFor(channel, critical) {
+  const order = [];
+  if (critical) order.push('otp');
+  if (channel === DELIVERY_CHANNEL.VENDOR) order.push('vendor', 'buyer');
+  else if (channel === DELIVERY_CHANNEL.QUOTE_ALERT) order.push('quoteAlert', 'buyer');
+  else order.push('buyer');
+
+  const identities = gmailIdentities();
+  identities.filter((identity) => identity.id.startsWith('pool')).forEach((identity) => order.push(identity.id));
+  // A sign-in code is worth sending from any company mailbox rather than not at all.
+  if (critical) order.push('vendor', 'quoteAlert');
+
+  const seen = new Set();
+  return order
+    .filter((id) => (seen.has(id) ? false : seen.add(id)))
+    .map((id) => identities.find((identity) => identity.id === id))
+    .filter(Boolean);
+}
+
+/** Ordered provider steps for one send. Each step: { key, label, run(message) }. */
+function deliveryPlan(channel, critical) {
+  const steps = [];
+  // SMTP transporters are only built when their step actually runs, so a send
+  // that succeeds earlier in the chain never opens an SMTP connection.
+  const smtpStep = (key, label, isSet, getActiveTransporter) =>
+    isSet
+      ? {
+          key,
+          label,
+          run: async (message) => {
+            const info = await getActiveTransporter().sendMail(message);
+            return { messageId: info.messageId };
+          },
+        }
+      : null;
+  const vendorSmtpStep = () =>
+    smtpStep('smtp:vendor', 'vendor SMTP', Boolean(getEnv('VENDOR_SMTP_USER') && getEnv('VENDOR_SMTP_PASSWORD')), getVendorTransporter);
+
+  const route = gmailRouteFor(channel, critical);
+  const gmailSteps = route.map((identity) => ({
+    key: gmailProviderKey(identity),
+    label: `Gmail API (${identity.id})`,
+    run: (message) => sendViaGmailIdentity(identity, message),
+  }));
+  // The vendor mailbox's own SMTP comes right after its Gmail identity (or
+  // first, when it has none), ahead of borrowing the buyer mailbox.
+  if (channel === DELIVERY_CHANNEL.VENDOR && !mailTransport.isWorkersRuntime()) {
+    const step = vendorSmtpStep();
+    if (step) gmailSteps.splice(route[0] && route[0].id === 'vendor' ? 1 : 0, 0, step);
+  }
+  steps.push(...gmailSteps);
+
+  mailTransport.configuredHttpProviders().forEach((provider) => {
+    steps.push({
+      key: `http:${provider.key}`,
+      label: provider.key,
+      run: (message) => provider.send(message, provider.fromAddress() || (channel === DELIVERY_CHANNEL.VENDOR ? vendorFromAddress() : fromAddress())),
+    });
+  });
+
+  // Raw SMTP cannot open a socket on Cloudflare Workers; it is only a step off it.
+  if (!mailTransport.isWorkersRuntime()) {
+    const step = smtpStep('smtp:buyer', 'SMTP', Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD), getTransporter);
+    if (step) steps.push(step);
+  }
+  return steps;
+}
+
+const MAILER_RETRY_DELAY_MS = 300;
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
- * Send one message through the shared transporter.
+ * Send one message through the first provider in the channel's chain that
+ * accepts it.
  *
- * No-ops (without throwing) during test runs and when neither the Gmail API,
- * Resend, nor SMTP is configured, so every caller can fire-and-forget. A
- * genuine transport failure is propagated to the caller — it is real and
- * worth logging/retrying.
+ * Resolves `{ sent: true, messageId }` on success and `{ sent: false, reason }`
+ * when nothing is configured (or under tests). Throws when providers exist but
+ * every one of them failed or is cooling down — a real failure the caller must
+ * see, never a silent drop.
  */
-async function deliver(message, label) {
+async function routeDelivery(message, label, { channel = DELIVERY_CHANNEL.BUYER, critical = false } = {}) {
   if (process.env.NODE_ENV === 'test') {
     return { sent: false, reason: 'test environment' };
   }
 
-  let lastError;
-
-  if (isGmailApiConfigured()) {
-    try {
-      return await deliverViaGmailApi(message, label);
-    } catch (err) {
-      lastError = err;
-      if (err?.message?.includes('invalid_grant') || err?.response?.data?.error === 'invalid_grant') {
-        gmailApiDisabled = true;
-      }
-      logger.warn(
-        `deliverViaGmailApi failed for ${label} — falling back to secondary transport`,
-        { errorMessage: err?.message, to: message.to },
-        'MAILER_SERVICE'
-      );
-    }
+  const outgoing = { ...message };
+  // Vendor replies must reach the vendor gateway inbox even when the message is
+  // sent from a borrowed (buyer/pool) mailbox, or quote replies are lost.
+  if (channel === DELIVERY_CHANNEL.VENDOR && !outgoing.replyTo) {
+    outgoing.replyTo = vendorGatewayAddress();
   }
 
-  if (process.env.RESEND_API_KEY) {
-    try {
-      return await deliverViaResend(message, label);
-    } catch (err) {
-      lastError = err;
-      logger.warn(
-        `deliverViaResend failed for ${label} — falling back to secondary transport`,
-        { errorMessage: err?.message, to: message.to },
-        'MAILER_SERVICE'
-      );
-    }
-  }
-
-  const activeTransporter = getTransporter();
-  if (!activeTransporter) {
-    if (lastError) {
-      throw lastError;
-    }
-    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
-      try {
-        return await deliverViaMailChannels(message, label);
-      } catch (mcErr) {
-        logger.warn(`MailChannels send failed for ${label}`, { errorMessage: mcErr?.message }, 'MAILER_SERVICE');
-      }
-    }
-    logger.warn(`SMTP not configured (SMTP_USER/SMTP_PASSWORD unset) — ${label} not sent`, { to: message.to }, 'MAILER_SERVICE');
+  const steps = deliveryPlan(channel, critical);
+  if (steps.length === 0) {
+    logger.warn(`No outbound mail provider configured — ${label} not sent`, { to: message.to, channel }, 'MAILER_SERVICE');
     return { sent: false, reason: 'SMTP not configured' };
   }
 
-  try {
-    logger.info(`Dispatching ${label} to ${message.to}`, { subject: message.subject }, 'MAILER_SERVICE');
-    const info = await activeTransporter.sendMail(message);
-    logger.info(`${label} sent successfully to ${message.to}`, { messageId: info.messageId }, 'MAILER_SERVICE');
-    return { sent: true, messageId: info.messageId };
-  } catch (smtpErr) {
-    if (typeof globalThis !== 'undefined' && globalThis.__CF_ENV__) {
-      return await deliverViaMailChannels(message, label);
+  const attempts = [];
+  let lastError;
+  for (const step of steps) {
+    const cooldown = mailTransport.getCooldown(step.key);
+    if (cooldown) {
+      attempts.push({ provider: step.label, skipped: `cooling down until ${new Date(cooldown.until).toISOString()}` });
+      continue;
     }
-    throw smtpErr;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        logger.info(`Dispatching ${label} to ${message.to} via ${step.label}`, { subject: message.subject }, 'MAILER_SERVICE');
+        const result = await step.run(outgoing);
+        logger.info(`${label} sent successfully to ${message.to} via ${step.label}`, { messageId: result.messageId }, 'MAILER_SERVICE');
+        return { sent: true, messageId: result.messageId };
+      } catch (err) {
+        lastError = err;
+        const kind = mailTransport.noteProviderFailure(step.key, err);
+        attempts.push({ provider: step.label, error: mailTransport.errorText(err).slice(0, 200), kind });
+        logger.warn(
+          `${step.label} failed for ${label} (${kind}) — trying the next provider`,
+          { errorMessage: err && err.message, to: message.to },
+          'MAILER_SERVICE'
+        );
+        // A network blip is worth one immediate retry on the same provider.
+        if (kind !== mailTransport.DELIVERY_ERROR_KIND.TRANSIENT || attempt === 2) break;
+        await wait(MAILER_RETRY_DELAY_MS);
+      }
+    }
   }
+
+  const failure =
+    lastError ||
+    Object.assign(new Error(`Every mail provider is cooling down — ${label} not sent`), { code: 'MAIL_PROVIDERS_COOLING_DOWN' });
+  failure.deliveryAttempts = attempts;
+  logger.error(`All mail providers failed for ${label} to ${message.to}`, { attempts, channel }, 'MAILER_SERVICE');
+  throw failure;
+}
+
+
+/** Buyer/system channel (OTP, buyer notifications, gateway replies to buyers). */
+async function deliver(message, label, options = {}) {
+  return routeDelivery(message, label, { channel: DELIVERY_CHANNEL.BUYER, critical: Boolean(options.critical) });
+}
+
+/** Snapshot of what can send mail right now, for the gateway status panel. */
+function getDeliveryHealth() {
+  const cooldownsByKey = mailTransport.listCooldowns();
+  return {
+    runtime: mailTransport.isWorkersRuntime() ? 'cloudflare-workers' : 'node',
+    gmailIdentities: gmailIdentities().map((identity) => ({
+      id: identity.id,
+      sender: identity.sender || null,
+      cooldown: cooldownsByKey[gmailProviderKey(identity)] || null,
+    })),
+    httpProviders: mailTransport.configuredHttpProviders().map((provider) => ({
+      id: provider.key,
+      cooldown: cooldownsByKey[`http:${provider.key}`] || null,
+    })),
+    smtp: {
+      buyer: Boolean(getEnv('SMTP_USER') && getEnv('SMTP_PASSWORD')),
+      vendor: Boolean(getEnv('VENDOR_SMTP_USER') && getEnv('VENDOR_SMTP_PASSWORD')),
+      usable: !mailTransport.isWorkersRuntime(),
+    },
+  };
 }
 
 /** Shared frame so every Procucev email reads consistently. No invented data. */
@@ -747,18 +646,25 @@ function buildOtpEmail(to, code, expiresInSeconds, context = {}) {
     to,
     subject,
     text: `Your Procucev Enterprise verification code is: ${code}\n\nThis code expires in ${minutes} minute${minutes === 1 ? '' : 's'}.\nIf you did not request this, you can safely ignore this email.`,
-    html: wrapEmail(
-      'PROCUCEV ENTERPRISE',
-      headline,
-      `<p>Your one-time verification code is:</p>
-       <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; text-align: center; margin: 20px 0; color: #0284c7;">${code}</p>
-       <p style="font-size: 13px; color: #64748b; margin: 0;">This code expires in ${minutes} minute${minutes === 1 ? '' : 's'}. If you did not request this, you can safely ignore this email.</p>`
-    ),
+    // Deliberately not wrapEmail(): a security-code email with a remote logo
+    // and a link to a *.workers.dev host (a domain spam filters penalise
+    // heavily, since it is widely abused for phishing) was landing in spam.
+    // No images, no links — only the code.
+    html: `
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #1e293b; line-height: 1.6;">
+      <p style="font-size: 13px; font-weight: 600; color: #64748b; letter-spacing: 0.5px; margin: 0 0 4px;">PROCUCEV ENTERPRISE</p>
+      <p style="font-size: 16px; font-weight: 600; margin: 0 0 16px;">${headline}</p>
+      <p style="margin: 0;">Your one-time verification code is:</p>
+      <p style="font-size: 32px; font-weight: bold; letter-spacing: 8px; margin: 16px 0; color: #0284c7;">${code}</p>
+      <p style="font-size: 13px; color: #64748b; margin: 0;">This code expires in ${minutes} minute${minutes === 1 ? '' : 's'}. If you did not request this, you can safely ignore this email. Procucev staff will never ask you for this code.</p>
+    </div>`,
   };
 }
 
 async function sendOtpEmail(to, code, expiresInSeconds, context = {}) {
-  return deliver(buildOtpEmail(to, code, expiresInSeconds, context), 'OTP email');
+  // Critical: may use every configured mailbox, so one exhausted mailbox can
+  // never block sign-in.
+  return deliver(buildOtpEmail(to, code, expiresInSeconds, context), 'OTP email', { critical: true });
 }
 
 // ── New RFQ → matched vendors (buyer raised an enquiry in their category) ─────
@@ -945,7 +851,7 @@ function buildQuoteAcknowledgementEmail(toOrParams, maybeContext) {
 }
 
 async function sendQuoteAcknowledgementEmail(toOrParams, maybeContext) {
-  return deliverVendor(buildQuoteAcknowledgementEmail(toOrParams, maybeContext), 'quote acknowledgement email');
+  return deliverVendor(asAutoReply(buildQuoteAcknowledgementEmail(toOrParams, maybeContext)), 'quote acknowledgement email');
 }
 
 // ── Vendor quote failure notification → vendor (with buyer & support CC) ─────
@@ -981,7 +887,7 @@ function buildQuoteFailureEmail(toOrParams, maybeContext) {
 }
 
 async function sendQuoteFailureEmail(toOrParams, maybeContext) {
-  return deliverVendor(buildQuoteFailureEmail(toOrParams, maybeContext), 'quote failure notification email');
+  return deliverVendor(asAutoReply(buildQuoteFailureEmail(toOrParams, maybeContext)), 'quote failure notification email');
 }
 
 // ── Vendor credits exhausted notification → vendor ───────────────────────────
@@ -1084,7 +990,7 @@ function buildVendorCreditsExhaustedEmail(toOrParams, maybeContext) {
 }
 
 async function sendVendorCreditsExhaustedEmail(toOrParams, maybeContext) {
-  return deliverVendor(buildVendorCreditsExhaustedEmail(toOrParams, maybeContext), 'vendor credits exhausted email');
+  return deliverVendor(asAutoReply(buildVendorCreditsExhaustedEmail(toOrParams, maybeContext)), 'vendor credits exhausted email');
 }
 
 // ── Vendor quote → owning buyer ─────────────────────────────────────────────
@@ -1163,11 +1069,11 @@ function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
 }
 
 async function sendQuoteReceivedEmail(to, context) {
-  const message = buildQuoteReceivedEmail(to, context);
-  if (process.env.NODE_ENV !== 'test' && isQuoteAlertGmailApiConfigured()) {
-    return deliverViaQuoteAlertGmailApi(message, 'quote-received email');
-  }
-  return deliver(message, 'quote-received email');
+  // Sent from the dedicated quote-alert mailbox when configured, falling back
+  // to the buyer mailbox and the rest of the chain instead of failing outright.
+  return routeDelivery(buildQuoteReceivedEmail(to, context), 'quote-received email', {
+    channel: DELIVERY_CHANNEL.QUOTE_ALERT,
+  });
 }
 
 // ── RFQ Final Comparison & Closure email → owning buyer ─────────────────────
@@ -1351,7 +1257,7 @@ function buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
 }
 
 async function sendComplexRfqPortalRedirectEmail(toOrParams, maybeContext) {
-  return deliver(buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext), 'Complex RFQ portal redirect email');
+  return deliver(asAutoReply(buildComplexRfqPortalRedirectEmail(toOrParams, maybeContext)), 'Complex RFQ portal redirect email');
 }
 
 // ── Vendor Issue / Query reply notification → vendor (with buyer CC) ─────────
@@ -1400,7 +1306,7 @@ function buildVendorIssueAcknowledgementEmail(toOrParams, maybeContext) {
 }
 
 async function sendVendorIssueAcknowledgementEmail(toOrParams, maybeContext) {
-  return deliverVendor(buildVendorIssueAcknowledgementEmail(toOrParams, maybeContext), 'vendor issue acknowledgment email');
+  return deliverVendor(asAutoReply(buildVendorIssueAcknowledgementEmail(toOrParams, maybeContext)), 'vendor issue acknowledgment email');
 }
 
 // ── Vendor Category Mismatch: request update & exclude from shortlist ────────
@@ -1468,7 +1374,7 @@ function buildVendorCategoryMismatchEmail(toOrParams, maybeContext) {
 }
 
 async function sendVendorCategoryMismatchEmail(toOrParams, maybeContext) {
-  return deliverVendor(buildVendorCategoryMismatchEmail(toOrParams, maybeContext), 'vendor category mismatch notification email');
+  return deliverVendor(asAutoReply(buildVendorCategoryMismatchEmail(toOrParams, maybeContext)), 'vendor category mismatch notification email');
 }
 
 /**
@@ -1553,7 +1459,7 @@ function buildUnauthorizedBuyerEmail(to, context = {}) {
 async function sendUnauthorizedBuyerNotificationEmail(to, context = {}) {
   if (!to) return { sent: false, reason: 'missing recipient email' };
   return deliver(
-    buildUnauthorizedBuyerEmail(to, context),
+    asAutoReply(buildUnauthorizedBuyerEmail(to, context)),
     'unauthorized-buyer registration notification email'
   );
 }
@@ -1918,7 +1824,11 @@ async function sendRfqAcknowledgementEmail(params) {
 }
 
 function isConfigured() {
-  return isGmailApiConfigured() || Boolean(process.env.RESEND_API_KEY) || Boolean(process.env.SMTP_USER && process.env.SMTP_PASSWORD);
+  return (
+    gmailIdentities().length > 0 ||
+    mailTransport.configuredHttpProviders().length > 0 ||
+    Boolean(getEnv('SMTP_USER') && getEnv('SMTP_PASSWORD'))
+  );
 }
 
 function isVendorConfigured() {
@@ -1976,6 +1886,9 @@ module.exports = {
   getVendorGmailOAuthClient,
   isQuoteAlertGmailApiConfigured,
   getGmailOAuthClient,
+  deliver,
+  getDeliveryHealth,
+  DELIVERY_CHANNEL,
   getPublicFrontendUrl,
   getLogoUrl,
 };

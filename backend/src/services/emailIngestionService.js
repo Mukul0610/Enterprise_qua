@@ -145,6 +145,44 @@ function extractCcAddresses(addressObject) {
   return [];
 }
 
+function headerText(headers, name) {
+  if (!headers || typeof headers.get !== 'function') return '';
+  const value = headers.get(name);
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return value.join(' ');
+  if (typeof value === 'object') return value.text || value.value || JSON.stringify(value);
+  return String(value);
+}
+
+/**
+ * Why a message was machine-generated, or null for mail a person sent.
+ *
+ * Decided from the standard headers automated senders set (RFC 3834
+ * Auto-Submitted, Precedence, mailing-list headers, Microsoft's
+ * X-Auto-Response-Suppress). An automatic reply must never be sent to such a
+ * message: confirmed live, replying to newsletters and to an auto-forwarding
+ * mailbox produced thousands of notices a day and exhausted the sending quota
+ * that OTP mail depends on.
+ */
+function detectAutomatedMessage(headers) {
+  const autoSubmitted = headerText(headers, 'auto-submitted').trim().toLowerCase();
+  if (autoSubmitted && autoSubmitted !== 'no') return `auto-submitted: ${autoSubmitted}`;
+  const precedence = headerText(headers, 'precedence').trim().toLowerCase();
+  if (['bulk', 'list', 'junk', 'auto_reply'].includes(precedence)) return `precedence: ${precedence}`;
+  // mailparser folds every List-* header into one `list` entry ({ unsubscribe, id, ... }).
+  if (headerText(headers, 'list') || headerText(headers, 'list-unsubscribe') || headerText(headers, 'list-id')) return 'mailing list';
+  const suppress = headerText(headers, 'x-auto-response-suppress').toLowerCase();
+  if (/\b(all|autoreply|oof)\b/.test(suppress)) return `x-auto-response-suppress: ${suppress}`;
+  if (headerText(headers, 'x-autoreply') || headerText(headers, 'x-autorespond')) return 'auto-responder';
+  return null;
+}
+
+function referencesText(value) {
+  if (Array.isArray(value)) return value.join(' ');
+  return typeof value === 'string' ? value : '';
+}
+
 /**
  * Parse a raw RFC822 message.
  *
@@ -177,6 +215,11 @@ async function parseEmailMessage(rawBuffer) {
     sentAt: parsed.date instanceof Date ? parsed.date.toISOString() : null,
     bodyText: stripQuotedReplies(resolveBodyText(parsed)),
     attachments,
+    // Threading headers: a vendor reply to an RFQ invite names the RFQ here
+    // even when the vendor rewrote the subject.
+    inReplyTo: String(parsed.inReplyTo || '').trim(),
+    references: referencesText(parsed.references),
+    automatedReason: detectAutomatedMessage(parsed.headers),
   };
 }
 
@@ -290,6 +333,9 @@ async function prepareEmailForExtraction({ fileName, content }) {
       bodyText: message.bodyText || '',
       attachments: message.attachments || [],
       attachmentNames: message.attachments.map((attachment) => attachment.fileName),
+      inReplyTo: message.inReplyTo || '',
+      references: message.references || '',
+      automatedReason: message.automatedReason || null,
     },
     extractionInput: {
       fileName,
@@ -318,6 +364,7 @@ const emailIngestion = {
   parseEmailMessage,
   prepareEmailForExtraction,
   extractCcAddresses,
+  detectAutomatedMessage,
 };
 
 module.exports = emailIngestion;

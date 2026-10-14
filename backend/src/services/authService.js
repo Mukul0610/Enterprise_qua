@@ -484,6 +484,72 @@ async function changePassword({ userUuid, email, currentPassword, newPassword, i
   };
 }
 
+const OTP_DELIVERY_STATUS = {
+  SENT: 'sent',
+  // No provider configured (local dev) or the test environment: nothing was
+  // attempted, so nothing failed — the demo code in the response covers it.
+  NOT_ATTEMPTED: 'not_attempted',
+  // Still in flight when the wait ran out; it keeps going in the background.
+  PENDING: 'pending',
+  FAILED: 'failed',
+};
+
+// Long enough for the mailer to walk its whole provider chain, short enough
+// that the sign-in screen never hangs.
+const OTP_DISPATCH_WAIT_MS = 20 * 1000;
+
+function settleWithin(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ status: OTP_DELIVERY_STATUS.PENDING }), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * Send the OTP email and SMS together and report what actually happened.
+ *
+ * These used to be fire-and-forget, so a failed email was only visible in the
+ * worker log while the API told the visitor the code had been sent — confirmed
+ * live while every outbound mailbox was rate-limited or revoked. Both are now
+ * awaited (bounded); a send still running at the bound is handed to waitUntil
+ * so a Worker does not cancel it once the response goes out.
+ */
+async function dispatchOtpCodes({ email, emailCode, mobile, mobileCode, isRegistration }) {
+  const emailSend = mailerService
+    .sendOtpEmail(email, emailCode, OTP_EXPIRY_MS / 1000, { isRegistration })
+    .then((result) => ({
+      status: result && result.sent ? OTP_DELIVERY_STATUS.SENT : OTP_DELIVERY_STATUS.NOT_ATTEMPTED,
+    }))
+    .catch((err) => {
+      logger.error('OTP email dispatch error', err, 'AUTH_SERVICE');
+      return { status: OTP_DELIVERY_STATUS.FAILED };
+    });
+  const smsSend = smsService
+    .sendOtpSms(mobile, mobileCode, OTP_EXPIRY_MS / 1000)
+    .then((result) => {
+      if (result && result.success) return { status: OTP_DELIVERY_STATUS.SENT };
+      logger.error('OTP SMS dispatch failed', { error: result && result.error }, 'AUTH_SERVICE');
+      return { status: OTP_DELIVERY_STATUS.FAILED };
+    })
+    .catch((err) => {
+      logger.error('OTP SMS dispatch error', err, 'AUTH_SERVICE');
+      return { status: OTP_DELIVERY_STATUS.FAILED };
+    });
+
+  const waitUntil = getWaitUntil();
+  if (waitUntil) {
+    waitUntil(emailSend);
+    waitUntil(smsSend);
+  }
+
+  const [emailResult, smsResult] = await Promise.all([
+    settleWithin(emailSend, OTP_DISPATCH_WAIT_MS),
+    settleWithin(smsSend, OTP_DISPATCH_WAIT_MS),
+  ]);
+  return { email: emailResult.status, sms: smsResult.status };
+}
+
 /**
  * Generate and dispatch a 6-digit email and SMS OTP.
  *
@@ -553,37 +619,53 @@ async function requestOtp(email, mobile, roleHint, ipAddress, isRegistration = f
     throw new Error(AUTH_MESSAGES.OTP_STORAGE_FAILED);
   }
 
-  // Fire-and-forget, but on Workers an unawaited promise can be cancelled the
-  // instant the response is sent — same fix as storeService.js's _background
-  // helper (see that file's comment for the full rationale). A no-op on
-  // Node/Render, where the process just keeps running regardless.
-  {
-    const otpEmailSend = mailerService
-      .sendOtpEmail(normalizedEmail, emailCode, OTP_EXPIRY_MS / 1000, { isRegistration: Boolean(isRegistration) })
-      .catch((e) => logger.error('OTP email dispatch error', e, 'AUTH_SERVICE'));
-    const otpSmsSend = smsService
-      .sendOtpSms(submittedMobile, mobileCode, OTP_EXPIRY_MS / 1000)
-      .catch((e) => logger.error('OTP SMS dispatch error', e, 'AUTH_SERVICE'));
+  const delivery = await dispatchOtpCodes({
+    email: normalizedEmail,
+    emailCode,
+    mobile: submittedMobile,
+    mobileCode,
+    isRegistration: Boolean(isRegistration),
+  });
 
-    const waitUntil = getWaitUntil();
-    if (waitUntil) {
-      waitUntil(otpEmailSend);
-      waitUntil(otpSmsSend);
-    }
-  }
-
-  logger.info(`OTP generated for ${normalizedEmail} and mobile ${submittedMobile} [Registration: ${Boolean(isRegistration)}]`, { ipAddress }, 'AUTH_SERVICE');
   storeService.addAuditLog({
     userEmail: normalizedEmail,
-    action: `Instant ${OTP_LENGTH}-digit OTP dispatched to email (${normalizedEmail}) and mobile (${submittedMobile}) [Registration: ${Boolean(isRegistration)}]`,
+    action: `Instant ${OTP_LENGTH}-digit OTP requested for email (${normalizedEmail}) and mobile (${submittedMobile}) [Registration: ${Boolean(isRegistration)}] — email: ${delivery.email}, SMS: ${delivery.sms}`,
     ipAddress,
   });
 
+  // Registration verifies both codes, so both must have gone out. Sign-in uses
+  // one code on both channels, so either one arriving is enough.
+  if (isRegistration && delivery.email === OTP_DELIVERY_STATUS.FAILED) {
+    throw new Error(AUTH_MESSAGES.OTP_EMAIL_DELIVERY_FAILED);
+  }
+  if (isRegistration && delivery.sms === OTP_DELIVERY_STATUS.FAILED) {
+    throw new Error(AUTH_MESSAGES.OTP_SMS_DELIVERY_FAILED);
+  }
+  if (!isRegistration && delivery.email === OTP_DELIVERY_STATUS.FAILED && delivery.sms === OTP_DELIVERY_STATUS.FAILED) {
+    throw new Error(AUTH_MESSAGES.OTP_DELIVERY_FAILED);
+  }
+
+  logger.info(
+    `OTP generated for ${normalizedEmail} and mobile ${submittedMobile} [Registration: ${Boolean(isRegistration)}]`,
+    { ipAddress, emailDelivery: delivery.email, smsDelivery: delivery.sms },
+    'AUTH_SERVICE'
+  );
+
+  let message;
+  if (isRegistration) {
+    message = `Verification codes dispatched — Email OTP sent to ${normalizedEmail} and SMS OTP sent to +91 ${submittedMobile}`;
+  } else if (delivery.email === OTP_DELIVERY_STATUS.FAILED) {
+    message = `Verification OTP sent to your mobile +91 ${submittedMobile}. The email could not be delivered right now.`;
+  } else if (delivery.sms === OTP_DELIVERY_STATUS.FAILED) {
+    message = `Verification OTP sent to ${normalizedEmail}. The SMS could not be delivered right now.`;
+  } else {
+    message = `Verification OTP dispatched to ${normalizedEmail} and mobile`;
+  }
+
   return {
     success: true,
-    message: isRegistration
-      ? `Verification codes dispatched — Email OTP sent to ${normalizedEmail} and SMS OTP sent to +91 ${submittedMobile}`
-      : `Verification OTP dispatched to ${normalizedEmail} and mobile`,
+    message,
+    delivery,
     email: normalizedEmail,
     // Only echoed back in tests or when SMTP isn't configured, so local/dev/test
     // runs without real email delivery can still complete the OTP flow; once
@@ -817,6 +899,8 @@ module.exports = {
   authenticateWithPassword,
   changePassword,
   requestOtp,
+  dispatchOtpCodes,
+  OTP_DELIVERY_STATUS,
   verifyOtp,
   registerUser,
   getAllUsers,

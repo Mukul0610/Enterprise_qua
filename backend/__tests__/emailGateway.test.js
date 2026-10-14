@@ -44,6 +44,13 @@ const FULL_ENV = {
 
 const SENDER = 'project.procurement@lt-heavy.com';
 
+// The auto-reply cooldown reads the ledger; by default no earlier notice exists.
+// Tests about the cooldown itself override this.
+beforeEach(() => {
+  emailGatewayService.resetAutoReplyMemory();
+  jest.spyOn(emailGatewayQueries, 'countRecentOutcomes').mockResolvedValue(0);
+});
+
 function buyerAccount(overrides = {}) {
   return {
     id: 'buyer-acc-101',
@@ -2396,11 +2403,15 @@ Hello team, sending catalog.
       jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(false);
       jest.spyOn(emailGatewayService, 'processMessage').mockRejectedValueOnce(new Error('Process parse explosion'));
       const recSpy = jest.spyOn(emailGatewayQueries, 'recordProcessed').mockResolvedValue(true);
+      jest.spyOn(emailGatewayQueries, 'countFailedAttempts').mockResolvedValue(0);
 
+      // A first failure is recorded as an attempt and left unread for a retry,
+      // not written off under the message's own key.
       const errRes = await emailGatewayService.pollVendorOnce(emailGatewayService.resolveVendorConfig(VENDOR_ENV));
       expect(errRes.outcomes[0].status).toBe(INGESTION_OUTCOME.FAILED);
+      expect(errRes.outcomes[0].willRetry).toBe(true);
       expect(recSpy).toHaveBeenCalledWith(expect.objectContaining({
-        messageId: 'gmail-throw-msg',
+        messageId: 'gmail-throw-msg#attempt-1',
         status: INGESTION_OUTCOME.FAILED,
       }));
 
