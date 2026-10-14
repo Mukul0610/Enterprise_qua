@@ -166,7 +166,8 @@ async function createSubscriptionPaymentLink(req, res, next) {
   try {
     if (!assertBuyerAccountRole(req, res)) return;
     const { id } = req.params;
-    const { plan } = req.body;
+    const { plan, billingDuration = '12_months', duration } = req.body || {};
+    const normalizedDuration = (billingDuration || duration) === '6_months' ? '6_months' : '12_months';
 
     // The frontend's activeBuyerAccount comes from the identity-DB-backed
     // GET /active (organisation uuid space) — a different id space from the
@@ -213,8 +214,10 @@ async function createSubscriptionPaymentLink(req, res, next) {
       return res.status(400).json({ success: false, error: 'No mobile number on file for this account. Please update your profile with a mobile number before subscribing.' });
     }
 
-    const amount = computeZohoBuyerPlanAmount(plan);
-    const planLabel = (BUYER_SUBSCRIPTION_PLANS.find((p) => p.id === plan) || {}).name || plan;
+
+    const amount = computeZohoBuyerPlanAmount(plan, normalizedDuration);
+    const durationSuffix = normalizedDuration === '6_months' ? ' (6 Months)' : ' (12 Months)';
+    const planLabel = ((BUYER_SUBSCRIPTION_PLANS.find((p) => p.id === plan) || {}).name || plan) + durationSuffix;
     // Generated before the Zoho call (not after, like the payment link record's
     // id used to be) so it can be embedded in returnUrl — Zoho's hosted
     // checkout redirects back to this exact URL regardless of whether the
@@ -240,13 +243,14 @@ async function createSubscriptionPaymentLink(req, res, next) {
       buyerAccountId: existing.id,
       payerType: 'buyer',
       planId: plan,
+      billingDuration: normalizedDuration,
       amount,
       paymentUrl: result.paymentUrl,
       status: result.status || 'CREATED',
       rawResponse: result.rawResponse,
     });
 
-    logger.info(`Created Zoho payment link for buyer account ${id} (${plan})`, { id, plan, zohoPaymentLinkId: link.zohoPaymentLinkId }, 'BUYER_ACCOUNT_CONTROLLER');
+    logger.info(`Created Zoho payment link for buyer account ${id} (${plan}, ${normalizedDuration})`, { id, plan, billingDuration: normalizedDuration, zohoPaymentLinkId: link.zohoPaymentLinkId }, 'BUYER_ACCOUNT_CONTROLLER');
     res.json({ success: true, data: { paymentUrl: link.paymentUrl, paymentLinkId: link.id, status: link.status } });
   } catch (err) {
     logger.error(`Error creating Zoho payment link for buyer account ${req.params.id}`, err, 'BUYER_ACCOUNT_CONTROLLER');

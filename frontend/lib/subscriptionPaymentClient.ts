@@ -100,7 +100,11 @@ export async function getBuyerPaymentLinkStatus(buyerAccountId: string, linkId: 
  * separate function because it hits a different endpoint scoped to the
  * buyer account rather than the vendor record.
  */
-export async function createBuyerPaymentLink(buyerAccountId: string, plan: string): Promise<PaymentLinkCreateResult> {
+export async function createBuyerPaymentLink(
+  buyerAccountId: string,
+  plan: string,
+  billingDuration: '6_months' | '12_months' = '12_months'
+): Promise<PaymentLinkCreateResult> {
   const token = authClient.getToken();
 
   let res: Response;
@@ -111,7 +115,7 @@ export async function createBuyerPaymentLink(buyerAccountId: string, plan: strin
         'Content-Type': 'application/json',
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, billingDuration }),
     });
   } catch {
     return { success: false, reason: 'NETWORK', error: UI_STRINGS.auth.networkUnreachable };

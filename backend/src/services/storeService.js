@@ -1603,6 +1603,7 @@ class StoreService {
     buyerAccountId,
     payerType = 'vendor',
     planId,
+    billingDuration,
     amount,
     paymentUrl,
     status,
@@ -1615,6 +1616,7 @@ class StoreService {
       buyerAccountId: buyerAccountId || null,
       payerType,
       planId,
+      billingDuration: billingDuration || null,
       amount,
       paymentUrl,
       status,
@@ -1678,7 +1680,10 @@ class StoreService {
     const buyer = this.buyerAccounts.find((a) => a.id === link.buyerAccountId);
     if (!buyer) return null;
 
-    const updates = { subscriptionPlan: link.planId };
+    const updates = {
+      subscriptionPlan: link.planId,
+      ...(link.billingDuration ? { billingDuration: link.billingDuration } : {}),
+    };
     if (link.planId === 'free_trial') {
       updates.remainingFreeRFQs = 5;
     }
@@ -1687,7 +1692,7 @@ class StoreService {
 
     this.addAuditLog({
       userEmail: SYSTEM_ACTOR_EMAIL,
-      action: `Activated ${link.planId} subscription for buyer ${buyer.organizationName || buyer.corporateEmail} via Zoho payment ${link.zohoPaymentLinkId}`,
+      action: `Activated ${link.planId}${link.billingDuration ? ` (${link.billingDuration})` : ''} subscription for buyer ${buyer.organizationName || buyer.corporateEmail} via Zoho payment ${link.zohoPaymentLinkId}`,
     });
 
     return updatedLink;

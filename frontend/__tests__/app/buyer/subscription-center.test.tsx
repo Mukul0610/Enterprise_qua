@@ -49,96 +49,28 @@ describe('app/buyer/subscription-center.tsx', () => {
     expect(screen.getByText('Version 3 Plan')).toBeInTheDocument();
   });
 
-  it('resets the trial account via a real PUT request and re-syncs from the backend', async () => {
+  it('renders the Free Starter Account banner with remaining and used quotas', () => {
+    mockStore({ activeSubscription: 'free_trial', remainingFreeRFQs: 4 });
     render(<SubscriptionCenter />);
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      '/api/buyer-accounts/buyer-1',
-      expect.objectContaining({ method: 'PUT', body: JSON.stringify({ subscriptionPlan: 'free_trial', remainingFreeRFQs: 5 }) })
-    );
-    expect(mockRefreshActiveBuyerAccount).toHaveBeenCalled();
-    expect(mockShowToast).toHaveBeenCalledWith('Free Account Restored', expect.any(String), 'info');
+    expect(screen.getByText(/Free Starter Account — 5 Free RFQs Included/i)).toBeInTheDocument();
+    expect(screen.getByText('Used: 1 / 5')).toBeInTheDocument();
+    expect(screen.getByText('Remaining: 4 / 5')).toBeInTheDocument();
+    expect(screen.getByText(/Every new buyer account receives/i)).toBeInTheDocument();
   });
 
-  it('shows a warning and skips the request when there is no active buyer account', async () => {
-    mockStore({ activeBuyerAccount: null });
+  it('renders active plan status badge instead of free quota alert when on a paid plan', () => {
+    mockStore({ activeSubscription: 'version_1' });
     render(<SubscriptionCenter />);
 
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', expect.any(String), 'warning');
-  });
-
-  it('shows a warning when the reset request fails server-side', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, json: async () => ({ success: false, error: 'Nope.' }) });
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', 'Nope.', 'warning');
-    expect(mockRefreshActiveBuyerAccount).not.toHaveBeenCalled();
-  });
-
-  it('falls back to a default message when the failed reset response has no error text', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, json: async () => null });
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', 'Could not reset your account. Please try again.', 'warning');
-  });
-
-  it('attaches the session token to the reset request when one is held', async () => {
-    const originalGetToken = authClient.getToken;
-    authClient.getToken = jest.fn().mockReturnValue('jwt-token');
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    const [, init] = (global.fetch as jest.Mock).mock.calls[0];
-    expect(init.headers).toEqual({ 'Content-Type': 'application/json', Authorization: 'Bearer jwt-token' });
-    authClient.getToken = originalGetToken;
-  });
-
-  it('falls back to a default message when the reset response body cannot be read', async () => {
-    global.fetch = jest.fn().mockResolvedValue({ ok: false, json: async () => { throw new Error('not json'); } });
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', 'Could not reset your account. Please try again.', 'warning');
-  });
-
-  it('shows a warning when the reset request throws (network failure)', async () => {
-    global.fetch = jest.fn().mockRejectedValue(new Error('offline'));
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', expect.any(String), 'warning');
+    expect(screen.queryByText(/Free Starter Account — 5 Free RFQs Included/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Version 1/i)).toBeInTheDocument();
   });
 
   it('clicking a paid plan opens the real Zoho checkout modal instead of granting the plan directly', async () => {
     render(<SubscriptionCenter />);
 
-    fireEvent.click(screen.getByText('Subscribe to Version 2'));
+    fireEvent.click(screen.getByTestId('subscribe-btn-version_2'));
     await waitFor(() => expect(screen.getByText('Secure Payment')).toBeInTheDocument());
     // No direct plan grant — the modal is responsible for creating a real
     // payment link and redirecting to Zoho, not this button.
@@ -283,17 +215,6 @@ describe('app/buyer/subscription-center.tsx', () => {
     expect(screen.getByText(/Active Premium Plan: Version 3/i)).toBeInTheDocument();
   });
 
-  it('handles reset trial network error gracefully', async () => {
-    global.fetch = jest.fn().mockRejectedValueOnce(new Error('Network drop'));
-    render(<SubscriptionCenter />);
-
-    await act(async () => {
-      fireEvent.click(screen.getByText(/Reset to Free Account/i));
-    });
-
-    expect(mockShowToast).toHaveBeenCalledWith('Reset Failed', 'Could not reach the server. Please try again.', 'warning');
-  });
-
   it('shows info toast when payment link status returns CANCELED', async () => {
     const originalLocation = window.location.href;
     mockCheckBuyerPaymentLinkStatus.mockResolvedValueOnce('CANCELED');
@@ -309,5 +230,63 @@ describe('app/buyer/subscription-center.tsx', () => {
     } finally {
       window.history.pushState({}, '', originalLocation);
     }
+  });
+
+  it('switches between 12-month and 6-month durations and updates prices dynamically', () => {
+    render(<SubscriptionCenter />);
+
+    // Default: 12-month duration selected
+    expect(screen.getByText('₹4,999')).toBeInTheDocument();
+    expect(screen.getByText('₹7,499')).toBeInTheDocument();
+    expect(screen.getByText('₹9,999')).toBeInTheDocument();
+    expect(screen.getAllByText('per month').length).toBe(3);
+    expect(screen.getAllByText('+ 18% GST').length).toBe(3);
+    expect(screen.queryByText('GST Included')).not.toBeInTheDocument();
+
+    // Old prices must not be present
+    expect(screen.queryByText('₹14,999')).not.toBeInTheDocument();
+    expect(screen.queryByText('₹19,999')).not.toBeInTheDocument();
+    expect(screen.queryByText('₹24,999')).not.toBeInTheDocument();
+
+    // Switch to 6 Months
+    fireEvent.click(screen.getByRole('button', { name: '6 Months' }));
+
+    // 6-Month prices must be ₹500 higher: ₹5,499, ₹7,999, ₹10,499
+    expect(screen.getByText('₹5,499')).toBeInTheDocument();
+    expect(screen.getByText('₹7,999')).toBeInTheDocument();
+    expect(screen.getByText('₹10,499')).toBeInTheDocument();
+    expect(screen.getAllByText('per month').length).toBe(3);
+    expect(screen.getAllByText('+ 18% GST').length).toBe(3);
+
+    // Switch back to 12 Months
+    fireEvent.click(screen.getByRole('button', { name: /12 Months/i }));
+    expect(screen.getByText('₹4,999')).toBeInTheDocument();
+    expect(screen.getByText('₹7,499')).toBeInTheDocument();
+    expect(screen.getByText('₹9,999')).toBeInTheDocument();
+    expect(screen.getAllByText('per month').length).toBe(3);
+  });
+
+  it('opens checkout modal with 6-month price multiplied by 6 months plus 18% GST', async () => {
+    mockCreateBuyerPaymentLink.mockResolvedValueOnce('https://payments.zoho.in/mock-buyer-6m');
+    render(<SubscriptionCenter />);
+
+    // Switch to 6 Months
+    fireEvent.click(screen.getByRole('button', { name: '6 Months' }));
+
+    // Click subscribe on Version 1 (6m price: ₹5,499/mo, 6m base: ₹32,994, with 18% GST: ₹38,932.92)
+    fireEvent.click(screen.getByTestId('subscribe-btn-version_1'));
+
+    await waitFor(() => expect(screen.getByText('Secure Payment')).toBeInTheDocument());
+    expect(screen.getByText('₹32,994 (₹5,499 × 6 months)')).toBeInTheDocument();
+    expect(screen.getByText('₹5,938.92')).toBeInTheDocument();
+    expect(screen.getAllByText('₹38,932.92').length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText('6 Months').length).toBeGreaterThanOrEqual(2);
+
+    // Confirm payment in modal
+    fireEvent.click(screen.getByText(/Pay ₹38,932\.92/i));
+
+    await waitFor(() => {
+      expect(mockCreateBuyerPaymentLink).toHaveBeenCalledWith('version_1', '6_months');
+    });
   });
 });

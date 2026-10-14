@@ -119,23 +119,24 @@ export function classifyVendorSource(v: {
   }
 
   const isBuyerAdded =
-    s === 'buyer_uploaded' ||
-    s === 'vendor_master_ingestion' ||
-    s === 'historical_purchase_dump' ||
-    s === 'buyer_manual' ||
-    s === 'buyer_excel' ||
-    s === 'buyer' ||
-    s.includes('buyer') ||
-    s.includes('ingestion') ||
-    s.includes('purchase_dump') ||
-    Boolean(v.addedByBuyerCompany) ||
-    Boolean(v.buyerId) ||
-    Boolean(v.buyerAccountId) ||
-    id.startsWith('v-hist-') ||
-    id.startsWith('v-navin-') ||
-    id.startsWith('vm-') ||
-    id.startsWith('v-ingest-') ||
-    id.startsWith('v-buyer-');
+    ((Boolean(v.buyerId) && v.buyerId !== 'all') ||
+      (Boolean(v.buyerAccountId) && v.buyerAccountId !== 'all') ||
+      Boolean(v.addedByBuyerCompany) ||
+      s === 'buyer_uploaded' ||
+      s === 'vendor_master_ingestion' ||
+      s === 'historical_purchase_dump' ||
+      s === 'buyer_manual' ||
+      s === 'buyer_excel' ||
+      s === 'buyer' ||
+      s.includes('buyer') ||
+      s.includes('ingestion') ||
+      s.includes('purchase_dump') ||
+      id.startsWith('v-hist-') ||
+      id.startsWith('v-navin-') ||
+      id.startsWith('vm-') ||
+      id.startsWith('v-ingest-') ||
+      id.startsWith('v-buyer-')) &&
+    s !== 'category_manager_upload';
 
   if (isBuyerAdded) {
     const buyerCompany = v.addedByBuyerCompany;
@@ -150,7 +151,13 @@ export function classifyVendorSource(v: {
     };
   }
 
-  const isCmUpload = s === 'category_manager_upload' || s.includes('category_manager') || s.includes('cm_upload');
+  const isCmUpload =
+    s === 'category_manager_upload' ||
+    s.includes('category_manager') ||
+    s.includes('cm_upload') ||
+    s === 'excel' ||
+    id.startsWith('v-bulk-') ||
+    id.startsWith('v-cm-');
   if (isCmUpload) {
     return {
       section: 'cm_procucev',

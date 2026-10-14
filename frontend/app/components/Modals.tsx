@@ -1091,6 +1091,11 @@ interface SubscriptionPaymentModalProps {
   planId: string;
   planName: string;
   price: string;
+  billingDurationLabel?: string;
+  breakdown?: {
+    basePrice: string;
+    gstAmount: string;
+  };
   /** Creates a real Zoho payment link for `planId` and resolves its redirect URL, or null on failure (a toast is already shown by the caller). */
   createPaymentLink: (planId: string) => Promise<string | null>;
 }
@@ -1105,7 +1110,7 @@ interface SubscriptionPaymentModalProps {
  * once Zoho's webhook (or the reconciliation poller) confirms the payment,
  * not by this modal.
  */
-export function SubscriptionPaymentModal({ isOpen, onClose, planId, planName, price, createPaymentLink }: SubscriptionPaymentModalProps) {
+export function SubscriptionPaymentModal({ isOpen, onClose, planId, planName, price, billingDurationLabel, breakdown, createPaymentLink }: SubscriptionPaymentModalProps) {
   const [processing, setProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1150,6 +1155,24 @@ export function SubscriptionPaymentModal({ isOpen, onClose, planId, planName, pr
             <span className="text-slate-500 dark:text-gray-400">Plan</span>
             <span className="font-bold text-slate-900 dark:text-white">{planName}</span>
           </div>
+          {billingDurationLabel && (
+            <div className="p-3 rounded-lg bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 flex items-center justify-between">
+              <span className="text-slate-500 dark:text-gray-400">Billing Period</span>
+              <span className="font-bold text-slate-900 dark:text-white">{billingDurationLabel}</span>
+            </div>
+          )}
+          {breakdown && (
+            <div className="p-3 rounded-lg bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 space-y-1.5">
+              <div className="flex items-center justify-between text-slate-500 dark:text-gray-400">
+                <span>Base Plan Price</span>
+                <span className="font-semibold text-slate-700 dark:text-gray-200">{breakdown.basePrice}</span>
+              </div>
+              <div className="flex items-center justify-between text-slate-500 dark:text-gray-400">
+                <span>GST (18%)</span>
+                <span className="font-semibold text-slate-700 dark:text-gray-200">{breakdown.gstAmount}</span>
+              </div>
+            </div>
+          )}
           <div className="p-3 rounded-lg bg-slate-50 dark:bg-gray-800/80 border border-slate-200 dark:border-gray-700 flex items-center justify-between">
             <span className="text-slate-500 dark:text-gray-400">Amount Due</span>
             <span className="font-black text-lg text-indigo-600 dark:text-indigo-400">{price}</span>

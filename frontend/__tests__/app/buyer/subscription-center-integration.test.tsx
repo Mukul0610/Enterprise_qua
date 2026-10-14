@@ -72,7 +72,7 @@ describe('SubscriptionCenter (real AppProvider integration)', () => {
       await Promise.resolve();
     });
 
-    const subscribeBtn = screen.getByText('Subscribe to Version 2');
+    const subscribeBtn = screen.getByTestId('subscribe-btn-version_2');
     await act(async () => {
       fireEvent.click(subscribeBtn);
       await Promise.resolve();
@@ -86,7 +86,7 @@ describe('SubscriptionCenter (real AppProvider integration)', () => {
       expect.objectContaining({ method: 'PUT' })
     );
 
-    const payBtn = screen.getByText(/Pay ₹19,999/i);
+    const payBtn = screen.getByText(/Pay ₹1,06,185\.84/i);
     await act(async () => {
       fireEvent.click(payBtn);
       await Promise.resolve();
@@ -94,7 +94,7 @@ describe('SubscriptionCenter (real AppProvider integration)', () => {
 
     expect(global.fetch).toHaveBeenCalledWith(
       '/api/buyer-accounts/buyer-int-1/subscription-payment',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ plan: 'version_2' }) })
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ plan: 'version_2', billingDuration: '12_months' }) })
     );
   });
 });

@@ -168,7 +168,7 @@ interface AppContextType {
   buyerAccounts: BuyerAccount[];
   activeBuyerAccount: BuyerAccount | null;
   /** Real Zoho payment-link creation for the caller's own buyer account. Returns the URL to redirect to, or null on failure (a toast is already shown). */
-  createBuyerPaymentLink: (plan: string) => Promise<string | null>;
+  createBuyerPaymentLink: (plan: string, billingDuration?: '6_months' | '12_months') => Promise<string | null>;
   /** Real status ('CREATED'|'PAID'|'CANCELED'|'EXPIRED') of one of the caller's own buyer payment links, or null if it can't be resolved. */
   checkBuyerPaymentLinkStatus: (linkId: string) => Promise<string | null>;
   addBuyerAccount: (account: Omit<BuyerAccount, 'id' | 'syncTimestamp' | 'createdDate'>) => BuyerAccount;
@@ -445,13 +445,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return result.paymentUrl;
   };
 
-  const createBuyerPaymentLink = async (plan: string): Promise<string | null> => {
+  const createBuyerPaymentLink = async (
+    plan: string,
+    billingDuration: '6_months' | '12_months' = '12_months'
+  ): Promise<string | null> => {
     if (!activeBuyerAccount?.id) {
       showToast('Payment Failed', 'Could not find your buyer account.', 'warning');
       return null;
     }
 
-    const result = await createBuyerPaymentLinkRequest(activeBuyerAccount.id, plan);
+    const result = await createBuyerPaymentLinkRequest(activeBuyerAccount.id, plan, billingDuration);
     if (!result.success) {
       showToast('Payment Failed', result.error, 'warning');
       return null;

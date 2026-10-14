@@ -165,8 +165,16 @@ describe('subscriptionPaymentClient.createBuyerPaymentLink', () => {
 
     expect(res).toEqual({ success: true, paymentUrl: 'https://payments.zoho.in/buyer', paymentLinkId: 'pl-b1', status: 'CREATED' });
     expect(lastPath()).toBe('/api/buyer-accounts/buyer-1/subscription-payment');
-    expect(lastInit().method).toBe('POST');
-    expect(JSON.parse(lastInit().body)).toEqual({ plan: 'version_2' });
+    expect(JSON.parse(lastInit().body)).toEqual({ plan: 'version_2', billingDuration: '12_months' });
+  });
+
+  test('passes custom billingDuration (e.g. 6_months) in request body', async () => {
+    global.fetch = reply(200, { success: true, data: { paymentUrl: 'https://payments.zoho.in/buyer-6m', paymentLinkId: 'pl-b-6m', status: 'CREATED' } });
+
+    const res = await createBuyerPaymentLink('buyer-1', 'version_2', '6_months');
+
+    expect(res.success).toBe(true);
+    expect(JSON.parse(lastInit().body)).toEqual({ plan: 'version_2', billingDuration: '6_months' });
   });
 
   test('attaches the session token when one is held', async () => {

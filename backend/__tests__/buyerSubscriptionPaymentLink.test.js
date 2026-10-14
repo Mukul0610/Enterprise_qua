@@ -123,10 +123,37 @@ describe('POST /api/buyer-accounts/:id/subscription-payment', () => {
       data: { paymentUrl: 'https://payments.zoho.in/buyer-happy', paymentLinkId: expect.any(String), status: 'CREATED' },
     });
     expect(zohoPaymentService.createPaymentLink).toHaveBeenCalledWith(
-      expect.objectContaining({ planId: 'version_2', email: buyerAccount.corporateEmail, phone: buyerAccount.mobileNumber })
+      expect.objectContaining({ planId: 'version_2', email: buyerAccount.corporateEmail, phone: buyerAccount.mobileNumber, amountInr: 106185.84 })
     );
     const link = await storeService.getPaymentLinkByZohoId('zoho-buyer-happy-1');
-    expect(link).toMatchObject({ buyerAccountId: buyerAccount.id, payerType: 'buyer', planId: 'version_2' });
+    expect(link).toMatchObject({ buyerAccountId: buyerAccount.id, payerType: 'buyer', planId: 'version_2', billingDuration: '12_months', amount: 106185.84 });
+  });
+
+  test('creates a payment link for 6_months billing duration with ₹500 higher price', async () => {
+    zohoPaymentService.createPaymentLink.mockResolvedValue({
+      zohoPaymentLinkId: 'zoho-buyer-6m-1',
+      paymentUrl: 'https://payments.zoho.in/buyer-6m',
+      status: 'CREATED',
+      rawResponse: { payment_links: {} },
+    });
+
+    const res = await request(app)
+      .post(`/api/buyer-accounts/${buyerAccount.id}/subscription-payment`)
+      .set(authHeader('buyer'))
+      .send({ plan: 'version_2', billingDuration: '6_months' });
+
+    expect(res.statusCode).toBe(200);
+    expect(zohoPaymentService.createPaymentLink).toHaveBeenCalledWith(
+      expect.objectContaining({ planId: 'version_2', amountInr: 56632.92, planLabel: expect.stringContaining('(6 Months)') })
+    );
+    const link = await storeService.getPaymentLinkByZohoId('zoho-buyer-6m-1');
+    expect(link).toMatchObject({ buyerAccountId: buyerAccount.id, payerType: 'buyer', planId: 'version_2', billingDuration: '6_months', amount: 56632.92 });
+
+    // Activating this payment updates the buyer's subscriptionPlan and billingDuration
+    storeService.activateBuyerSubscriptionFromPayment(link.id);
+    const updatedBuyer = storeService.buyerAccounts.find((b) => b.id === buyerAccount.id);
+    expect(updatedBuyer.subscriptionPlan).toBe('version_2');
+    expect(updatedBuyer.billingDuration).toBe('6_months');
   });
 
   test('defaults status to CREATED when Zoho omits it', async () => {

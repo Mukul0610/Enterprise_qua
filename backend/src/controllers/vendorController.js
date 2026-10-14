@@ -686,6 +686,8 @@ async function bulkImportVendors(req, res, next) {
         });
       }
       buyerAttribution = { buyerId: buyerAccount.id, addedByBuyerCompany: buyerAccount.organizationName, source: 'buyer_excel' };
+    } else {
+      buyerAttribution = { source: 'category_manager_upload' };
     }
 
     const rows = Array.isArray(req.body.vendors) ? req.body.vendors : null;

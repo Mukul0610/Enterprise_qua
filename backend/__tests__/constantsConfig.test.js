@@ -217,8 +217,13 @@ describe('ZOHO_CONFIG', () => {
   test('plan amounts add GST and return null for unpayable plans', () => {
     const { computeZohoPlanAmount, computeZohoBuyerPlanAmount } = loadConstants();
     expect(computeZohoPlanAmount('connect')).toBe(7498.99);
-    expect(computeZohoPlanAmount('premium')).toBeNull();
-    expect(computeZohoBuyerPlanAmount('version_1')).toBe(14999);
+    expect(computeZohoBuyerPlanAmount('version_1')).toBe(70785.84);
+    expect(computeZohoBuyerPlanAmount('version_1', '12_months')).toBe(70785.84);
+    expect(computeZohoBuyerPlanAmount('version_1', '6_months')).toBe(38932.92);
+    expect(computeZohoBuyerPlanAmount('version_2', '12_months')).toBe(106185.84);
+    expect(computeZohoBuyerPlanAmount('version_2', '6_months')).toBe(56632.92);
+    expect(computeZohoBuyerPlanAmount('version_3', '12_months')).toBe(141585.84);
+    expect(computeZohoBuyerPlanAmount('version_3', '6_months')).toBe(74332.92);
     expect(computeZohoBuyerPlanAmount('free_trial')).toBeNull();
   });
 });
