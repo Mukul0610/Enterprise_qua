@@ -491,3 +491,53 @@ describe('mailerService RFQ-not-created notice', () => {
     await expect(mailerService.sendRfqNotCreatedEmail()).resolves.toEqual({ sent: false, reason: 'missing recipient email' });
   });
 });
+
+describe('a poll stops starting new messages once its time budget is spent', () => {
+  test('the second message is left unread for the next poll', async () => {
+    jest.spyOn(mailerService, 'getGmailOAuthClient').mockReturnValue({});
+    jest.spyOn(emailGatewayQueries, 'hasProcessed').mockResolvedValue(false);
+    const list = jest.fn().mockResolvedValue({ data: { messages: [{ id: 'slow1' }, { id: 'slow2' }] } });
+    const get = jest.fn().mockResolvedValue({ data: { raw: raw().toString('base64url') } });
+    const modify = jest.fn().mockResolvedValue({});
+    jest.spyOn(googleapis.google, 'gmail').mockReturnValue({ users: { messages: { list, get, modify } } });
+
+    let now = 1_000_000;
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest.spyOn(emailGatewayService, 'processMessage').mockImplementation(async () => {
+      now += emailGatewayService.POLL_WORK_BUDGET_MS + 1;
+      return { status: INGESTION_OUTCOME.NO_LINE_ITEMS, detail: 'x', message: { messageId: '<slow1@x>' } };
+    });
+
+    const result = await emailGatewayService.pollViaGmailApi(config());
+
+    expect(emailGatewayService.processMessage).toHaveBeenCalledTimes(1);
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(result.outcomes.map((o) => o.uid)).toEqual(['slow1']);
+  });
+});
+
+describe('vendor unlock and credit queries have a SQLite spelling for D1', () => {
+  const domainQueries = require('../src/db/domainQueries');
+
+  beforeEach(() => jest.spyOn(dbPool, 'hasStorage').mockReturnValue(true));
+
+  test('unlockRFQInDB', async () => {
+    const query = jest.spyOn(dbPool, 'query').mockResolvedValue({ rows: [{ id: 'u1' }] });
+    await expect(domainQueries.unlockRFQInDB({ id: 'u1', vendorId: 'v1', rfqId: 'r1' })).resolves.toEqual({ id: 'u1' });
+    const options = query.mock.calls[0][2];
+    expect(options.d1).toBe(true);
+    expect(options.d1Text).toContain('CURRENT_TIMESTAMP');
+    expect(options.d1Text).not.toContain('now()');
+  });
+
+  test('recordCreditTransactionInDB', async () => {
+    const query = jest.spyOn(dbPool, 'query').mockResolvedValue({ rows: [] });
+    await expect(
+      domainQueries.recordCreditTransactionInDB({ id: 't1', vendorId: 'v1', transactionType: 'DEBIT', amount: 1, balanceAfter: 4 })
+    ).resolves.toBeUndefined();
+    const options = query.mock.calls[0][2];
+    expect(options.d1Text).toContain('CURRENT_TIMESTAMP');
+    expect(options.d1Text).not.toContain('now()');
+    expect(query.mock.calls[0][1]).toEqual(['t1', 'v1', null, 'DEBIT', 1, 4, null]);
+  });
+});

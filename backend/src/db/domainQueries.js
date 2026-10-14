@@ -1136,7 +1136,15 @@ async function unlockRFQInDB({ id, vendorId, rfqId, creditCharged = 1, source = 
      ON CONFLICT (vendor_id, rfq_id) DO NOTHING
      RETURNING *`,
     [id, vendorId, rfqId, creditCharged, source],
-    { d1: true }
+    {
+      d1: true,
+      // SQLite has no now(); without its own spelling every D1 unlock failed
+      // ("no such function: now") once the table existed.
+      d1Text: `INSERT INTO rfq_unlocks (id, vendor_id, rfq_id, credit_charged, source, unlocked_at, created_at)
+     VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+     ON CONFLICT (vendor_id, rfq_id) DO NOTHING
+     RETURNING *`,
+    }
   );
   return result && result.rows ? result.rows[0] : null;
 }
@@ -1169,7 +1177,13 @@ async function recordCreditTransactionInDB({ id, vendorId, rfqId, transactionTyp
      ON CONFLICT (idempotency_key) DO NOTHING
      RETURNING *`,
     [id, vendorId, rfqId || null, transactionType, amount, balanceAfter, idempotencyKey || null],
-    { d1: true }
+    {
+      d1: true,
+      d1Text: `INSERT INTO vendor_credit_transactions (id, vendor_id, rfq_id, transaction_type, amount, balance_after, idempotency_key, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+     ON CONFLICT (idempotency_key) DO NOTHING
+     RETURNING *`,
+    }
   );
   return result && result.rows ? result.rows[0] : null;
 }
