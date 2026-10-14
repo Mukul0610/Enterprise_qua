@@ -1527,22 +1527,18 @@ describe('Store Service & Business Operations', () => {
         }
       });
 
-      test('a V0 RFQ with no category signal skips category matching and uses the network fallback', async () => {
+      test('a V0 RFQ with no category signal skips category matching and network fallback, routing to Category Manager', async () => {
         const originalPool = domainPool.pool;
         domainPool.pool = { query: jest.fn() };
         const catSpy = jest.spyOn(domainQueries, 'getPublicVendorsMatchingCategories');
-        // No category signal skips the category query but still falls back to the
-        // public network so a V0 RFQ is never left with no invited vendors.
-        const pageSpy = jest.spyOn(domainQueries, 'getVendorsPageFromDB').mockResolvedValue({
-          rows: [{ id: 'net-1', name: 'Network Vendor', source: 'procucev_network', rating: 4 }],
-          total: 1,
-        });
+        const pageSpy = jest.spyOn(domainQueries, 'getVendorsPageFromDB');
         try {
           const rfq = { id: 'r2', sourcingMode: 'mode_0', category: '', extractedEntities: [], assignedVendors: [] };
           const result = await storeService.augmentV0AssignmentsFromDB(rfq);
           expect(catSpy).not.toHaveBeenCalled();
-          expect(pageSpy).toHaveBeenCalledWith(expect.objectContaining({ publicOnly: true }));
-          expect(result.assignedVendors.map((v) => v.id)).toContain('net-1');
+          expect(pageSpy).not.toHaveBeenCalled();
+          expect(result.assignedVendors).toEqual([]);
+          expect(result.needsCategoryManagerAssignment).toBe(true);
         } finally {
           domainPool.pool = originalPool;
         }

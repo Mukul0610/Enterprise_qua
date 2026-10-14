@@ -17,6 +17,10 @@
   "version_metadata": {
     "binding": "CF_VERSION_METADATA"
   },
+  "vars": {
+    "NODE_BACKEND_URL": "https://procucev-enterprise-backend.procucev-enterprise.workers.dev",
+    "NEXT_PUBLIC_BACKEND_URL": "https://procucev-enterprise-backend.procucev-enterprise.workers.dev"
+  },
   "env": {
     "dev": {
       "name": "procucev-enterprise-frontend-dev",

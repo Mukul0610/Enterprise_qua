@@ -2086,46 +2086,80 @@ class StoreService {
             }
           }
         }
-      }
 
-      // Auto-populate category-matched Procucev verified vendors
-      let procucevMatches = this.candidateVendorsForRFQ(newRFQ)
-        .filter((v) => this.isProcucevVendor(v))
-        .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
+        // Auto-populate category-matched Procucev verified vendors
+        let procucevMatches = this.candidateVendorsForRFQ(newRFQ)
+          .filter((v) => this.isProcucevVendor(v))
+          .sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0));
 
-      if (newRFQ.deliveryPincode) {
-        const targetPincode = String(newRFQ.deliveryPincode).trim();
-        const pinMatches = procucevMatches.filter(
-          (v) => v.pincode && String(v.pincode).trim() === targetPincode
+        if (newRFQ.deliveryPincode) {
+          const targetPincode = String(newRFQ.deliveryPincode).trim();
+          const pinMatches = procucevMatches.filter(
+            (v) => v.pincode && String(v.pincode).trim() === targetPincode
+          );
+          const pinNonMatches = procucevMatches.filter(
+            (v) => !(v.pincode && String(v.pincode).trim() === targetPincode)
+          );
+          procucevMatches = [...pinMatches, ...pinNonMatches].slice(0, MAX_V0_CATEGORY_INVITES);
+        } else {
+          procucevMatches = procucevMatches.slice(0, MAX_V0_CATEGORY_INVITES);
+        }
+
+        const existingKeys = new Set(
+          (newRFQ.assignedVendors || []).map((v) => (v.id || v.email || v.name || '').toLowerCase())
         );
-        const pinNonMatches = procucevMatches.filter(
-          (v) => !(v.pincode && String(v.pincode).trim() === targetPincode)
-        );
-        procucevMatches = [...pinMatches, ...pinNonMatches].slice(0, MAX_V0_CATEGORY_INVITES);
+        const additions = procucevMatches
+          .filter((v) => !existingKeys.has((v.id || v.email || v.name || '').toLowerCase()))
+          .map((v) => ({
+            id: v.id,
+            name: v.name,
+            email: v.email || null,
+            contactPerson: v.contactPerson || null,
+            phone: v.phone || null,
+            source: v.source || 'procucev_network',
+          }));
+
+        if (additions.length > 0) {
+          newRFQ.assignedVendors = [...newRFQ.assignedVendors, ...additions];
+        }
+        if (newRFQ.followUpData) {
+          newRFQ.followUpData.totalInvited = newRFQ.assignedVendors.length;
+          newRFQ.followUpData.vendors = newRFQ.assignedVendors;
+        }
       } else {
-        procucevMatches = procucevMatches.slice(0, MAX_V0_CATEGORY_INVITES);
-      }
+        // V0 RFQ created without selecting a category:
+        // Do NOT automatically assign to all Procucev vendors.
+        // Route to Category Manager for manual vendor assignment.
+        newRFQ.assignedVendors = [];
+        if (newRFQ.followUpData) {
+          newRFQ.followUpData.totalInvited = 0;
+          newRFQ.followUpData.vendors = [];
+        }
+        newRFQ.procucevVendorCount = 0;
+        newRFQ.needsCategoryManagerAssignment = true;
 
-      const existingKeys = new Set(
-        (newRFQ.assignedVendors || []).map((v) => (v.id || v.email || v.name || '').toLowerCase())
-      );
-      const additions = procucevMatches
-        .filter((v) => !existingKeys.has((v.id || v.email || v.name || '').toLowerCase()))
-        .map((v) => ({
-          id: v.id,
-          name: v.name,
-          email: v.email || null,
-          contactPerson: v.contactPerson || null,
-          phone: v.phone || null,
-          source: v.source || 'procucev_network',
-        }));
+        this.addAuditLog({
+          userEmail: buyerEmail || SYSTEM_ACTOR_EMAIL,
+          action: `V0 RFQ created without category. Routed to Category Manager for manual vendor assignment.`,
+          rfqNumber,
+        });
 
-      if (additions.length > 0) {
-        newRFQ.assignedVendors = [...newRFQ.assignedVendors, ...additions];
-      }
-      if (newRFQ.followUpData) {
-        newRFQ.followUpData.totalInvited = newRFQ.assignedVendors.length;
-        newRFQ.followUpData.vendors = newRFQ.assignedVendors;
+        const cmNotification = this._buildNotification({
+          recipientType: 'category_manager',
+          recipientId: 'category-manager-team',
+          kind: 'rfq_pending_assignment',
+          rfq: newRFQ,
+          title: `Action Required: RFQ ${newRFQ.rfqNumber} Pending Vendor Assignment`,
+          message: `V0 RFQ ${newRFQ.rfqNumber} was submitted without category. Please manually assign appropriate vendor(s).`,
+          meta: {
+            rfqId: newRFQ.id,
+            rfqNumber: newRFQ.rfqNumber,
+            sourcingMode: 'mode_0',
+            needsAssignment: true,
+          },
+        });
+        this.notifications.unshift(cmNotification);
+        this._persistNotification(cmNotification);
       }
     }
 
@@ -2240,9 +2274,15 @@ class StoreService {
 
     if (isV0) {
       // V0: Every invited vendor is a Procucev network vendor — report total assigned.
-      procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
-        ? (newRFQ.assignedVendors || []).length
-        : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      // If no category was selected, strictly 0 vendors until Category Manager assigns them.
+      const signals = this._rfqCategorySignals(newRFQ);
+      if (!signals || signals.length === 0) {
+        procucevVendorCount = (newRFQ.assignedVendors || []).length;
+      } else {
+        procucevVendorCount = (newRFQ.assignedVendors || []).length > 0
+          ? (newRFQ.assignedVendors || []).length
+          : this.candidateVendorsForRFQ(newRFQ).filter((v) => this.isProcucevVendor(v)).length;
+      }
     } else if (isV2) {
       // V2 Hybrid: report the count of Procucev verified vendors that can assign / are assigned to this RFQ
       const procucevAssigned = (newRFQ.assignedVendors || []).filter((v) => {
@@ -2426,7 +2466,7 @@ class StoreService {
     let autoClosed = false;
     let finalStatus = nextStatus;
 
-    if (allInvitedSubmitted && rfq.status !== 'Closed' && rfq.status !== 'PO Generated') {
+    if (!isV0 && allInvitedSubmitted && rfq.status !== 'Closed' && rfq.status !== 'PO Generated') {
       finalStatus = 'Closed';
       autoClosed = true;
       logger.info(
@@ -2957,6 +2997,12 @@ class StoreService {
       });
       if (procucevAssigned.length > 0) return procucevAssigned.length;
     }
+    if (isV0) {
+      const signals = this._rfqCategorySignals(rfq);
+      if (!signals || signals.length === 0) {
+        return (Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors.length : 0);
+      }
+    }
     if (isV0 || isV2 || isV3) {
       return this.candidateVendorsForRFQ(rfq).filter((v) => this.isProcucevVendor(v)).length;
     }
@@ -3036,7 +3082,8 @@ class StoreService {
     // This is the same directory total the Operational Kanban already shows.
     // Autonomous V3 and hybrid V2 both expand into this whole public network,
     // so it is the honest "Procucev vendors available for this version" figure.
-    if (dbCount === 0) {
+    // For V0 without categories, do NOT fallback to the directory-wide count!
+    if (dbCount === 0 && !isV0) {
       try {
         const page = await domainQueries.getVendorsPageFromDB({ limit: 1, offset: 0, publicOnly: true });
         if (page && typeof page.total === 'number') {
@@ -3049,6 +3096,10 @@ class StoreService {
           'STORE_SERVICE'
         );
       }
+    }
+
+    if (isV0 && (!signals || signals.length === 0)) {
+      return (Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors.length : 0);
     }
 
     // Never regress below whatever the in-memory subset already counted.
@@ -3085,6 +3136,14 @@ class StoreService {
     const MAX_V0_CATEGORY_INVITES = 100;
     const signals = this._rfqCategorySignals(rfq);
 
+    // If a V0 RFQ was submitted without selecting a category, do NOT automatically assign
+    // vendors or fallback to the general public directory. It routes to Category Manager for manual assignment.
+    if (!Array.isArray(signals) || signals.length === 0) {
+      rfq.assignedVendors = Array.isArray(rfq.assignedVendors) ? rfq.assignedVendors : [];
+      rfq.procucevVendorCount = rfq.assignedVendors.length;
+      rfq.needsCategoryManagerAssignment = true;
+      return rfq;
+    }
     let dbMatches = [];
     // 1. Category-matched public vendors from the whole directory.
     if (Array.isArray(signals) && signals.length > 0) {
@@ -3149,7 +3208,7 @@ class StoreService {
         name: v.name,
         email: v.email || null,
         contactPerson: v.contactPerson || null,
-        phone: v.phone || null,
+        phone: v.phone || v.mobile || v.mobileNumber || null,
         source: v.source || 'procucev_network',
       }));
 
@@ -3165,6 +3224,24 @@ class StoreService {
       procucevVendorCount: merged.length,
       ...(followUpData ? { followUpData } : {}),
     }) || { ...rfq, assignedVendors: merged, procucevVendorCount: merged.length, followUpData };
+
+    // Schedule multi-channel / 5-minute SMS chasers for newly assigned V0 vendors
+    const resolvedAdditions = additions.map((v) => {
+      const full = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+      return {
+        ...v,
+        phone: full.phone || full.mobile || full.mobileNumber || v.phone,
+        email: full.email || v.email,
+        name: full.name || v.name,
+        contactPerson: full.contactPerson || v.contactPerson,
+      };
+    });
+
+    rfqChaserScheduler.scheduleRFQChasers(
+      updated,
+      resolvedAdditions,
+      (vendor) => this.checkVendorQuotationEligibility(vendor)
+    );
 
     logger.info(
       `V0 RFQ ${rfq.rfqNumber}: assigned ${merged.length} Procucev vendors from DB match (${additions.length} added)`,
@@ -3189,7 +3266,7 @@ class StoreService {
     if (!vendor || !rfq) return false;
 
     // Enterprise QUA – V0 Flow: When RFQ is raised from V0 (mode_0), it reaches ONLY Procucev vendors.
-    if (rfq.sourcingMode === 'mode_0' || rfq.sourcingMode === 'v0') {
+    if (rfq.sourcingMode === 'mode_0' || rfq.sourcingMode === 'v0' || rfq.sourcingMode === 'version_0') {
       if (!this.isProcucevVendor(vendor)) {
         return false;
       }
@@ -3335,7 +3412,20 @@ class StoreService {
       contactPerson: v.contactPerson || null,
       phone: v.phone || v.mobile || v.mobileNumber || null,
     }));
-    const updatedRFQ = this.updateRFQ(rfq.id, { assignedVendors: [...existing, ...entries] });
+    const allAssigned = [...existing, ...entries];
+    const updatePayload = {
+      assignedVendors: allAssigned,
+      needsCategoryManagerAssignment: false,
+      procucevVendorCount: allAssigned.length,
+    };
+    if (rfq.followUpData) {
+      updatePayload.followUpData = {
+        ...rfq.followUpData,
+        totalInvited: allAssigned.length,
+        vendors: allAssigned,
+      };
+    }
+    const updatedRFQ = this.updateRFQ(rfq.id, updatePayload);
 
     for (const vendor of newlyInvited) {
       const isOverride = overrideVendors.some((ov) => ov.id === vendor.id);
@@ -3393,6 +3483,24 @@ class StoreService {
       action: `Invited ${newlyInvited.length} vendor(s) to ${rfq.rfqNumber}`,
       rfqNumber: rfq.rfqNumber,
     });
+
+    // Schedule multi-channel / 5-minute SMS chasers for newly invited vendors
+    const resolvedNewlyInvited = newlyInvited.map((v) => {
+      const full = (v.id ? this.getVendorById(v.id, 'all') : null) || v;
+      return {
+        ...v,
+        phone: full.phone || full.mobile || full.mobileNumber || v.phone,
+        email: full.email || v.email,
+        name: full.name || v.name,
+        contactPerson: full.contactPerson || v.contactPerson,
+      };
+    });
+
+    rfqChaserScheduler.scheduleRFQChasers(
+      updatedRFQ,
+      resolvedNewlyInvited,
+      (vendor) => this.checkVendorQuotationEligibility(vendor)
+    );
 
     return {
       updatedRFQ,

@@ -128,18 +128,10 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
     jest.useRealTimers();
   });
 
-  test('Step 4, 5, 6, 7: Final invited vendor quote auto-closes the RFQ, emails the buyer an acknowledgement, hides quotes from portal, bypasses 48h restriction', async () => {
-    jest.useFakeTimers();
-    // When every invited vendor has quoted, the RFQ auto-closes and the buyer
-    // receives the auto-closure acknowledgement email (not the per-quote
-    // "Quotes Received" email). The 5-minute comparison email/SMS fire later.
-    const autoClosureSpy = jest
-      .spyOn(mailerService, 'sendRfqAutoClosureAcknowledgementEmail')
+  test('Step 4, 5, 6, 7: Vendor quote updates V0 status to Quotes Received, does NOT auto-close to Closed, emails buyer quote', async () => {
+    const quoteEmailSpy = jest
+      .spyOn(mailerService, 'sendQuoteReceivedEmail')
       .mockResolvedValue({ sent: true });
-    const comparisonEmailSpy = jest
-      .spyOn(mailerService, 'sendRfqFinalComparisonEmail')
-      .mockResolvedValue({ sent: true });
-    jest.spyOn(smsService, 'sendBuyerComparisonSms').mockResolvedValue({ success: true });
 
     const rfq = storeService.createRFQ({
       title: 'Centrifugal Pumps Sourcing',
@@ -147,13 +139,13 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
       sourcingMode: 'mode_0',
       deliveryPincode: '380001',
       source: 'web_portal',
-      createdAt: new Date().toISOString(), // Brand new RFQ (within 48h)
+      createdAt: new Date().toISOString(),
     }, buyerAccount);
 
     // The single matched vendor is the only invited vendor on this RFQ.
     expect(rfq.assignedVendors.some((v) => v.id === matchedVendor.id)).toBe(true);
 
-    // Step 4: Vendor submits quote — this is 100% of invited vendors.
+    // Step 4: Vendor submits quote
     const quotePayload = {
       vendorId: matchedVendor.id,
       vendorName: matchedVendor.name,
@@ -165,31 +157,21 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
 
     const updatedRfq = storeService.addQuoteToRFQ(rfq.id, quotePayload);
 
-    // Step 4 Verification: buyer receives the immediate auto-closure acknowledgement email.
-    expect(autoClosureSpy).toHaveBeenCalledWith(
-      BUYER_EMAIL,
+    // Step 5: For V0, status changes to "Quotes Received" and does NOT automatically change to "Closed"
+    expect(updatedRfq.status).toBe('Quotes Received');
+    expect(updatedRfq.status).not.toBe('Closed');
+    expect(updatedRfq.autoClosedReason).toBeUndefined();
+
+    // Verify buyer receives quote email immediately with RFQ and quote payload
+    expect(quoteEmailSpy).toHaveBeenCalledTimes(1);
+    expect(quoteEmailSpy).toHaveBeenCalledWith(
+      buyerAccount.corporateEmail,
       expect.objectContaining({
-        rfq: expect.objectContaining({ rfqNumber: rfq.rfqNumber }),
-        quotesCount: 1,
+        rfq: expect.objectContaining({ id: rfq.id, rfqNumber: rfq.rfqNumber }),
+        quote: expect.objectContaining({ totalPrice: 120000, vendorId: matchedVendor.id }),
       })
     );
-
-    // Step 5: 100% invited participation auto-closes the RFQ.
-    expect(updatedRfq.status).toBe('Closed');
-    expect(updatedRfq.autoClosedReason).toBe('All invited vendors submitted quotes');
-
-    // The scheduled 5-minute comparison dispatch fires after the delay (the
-    // closure also sends an immediate comparison email via notifyOfRFQClosure,
-    // so advancing the timer adds one more dispatch).
-    const callsBeforeAdvance = comparisonEmailSpy.mock.calls.length;
-    jest.advanceTimersByTime(5 * 60 * 1000 + 100);
-    expect(comparisonEmailSpy.mock.calls.length).toBeGreaterThan(callsBeforeAdvance);
-    expect(comparisonEmailSpy).toHaveBeenCalledWith(
-      BUYER_EMAIL,
-      expect.objectContaining({ rfq: expect.objectContaining({ rfqNumber: rfq.rfqNumber }) })
-    );
-
-    jest.useRealTimers();
+    quoteEmailSpy.mockRestore();
 
     // Step 6 & 7: Buyer portal view verification via API
     const buyerViewRes = await request(app)
@@ -197,11 +179,50 @@ describe('V0 Flow E2E - 7-Step Actual Flow Verification', () => {
       .set(buyerAuthHeader);
 
     expect(buyerViewRes.status).toBe(200);
-    expect(buyerViewRes.body.data.status).toBe('Closed');
-    // Step 6: Quotes not displayed in portal for comparison & vendor details not visible
+    expect(buyerViewRes.body.data.status).toBe('Quotes Received');
+    // Quotes not displayed in portal for comparison & vendor details not visible for V0
     expect(buyerViewRes.body.data.quotes).toEqual([]);
     expect(buyerViewRes.body.data.assignedVendors).toEqual([]);
-    // Step 7: 48-hour sealed restriction does not apply to V0
-    expect(buyerViewRes.body.data.quotesHidden).toBe(false);
+  });
+
+  test('V0 RFQ without category: is NOT automatically assigned to vendors and routes to Category Manager', async () => {
+    const uncategorizedRfq = storeService.createRFQ({
+      title: 'General Industrial Hardware',
+      sourcingMode: 'mode_0',
+      deliveryLocation: 'Ahmedabad, Gujarat',
+      deliveryPincode: '380001',
+      lineItems: [{ description: 'Steel fasteners', quantity: 100, unit: 'kg' }],
+    }, buyerAccount);
+
+    // Category was not selected by buyer
+    expect(uncategorizedRfq.category).toBeNull();
+    // Must NOT be automatically assigned to all Procucev vendors
+    expect(uncategorizedRfq.assignedVendors).toEqual([]);
+    expect(uncategorizedRfq.procucevVendorCount).toBe(0);
+    expect(uncategorizedRfq.needsCategoryManagerAssignment).toBe(true);
+
+    const augmented = await storeService.augmentV0AssignmentsFromDB(uncategorizedRfq);
+    expect(augmented.assignedVendors).toEqual([]);
+    expect(augmented.procucevVendorCount).toBe(0);
+
+    // Category Manager notification was generated
+    const cmNotif = storeService.notifications.find(
+      (n) => n.recipientType === 'category_manager' && n.meta?.rfqId === uncategorizedRfq.id
+    );
+    expect(cmNotif).toBeDefined();
+    expect(cmNotif.title).toContain('Pending Vendor Assignment');
+
+    // Matched vendor does not cover this RFQ before manual CM assignment
+    expect(storeService.vendorCoversRFQ(matchedVendor, uncategorizedRfq)).toBe(false);
+
+    // Category Manager manually assigns the vendor
+    await storeService.inviteVendorsToRFQ(uncategorizedRfq.id, [matchedVendor.id], 'cm@procucev.com');
+
+    // Vendor can now see and cover the RFQ
+    const refreshedRfq = storeService.getRFQById(uncategorizedRfq.id);
+    expect(refreshedRfq.assignedVendors.some((v) => v.id === matchedVendor.id)).toBe(true);
+    expect(storeService.vendorCoversRFQ(matchedVendor, refreshedRfq)).toBe(true);
+    expect(refreshedRfq.needsCategoryManagerAssignment).toBe(false);
+    expect(refreshedRfq.procucevVendorCount).toBe(refreshedRfq.assignedVendors.length);
   });
 });

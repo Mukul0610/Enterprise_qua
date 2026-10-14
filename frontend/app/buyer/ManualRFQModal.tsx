@@ -617,7 +617,7 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
     }
 
     onCreated(result.rfq);
-    onClose();
+    setConfirmationRfq(result.rfq);
     setSubmitAttempted(false);
   };
 
@@ -668,9 +668,32 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
               <CheckCircle2 size={36} />
             </div>
             <div className="space-y-2">
-              <h3 className="text-xl font-bold text-slate-900 dark:text-white">RFQ Created & Dispatched Successfully!</h3>
+              <h3 className="text-xl font-bold text-slate-900 dark:text-white">
+                {(() => {
+                  const mode = confirmationRfq.sourcingMode as any;
+                  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                  const hasCat = Boolean(confirmationRfq.category || (Array.isArray(confirmationRfq.extractedEntities) && confirmationRfq.extractedEntities.some((e: any) => e.majorCategory || e.minorCategory || e.category)));
+                  return (isV0 && !hasCat) ? 'RFQ Created & Forwarded to Category Manager' : 'RFQ Created & Dispatched Successfully!';
+                })()}
+              </h3>
               <p className="text-sm text-slate-500 dark:text-gray-400 max-w-md mx-auto">
-                Your RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been saved and invitations have been queued for matched suppliers.
+                {(() => {
+                  const mode = confirmationRfq.sourcingMode as any;
+                  const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                  const hasCat = Boolean(confirmationRfq.category || (Array.isArray(confirmationRfq.extractedEntities) && confirmationRfq.extractedEntities.some((e: any) => e.majorCategory || e.minorCategory || e.category)));
+                  if (isV0 && !hasCat) {
+                    return (
+                      <>
+                        Your V0 RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been submitted without a category and forwarded to the <strong>Category Manager</strong> for manual vendor assignment.
+                      </>
+                    );
+                  }
+                  return (
+                    <>
+                      Your RFQ <strong className="text-indigo-600 dark:text-indigo-400 font-mono">{confirmationRfq.rfqNumber}</strong> has been saved and invitations have been queued for matched suppliers.
+                    </>
+                  );
+                })()}
               </p>
             </div>
 
@@ -681,7 +704,9 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Category</span>
-                <span className="text-xs font-bold text-slate-800 dark:text-gray-200 truncate block">{confirmationRfq.category || confirmationRfq.title}</span>
+                <span className="text-xs font-bold text-slate-800 dark:text-gray-200 truncate block">
+                  {confirmationRfq.category || (((confirmationRfq.sourcingMode as any) === 'mode_0' || (confirmationRfq.sourcingMode as any) === 'v0' || (confirmationRfq.sourcingMode as any) === 'version_0') ? ((!Boolean(confirmationRfq.category || (Array.isArray(confirmationRfq.extractedEntities) && confirmationRfq.extractedEntities.some((e: any) => e.majorCategory || e.minorCategory || e.category)))) ? 'Uncategorized (Pending CM)' : confirmationRfq.title) : confirmationRfq.title)}
+                </span>
               </div>
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Items / Budget</span>
@@ -692,7 +717,15 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
               <div className="p-3 bg-slate-50 dark:bg-gray-800/60 rounded-xl border border-slate-200/60 dark:border-gray-800">
                 <span className="text-[10px] font-semibold text-slate-400 block uppercase tracking-wider">Vendors Assigned</span>
                 <span data-testid="confirmation-vendor-count" className="text-xs font-bold text-indigo-600 dark:text-indigo-400 font-mono">
-                  {resolveConfirmationVendorCount(confirmationRfq)}
+                  {(() => {
+                    const mode = confirmationRfq.sourcingMode as any;
+                    const isV0 = mode === 'mode_0' || mode === 'v0' || mode === 'version_0';
+                    const hasCat = Boolean(confirmationRfq.category || (Array.isArray(confirmationRfq.extractedEntities) && confirmationRfq.extractedEntities.some((e: any) => e.majorCategory || e.minorCategory || e.category)));
+                    if (isV0 && !hasCat && (!confirmationRfq.assignedVendors || confirmationRfq.assignedVendors.length === 0)) {
+                      return '0 (Pending CM Assignment)';
+                    }
+                    return resolveConfirmationVendorCount(confirmationRfq);
+                  })()}
                 </span>
               </div>
             </div>
@@ -1041,8 +1074,18 @@ export default function ManualRFQModal({ isOpen, onClose, onCreated }: ManualRFQ
                     <tr>
                       <th className="px-2 py-2 font-bold">{MODAL.colItem}</th>
                       <th className="px-2 py-2 font-bold">{MODAL.colSpecs}</th>
-                      <th className="px-2 py-2 font-bold">{MODAL.colMajor}</th>
-                      <th className="px-2 py-2 font-bold">{MODAL.colMinor}</th>
+                      <th className="px-2 py-2 font-bold">
+                        {MODAL.colMajor}
+                        {form.sourcingMode === 'mode_0' && (
+                          <span className="ml-1 text-[9px] font-medium text-slate-400 normal-case">(Optional)</span>
+                        )}
+                      </th>
+                      <th className="px-2 py-2 font-bold">
+                        {MODAL.colMinor}
+                        {form.sourcingMode === 'mode_0' && (
+                          <span className="ml-1 text-[9px] font-medium text-slate-400 normal-case">(Optional)</span>
+                        )}
+                      </th>
                       <th className="px-2 py-2 font-bold">{MODAL.colQty}</th>
                       <th className="px-2 py-2 font-bold">{MODAL.colUnit}</th>
                       <th className="px-2 py-2" />

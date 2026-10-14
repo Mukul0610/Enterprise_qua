@@ -3,6 +3,10 @@ import { TextEncoder, TextDecoder } from 'util';
 import { setCategoryTaxonomy } from '@/lib/categoryTaxonomy';
 import { CATEGORY_TAXONOMY_FIXTURE } from './test-fixtures/categoryTaxonomy';
 
+// Ensure unit tests run against clean local mocks and do not patch fetch to remote URLs
+delete process.env.NEXT_PUBLIC_BACKEND_URL;
+delete process.env.NODE_BACKEND_URL;
+
 // Polyfill TextEncoder and TextDecoder
 if (typeof global.TextEncoder === 'undefined') {
   global.TextEncoder = TextEncoder;

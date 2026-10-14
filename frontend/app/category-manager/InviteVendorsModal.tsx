@@ -76,7 +76,8 @@ export default function InviteVendorsModal({ isOpen, rfq, onClose, onInvited }: 
 
   useEffect(() => {
     if (!isOpen || !rfq) return;
-    setTab('category');
+    const signals = rfqCategorySignals(rfq);
+    setTab(signals.length === 0 ? 'all' : 'category');
     setSearch('');
     setDebouncedSearch('');
     setCategoryFilter('');
@@ -310,7 +311,22 @@ export default function InviteVendorsModal({ isOpen, rfq, onClose, onInvited }: 
           )}
 
           {tab === 'category' && !loading && !error && candidates.length === 0 && (
-            <p className="text-sm text-slate-500 dark:text-gray-450 py-8 text-center">{S.noCandidates}</p>
+            <div className="py-8 text-center space-y-2">
+              <p className="text-sm text-slate-500 dark:text-gray-450">
+                {categorySignals.length === 0
+                  ? 'This V0 RFQ was submitted without a category. Switch to the "All Vendors" tab above to search and manually assign suppliers.'
+                  : S.noCandidates}
+              </p>
+              {categorySignals.length === 0 && (
+                <button
+                  type="button"
+                  onClick={() => setTab('all')}
+                  className="btn btn-secondary btn-sm text-xs font-bold text-indigo-600 dark:text-indigo-400"
+                >
+                  Go to All Vendors
+                </button>
+              )}
+            </div>
           )}
 
           {tab === 'all' && allVendorsLoading && (

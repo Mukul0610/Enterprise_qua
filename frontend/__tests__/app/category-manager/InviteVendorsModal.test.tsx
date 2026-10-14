@@ -450,4 +450,41 @@ describe('InviteVendorsModal — All Vendors tab', () => {
     expect(screen.getByTestId('invite-tab-category')).toHaveClass('bg-indigo-600');
     expect(mockFetchAllVendors).toHaveBeenCalledTimes(1);
   });
+
+  it('selects All Vendors tab initially and starts paginated vendor fetch for uncategorized V0 RFQ', async () => {
+    const uncategorizedV0Rfq: RFQItem = {
+      ...RFQ,
+      id: 'rfq-v0-uncat',
+      rfqNumber: 'RFQ-V0-001',
+      category: '',
+      sourcingMode: 'mode_0',
+      extractedEntities: [],
+      needsCategoryManagerAssignment: true,
+    };
+
+    mockFetchAllVendors.mockResolvedValue({
+      success: true,
+      candidates: [candidate({ id: 'v-all-1', name: 'Global Hardware Supply', majorCategory: 'Fasteners' })],
+      pagination: { page: 1, pageSize: 50, total: 1, totalPages: 1 },
+    });
+
+    render(
+      <InviteVendorsModal isOpen={true} rfq={uncategorizedV0Rfq} onClose={mockOnClose} onInvited={mockOnInvited} />
+    );
+
+    // Initial tab must be 'all'
+    expect(screen.getByTestId('invite-tab-all')).toHaveClass('bg-indigo-600');
+    // Paginated vendor fetch starts automatically
+    await waitFor(() => {
+      expect(mockFetchAllVendors).toHaveBeenCalledWith(
+        expect.objectContaining({
+          page: 1,
+          pageSize: 50,
+          search: '',
+          category: '',
+        })
+      );
+      expect(screen.getByText('Global Hardware Supply')).toBeInTheDocument();
+    });
+  });
 });

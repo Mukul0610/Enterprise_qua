@@ -949,6 +949,28 @@ function makeInquiry(overrides: any = {}): any {
       expect(screen.queryByText('Vendor Inquiries & Clarifications')).not.toBeInTheDocument();
     });
 
+    it('hides Direct Clarification & Inquiry with Buyer for V0 RFQs in vendor view', () => {
+      render(
+        <RFQDetails
+          rfq={buildRFQ({
+            sourcingMode: 'mode_0',
+            inquiries: [
+              makeInquiry({
+                id: 'inq-v1',
+                vendorId: 'v-partner',
+                vendorName: 'Vendor Partner',
+                message: 'Existing vendor question',
+              }),
+            ],
+          })}
+          onBack={jest.fn()}
+          isVendorView={true}
+        />
+      );
+
+      expect(screen.queryByText('Direct Clarification & Inquiry with Buyer')).not.toBeInTheDocument();
+    });
+
     it('filters out Procucev Network vendors from Vendor Inquiries in buyer view', () => {
       renderDetails(
         buildRFQ({
@@ -999,11 +1021,11 @@ function makeInquiry(overrides: any = {}): any {
       const panelHeading = screen.getByText('Assigned & Invited Suppliers');
       const panel = panelHeading.closest('section');
       expect(panel).not.toBeNull();
-      // Both the client vendor and the Procucev vendor are now listed by name.
+      // The client vendor is listed by name.
       expect(within(panel as HTMLElement).getAllByText('Client Approved Supplier').length).toBeGreaterThanOrEqual(1);
-      expect(within(panel as HTMLElement).getAllByText('Assigned Network Supplier').length).toBeGreaterThanOrEqual(1);
-      // The Procucev card carries the double-blind badge.
-      expect(within(panel as HTMLElement).getAllByText(/Double-Blind/i).length).toBeGreaterThanOrEqual(1);
+      // The Procucev vendor is hidden on V2 for buyer.
+      expect(within(panel as HTMLElement).queryByText('Assigned Network Supplier')).not.toBeInTheDocument();
+      expect(within(panel as HTMLElement).queryByText(/Double-Blind/i)).not.toBeInTheDocument();
     });
 
     it('keeps a V3 Procucev vendor confidential: shows name, category, location, score — hides email, phone, contact', () => {
@@ -1174,10 +1196,12 @@ function makeInquiry(overrides: any = {}): any {
         );
 
         expect(screen.getByText('Assigned & Invited Suppliers')).toBeInTheDocument();
-        const tabs = screen.getByTestId('cm-supplier-tabs');
-        expect(within(tabs).getByText('V0 Network Supplier')).toBeInTheDocument();
-        expect(within(tabs).getByText('v0@network.in')).toBeInTheDocument();
-        expect(within(tabs).getByText('+91 90000 30003')).toBeInTheDocument();
+        // For V0 RFQ, category manager side hides the tabs and renders vendor cards directly
+        expect(screen.queryByTestId('cm-supplier-tabs')).not.toBeInTheDocument();
+        const cards = screen.getByTestId('v0-cm-vendor-cards');
+        expect(within(cards).getByText('V0 Network Supplier')).toBeInTheDocument();
+        expect(within(cards).getByText('v0@network.in')).toBeInTheDocument();
+        expect(within(cards).getByText('+91 90000 30003')).toBeInTheDocument();
       });
 
       it('still hides the suppliers panel from the BUYER on a V0 RFQ', () => {
@@ -1366,6 +1390,39 @@ function makeInquiry(overrides: any = {}): any {
           expect(mockUpdateRFQ).toHaveBeenCalledWith('rfq-1', { status: 'Closed' });
         });
       }
+    });
+
+    it('on V2 RFQ, hides Procucev network vendor details from the buyer while displaying own vendors', () => {
+      renderDetails(
+        buildRFQ({
+          sourcingMode: 'mode_2',
+          assignedVendors: [
+            {
+              id: 'own-v-1',
+              name: 'My Direct Vendor',
+              email: 'direct@supplier.com',
+              phone: '+91 91234 56789',
+              vendorCategory: 'Fabrication',
+              isProcucev: false,
+            } as any,
+            {
+              id: 'proc-v-2',
+              name: 'Secret Procucev Vendor',
+              email: 'secret@procucev.com',
+              phone: '+91 99999 88888',
+              vendorCategory: 'Procucev Network',
+              isProcucev: true,
+            } as any,
+          ],
+        })
+      );
+
+      expect(screen.getByText('Assigned & Invited Suppliers')).toBeInTheDocument();
+      // Buyer's own vendor should be rendered
+      expect(screen.getAllByText('My Direct Vendor').length).toBeGreaterThanOrEqual(1);
+      // Procucev vendor details must be hidden on the buyer side for V2 RFQs
+      expect(screen.queryByText('Secret Procucev Vendor')).not.toBeInTheDocument();
+      expect(screen.queryByText('secret@procucev.com')).not.toBeInTheDocument();
     });
   });
 });

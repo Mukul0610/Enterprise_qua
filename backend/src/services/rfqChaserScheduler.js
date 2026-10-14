@@ -120,7 +120,16 @@ async function _dispatchWhatsApp(rfq, vendor, jobId) {
  */
 async function _dispatchSms(rfq, vendor, jobId) {
   if (process.env.NODE_ENV === 'test') return { channel: 'sms', skipped: true };
-  const phone = vendor.phone || vendor.mobile || vendor.mobileNumber;
+  let phone = vendor.phone || vendor.mobile || vendor.mobileNumber;
+  if (!phone && vendor.id) {
+    try {
+      const storeService = require('./storeService');
+      const full = storeService.getVendorById ? storeService.getVendorById(vendor.id, 'all') : null;
+      if (full) phone = full.phone || full.mobile || full.mobileNumber;
+    } catch {
+      // ignore
+    }
+  }
   if (!phone) {
     logger.debug(`[CHASER] SMS skipped for ${vendor.name} — no phone`, {}, 'RFQ_CHASER');
     if (jobId) domainQueries.markChaserJobFiredInDB(jobId).catch(() => { });
@@ -451,7 +460,8 @@ async function dispatchDueChaserJobs(limit = 25) {
 function scheduleRFQChasers(rfq, vendors, getCreditInfo = () => ({})) {
   if (!rfq || !Array.isArray(vendors) || vendors.length === 0) return;
   vendors.forEach((vendor) => {
-    scheduleVendorChaser(rfq, vendor, getCreditInfo(vendor));
+    const credit = typeof getCreditInfo === 'function' ? getCreditInfo(vendor) : (getCreditInfo || {});
+    scheduleVendorChaser(rfq, vendor, credit);
   });
   logger.info(
     `[CHASER] Queued chaser sequence for ${vendors.length} vendor(s) on ${rfq.rfqNumber}`,
