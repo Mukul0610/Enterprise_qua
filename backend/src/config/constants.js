@@ -1040,6 +1040,33 @@ const EMAIL_GATEWAY_MESSAGES = {
   VENDOR_GATEWAY_REQUIRES_RFQ: 'Vendor email gateway only processes quotation replies for existing RFQs.',
   CREDITS_EXHAUSTED_DETAIL: 'Quotation email from {vendorName} for RFQ {rfqNumber} acknowledged: 5 free quotation credits exhausted. Subscription upgrade email sent.',
   CREDITS_EXHAUSTED_SUBJECT: 'Action Required – Upgrade Plan to Submit Quotation for RFQ {rfqNumber}',
+  // Gemini being rate-limited, erroring or unconfigured says nothing about the
+  // email itself, so it is retried rather than recorded as "no line items".
+  EXTRACTION_RETRYABLE: 'AI extraction is temporarily unavailable ({status}); the message will be retried.',
+  EXTRACTION_GAVE_UP: 'AI extraction was still unavailable ({status}) after the final retry, so no RFQ was raised.',
+  RFQ_CREDITS_EXHAUSTED_DETAIL:
+    'Free trial RFQ credits exhausted ({remaining} left, {needed} needed), so no RFQ was raised. Buyer notified.',
+};
+
+/**
+ * Notice sent to a registered buyer whose RFQ email did not become an RFQ.
+ * Without it the buyer only ever hears back on success, so a failure looked
+ * the same as "still processing".
+ */
+const RFQ_NOT_CREATED_NOTIFICATION = {
+  SUBJECT: 'Action Required – Your RFQ Email Could Not Be Processed',
+  HEADLINE: 'PROCUCEV ENTERPRISE',
+  SUBLINE: 'RFQ Not Created',
+  REASONS: {
+    NO_LINE_ITEMS:
+      'We could not find any procurement line items in your email. Please list each item with its description, quantity and unit, in the email body or an attached document.',
+    TOO_MANY_LINE_ITEMS:
+      'Your email contained {count} line items, but an emailed RFQ can carry at most {max}. Please split the requirement across several emails, or raise it on the Buyer Portal.',
+    CREDITS_EXHAUSTED:
+      'Your free trial RFQ credits have been fully used. Upgrade to a paid plan to keep raising RFQs by email, or raise a V0 Free Starter RFQ on the Buyer Portal.',
+    PROCESSING_FAILED:
+      'We could not read your requirement because of a temporary problem on our side. Please resend the email in a little while, or raise the RFQ on the Buyer Portal.',
+  },
 };
 
 /** Default free RFQ quotation credits granted to each vendor */
@@ -1685,6 +1712,7 @@ module.exports = {
   EMAIL_GATEWAY_SMTP_PORTS,
   UNAUTHORIZED_BUYER_NOTIFICATION,
   RFQ_ACKNOWLEDGEMENT_NOTIFICATION,
+  RFQ_NOT_CREATED_NOTIFICATION,
   VENDOR_FREE_CREDITS_LIMIT,
   VENDOR_CREDITS_EXHAUSTED_NOTIFICATION,
   ZOHO_CONFIG,

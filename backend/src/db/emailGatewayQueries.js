@@ -31,6 +31,12 @@ const INGESTION_OUTCOME = {
   SKIPPED_OUTBOUND: 'SKIPPED_OUTBOUND',
   CREDITS_EXHAUSTED: 'CREDITS_EXHAUSTED',
   PORTAL_SUBMISSION_REQUIRED: 'PORTAL_SUBMISSION_REQUIRED',
+  // A buyer's emailed RFQ refused because their free trial credits ran out —
+  // kept apart from CREDITS_EXHAUSTED, which is the vendor quotation limit.
+  RFQ_CREDITS_EXHAUSTED: 'RFQ_CREDITS_EXHAUSTED',
+  // One RFQ raised from one delivery-location group of an email, keyed
+  // `<Message-ID>#rfq-<n>`, so a retried email does not raise it a second time.
+  RFQ_GROUP_CREATED: 'RFQ_GROUP_CREATED',
 };
 
 
@@ -118,6 +124,24 @@ async function countFailedAttempts(messageKey) {
     logger.error('Email ingestion attempt count could not be read', err, 'EMAIL_GATEWAY');
     return 0;
   }
+}
+
+/**
+ * The ledger row recorded under this key, or null when there is none.
+ *
+ * Throws when the ledger cannot be read: the caller uses it to avoid raising a
+ * duplicate RFQ, and a guessed "not there" during an outage would do exactly that.
+ */
+async function findProcessed(messageId) {
+  // No store at all (local run without a database): nothing can have been
+  // recorded, so there is nothing to find. Same guard as domainQueries.
+  if (!messageId || !pool.hasStorage()) return null;
+  const rows = await pool.rows(
+    'select message_id, rfq_id, rfq_number, status from email_ingestion_log where message_id = $1 limit 1',
+    [String(messageId)],
+    { d1: true }
+  );
+  return rows[0] || null;
 }
 
 /**
@@ -226,6 +250,7 @@ module.exports = {
   recordProcessed,
   countRecentOutcomes,
   countFailedAttempts,
+  findProcessed,
   toLedgerTimestamp,
   listRecent,
   countsByStatus,

@@ -374,10 +374,17 @@ describe('emailGatewayService.processMessage', () => {
     expect(extract).not.toHaveBeenCalled();
   });
 
-  test('records a failed extraction', async () => {
-    mockExtraction({ status: geminiService.EXTRACTION_STATUS.NOT_CONFIGURED, lineItems: [] });
+  test('records an extraction that found nothing', async () => {
+    mockExtraction({ status: geminiService.EXTRACTION_STATUS.NO_ITEMS_FOUND, lineItems: [] });
     const result = await emailGatewayService.processMessage(raw(), config());
     expect(result.status).toBe(INGESTION_OUTCOME.NO_LINE_ITEMS);
+  });
+
+  test('throws a retryable error when extraction could not run (unconfigured)', async () => {
+    mockExtraction({ status: geminiService.EXTRACTION_STATUS.NOT_CONFIGURED, lineItems: [] });
+    await expect(emailGatewayService.processMessage(raw(), config())).rejects.toMatchObject({
+      name: 'RetryableIngestionError',
+    });
   });
 
   test('records a message whose rows were all discarded', async () => {
