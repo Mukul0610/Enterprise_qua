@@ -61,6 +61,16 @@ const httpHandler = httpServerHandler({ port: PORT });
 // calls the same single-shot polling functions (pollBothInboxesOnce /
 // reconcileOnce) and dispatches due D1-backed chaser jobs.
 async function scheduled(controller, workerEnv, ctx) {
+  if (workerEnv && typeof workerEnv === 'object') {
+    globalThis.__CF_ENV__ = workerEnv;
+    try {
+      for (const [k, v] of Object.entries(workerEnv)) {
+        if (typeof v === 'string') {
+          process.env[k] = v;
+        }
+      }
+    } catch {}
+  }
   // The cron entry point never serves a web request, so nothing else loads the
   // vendor list into this isolate. Without it, an email RFQ finds no vendors to
   // invite. Same guard and call as the lazy hydration in app.js.

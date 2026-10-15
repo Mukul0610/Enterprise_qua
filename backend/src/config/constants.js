@@ -677,34 +677,45 @@ const EMAIL_INGESTION_CONFIG = {
 // its own full credential set rather than one set with a URL swap. ZOHO_MODE
 // picks which block is active; the backend must be restarted to change it.
 // Read on every access, not once at load. The Worker copies its secrets into
-// process.env per request, so a value captured when this module loads is empty.
+function getZohoEnv(key, fallback = '') {
+  if (
+    typeof globalThis !== 'undefined' &&
+    globalThis.__CF_ENV__ &&
+    globalThis.__CF_ENV__[key] !== undefined &&
+    globalThis.__CF_ENV__[key] !== ''
+  ) {
+    return globalThis.__CF_ENV__[key];
+  }
+  return process.env[key] !== undefined && process.env[key] !== '' ? process.env[key] : fallback;
+}
+
 function zohoModeFromEnv() {
-  return (process.env.ZOHO_MODE || 'live').toLowerCase() === 'sandbox' ? 'sandbox' : 'live';
+  return (getZohoEnv('ZOHO_MODE', 'live')).toLowerCase() === 'sandbox' ? 'sandbox' : 'live';
 }
 
 function zohoLiveCredentials() {
   return {
-    CLIENT_ID: process.env.ZOHO_LIVE_CLIENT_ID || process.env.ZOHO_CLIENT_ID || '',
-    CLIENT_SECRET: process.env.ZOHO_LIVE_CLIENT_SECRET || process.env.ZOHO_CLIENT_SECRET || '',
-    REFRESH_TOKEN: process.env.ZOHO_LIVE_REFRESH_TOKEN || process.env.ZOHO_REFRESH_TOKEN || '',
-    OAUTH_TOKEN_URL: process.env.ZOHO_LIVE_OAUTH_TOKEN_URL || process.env.ZOHO_OAUTH_TOKEN_URL || 'https://accounts.zoho.in/oauth/v2/token',
-    PAYMENTS_BASE_URL: process.env.ZOHO_LIVE_PAYMENTS_BASE_URL || 'https://payments.zoho.in/api/v1',
-    ACCOUNT_ID: process.env.ZOHO_LIVE_PAYMENTS_ACCOUNT_ID || process.env.ZOHO_PAYMENTS_ACCOUNT_ID || '',
-    WEBHOOK_SIGNING_KEY: process.env.ZOHO_LIVE_WEBHOOK_SIGNING_KEY || process.env.ZOHO_WEBHOOK_SIGNING_KEY || '',
-    RETURN_URL_BASE: process.env.ZOHO_LIVE_RETURN_URL_BASE || process.env.ZOHO_PAYMENTS_RETURN_URL_BASE || 'http://localhost:3000',
+    CLIENT_ID: getZohoEnv('ZOHO_LIVE_CLIENT_ID') || getZohoEnv('ZOHO_CLIENT_ID'),
+    CLIENT_SECRET: getZohoEnv('ZOHO_LIVE_CLIENT_SECRET') || getZohoEnv('ZOHO_CLIENT_SECRET'),
+    REFRESH_TOKEN: getZohoEnv('ZOHO_LIVE_REFRESH_TOKEN') || getZohoEnv('ZOHO_REFRESH_TOKEN'),
+    OAUTH_TOKEN_URL: getZohoEnv('ZOHO_LIVE_OAUTH_TOKEN_URL') || getZohoEnv('ZOHO_OAUTH_TOKEN_URL', 'https://accounts.zoho.in/oauth/v2/token'),
+    PAYMENTS_BASE_URL: getZohoEnv('ZOHO_LIVE_PAYMENTS_BASE_URL', 'https://payments.zoho.in/api/v1'),
+    ACCOUNT_ID: getZohoEnv('ZOHO_LIVE_PAYMENTS_ACCOUNT_ID') || getZohoEnv('ZOHO_PAYMENTS_ACCOUNT_ID'),
+    WEBHOOK_SIGNING_KEY: getZohoEnv('ZOHO_LIVE_WEBHOOK_SIGNING_KEY') || getZohoEnv('ZOHO_WEBHOOK_SIGNING_KEY'),
+    RETURN_URL_BASE: getZohoEnv('ZOHO_LIVE_RETURN_URL_BASE') || getZohoEnv('ZOHO_PAYMENTS_RETURN_URL_BASE') || getZohoEnv('PUBLIC_FRONTEND_URL', 'http://localhost:3000'),
   };
 }
 
 function zohoSandboxCredentials() {
   return {
-    CLIENT_ID: process.env.ZOHO_SANDBOX_CLIENT_ID || process.env.ZOHO_CLIENT_ID || '',
-    CLIENT_SECRET: process.env.ZOHO_SANDBOX_CLIENT_SECRET || process.env.ZOHO_CLIENT_SECRET || '',
-    REFRESH_TOKEN: process.env.ZOHO_SANDBOX_REFRESH_TOKEN || '',
-    OAUTH_TOKEN_URL: process.env.ZOHO_SANDBOX_OAUTH_TOKEN_URL || 'https://accounts.zoho.in/oauth/v2/token',
-    PAYMENTS_BASE_URL: process.env.ZOHO_SANDBOX_PAYMENTS_BASE_URL || 'https://paymentssandbox.zoho.in/api/v1',
-    ACCOUNT_ID: process.env.ZOHO_SANDBOX_PAYMENTS_ACCOUNT_ID || process.env.ZOHO_PAYMENTS_ACCOUNT_ID || '',
-    WEBHOOK_SIGNING_KEY: process.env.ZOHO_SANDBOX_WEBHOOK_SIGNING_KEY || '',
-    RETURN_URL_BASE: process.env.ZOHO_SANDBOX_RETURN_URL_BASE || process.env.ZOHO_PAYMENTS_RETURN_URL_BASE || 'http://localhost:3000',
+    CLIENT_ID: getZohoEnv('ZOHO_SANDBOX_CLIENT_ID') || getZohoEnv('ZOHO_CLIENT_ID'),
+    CLIENT_SECRET: getZohoEnv('ZOHO_SANDBOX_CLIENT_SECRET') || getZohoEnv('ZOHO_CLIENT_SECRET'),
+    REFRESH_TOKEN: getZohoEnv('ZOHO_SANDBOX_REFRESH_TOKEN'),
+    OAUTH_TOKEN_URL: getZohoEnv('ZOHO_SANDBOX_OAUTH_TOKEN_URL', 'https://accounts.zoho.in/oauth/v2/token'),
+    PAYMENTS_BASE_URL: getZohoEnv('ZOHO_SANDBOX_PAYMENTS_BASE_URL', 'https://paymentssandbox.zoho.in/api/v1'),
+    ACCOUNT_ID: getZohoEnv('ZOHO_SANDBOX_PAYMENTS_ACCOUNT_ID') || getZohoEnv('ZOHO_PAYMENTS_ACCOUNT_ID'),
+    WEBHOOK_SIGNING_KEY: getZohoEnv('ZOHO_SANDBOX_WEBHOOK_SIGNING_KEY'),
+    RETURN_URL_BASE: getZohoEnv('ZOHO_SANDBOX_RETURN_URL_BASE') || getZohoEnv('ZOHO_PAYMENTS_RETURN_URL_BASE') || getZohoEnv('PUBLIC_FRONTEND_URL', 'http://localhost:3000'),
   };
 }
 
@@ -713,9 +724,9 @@ function buildZohoConfig() {
   return {
     MODE: mode,
     ...(mode === 'sandbox' ? zohoSandboxCredentials() : zohoLiveCredentials()),
-    RECONCILIATION_ENABLED: String(process.env.ZOHO_RECONCILIATION_ENABLED || '').toLowerCase() === 'true',
+    RECONCILIATION_ENABLED: String(getZohoEnv('ZOHO_RECONCILIATION_ENABLED', '')).toLowerCase() === 'true',
     // 10 minutes, matching the reference app's `0 */10 * * * *` cron.
-    RECONCILIATION_INTERVAL_MS: Number(process.env.ZOHO_RECONCILIATION_INTERVAL_MS || 10 * 60 * 1000),
+    RECONCILIATION_INTERVAL_MS: Number(getZohoEnv('ZOHO_RECONCILIATION_INTERVAL_MS', 10 * 60 * 1000)),
     // Refresh the cached access token this many ms before it actually expires, so
     // a request never races a token that's about to go stale mid-flight.
     TOKEN_REFRESH_BUFFER_MS: 60 * 1000,

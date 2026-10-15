@@ -44,7 +44,14 @@
     "SMS_GATEWAY_SMSGID": "1102294821",
     "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
     "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
-    "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
+    "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev",
+    "ZOHO_MODE": "live",
+    "ZOHO_CLIENT_ID": "1000.TG6BL83MLH7SLYFK4LLUWH6Y6NCPOD",
+    "ZOHO_PAYMENTS_ACCOUNT_ID": "60045604493",
+    "ZOHO_PAYMENTS_BASE_URL": "https://payments.zoho.in/api/v1",
+    "ZOHO_OAUTH_TOKEN_URL": "https://accounts.zoho.in/oauth/v2/token",
+    "ZOHO_PAYMENTS_RETURN_URL_BASE": "https://equa.procucev.com",
+    "ZOHO_RECONCILIATION_ENABLED": "true"
   },
   "d1_databases": [
     {
@@ -134,7 +141,15 @@
         "SMS_GATEWAY_SENDER": "PROCUC",
         "SMS_GATEWAY_SMSGID": "1102294821",
         "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
-        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
+        "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
+        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev",
+        "ZOHO_MODE": "live",
+        "ZOHO_CLIENT_ID": "1000.TG6BL83MLH7SLYFK4LLUWH6Y6NCPOD",
+        "ZOHO_PAYMENTS_ACCOUNT_ID": "60045604493",
+        "ZOHO_PAYMENTS_BASE_URL": "https://payments.zoho.in/api/v1",
+        "ZOHO_OAUTH_TOKEN_URL": "https://accounts.zoho.in/oauth/v2/token",
+        "ZOHO_PAYMENTS_RETURN_URL_BASE": "https://equa.procucev.com",
+        "ZOHO_RECONCILIATION_ENABLED": "true"
       },
       "d1_databases": [
         {
@@ -170,7 +185,14 @@
         "SMS_GATEWAY_SMSGID": "1102294821",
         "SMS_GATEWAY_RFQ_SMSGID": "1777179076323440961",
         "SMS_GATEWAY_BUYER_UNLOCKED_SMSGID": "1777179138668879258",
-        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev"
+        "PUBLIC_FRONTEND_URL": "https://procucev-enterprise-frontend.srinivas-mukku.workers.dev",
+        "ZOHO_MODE": "live",
+        "ZOHO_CLIENT_ID": "1000.TG6BL83MLH7SLYFK4LLUWH6Y6NCPOD",
+        "ZOHO_PAYMENTS_ACCOUNT_ID": "60045604493",
+        "ZOHO_PAYMENTS_BASE_URL": "https://payments.zoho.in/api/v1",
+        "ZOHO_OAUTH_TOKEN_URL": "https://accounts.zoho.in/oauth/v2/token",
+        "ZOHO_PAYMENTS_RETURN_URL_BASE": "https://equa.procucev.com",
+        "ZOHO_RECONCILIATION_ENABLED": "true"
       },
       "d1_databases": [
         {
