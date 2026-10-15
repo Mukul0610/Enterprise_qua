@@ -308,6 +308,88 @@ describe('mailerService', () => {
       expect(msg.html).not.toContain('Unit price');
       expect(msg.html).not.toContain('Lead time');
     });
+
+    test('renders all quotation details including compliance, AI match score, attachments, and remarks', () => {
+      const msg = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: RFQ,
+        quote: {
+          vendorName: 'hsbc',
+          vendorCategory: 'Client List',
+          unitPrice: 3434,
+          totalPrice: 82416,
+          leadTimeDays: 422,
+          paymentTerms: '45 Days Net',
+          warrantyYears: 42,
+          complianceStatus: 'Pending Review',
+          aiMatchScore: 70,
+          remarks: 'Standard delivery terms apply',
+          submittedAt: '2026-10-15T09:21:00.000Z',
+          attachments: [{ id: 'att-1', fileName: 'RFQ_Requirements_9MB.pdf', size: 9441150 }],
+        },
+        recipientName: 'Procucev Navin Buyer',
+      });
+
+      expect(msg.subject).toBe('New quote on RFQ-2026-00500 from hsbc');
+      expect(msg.html).toContain('Client List');
+      expect(msg.html).toContain('Pending Review');
+      expect(msg.html).toContain('70%');
+      expect(msg.html).toContain('Standard delivery terms apply');
+      expect(msg.html).toContain('RFQ_Requirements_9MB.pdf');
+      expect(msg.html).toContain('9 MB');
+      expect(msg.html).toContain('Open Quote Matrix & Compare Bids');
+    });
+
+    test('renders itemized line item breakdown table when quote supplies lineItemQuotes', () => {
+      const msg = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: {
+          ...RFQ,
+          extractedEntities: [
+            { id: 'li-1', itemName: 'Packaging Box A', technicalSpecs: 'Corrugated 5-ply', brand: 'BoxCo', unit: 'Boxes' },
+            { id: 'li-2', itemName: 'Sealing Tape', technicalSpecs: 'Heavy Duty 2 inch', unit: 'Rolls' },
+          ],
+        },
+        quote: {
+          vendorName: 'Vendor Packing',
+          totalPrice: 45000,
+          lineItemQuotes: [
+            { lineItemId: 'li-1', itemName: 'Packaging Box A', quantity: 100, unitPrice: 350, totalPrice: 35000 },
+            { lineItemId: 'li-2', itemName: 'Sealing Tape', quantity: 100, unitPrice: 100, totalPrice: 10000 },
+          ],
+        },
+      });
+
+      expect(msg.html).toContain('Line Item Breakdown (2 Items)');
+      expect(msg.html).toContain('Packaging Box A');
+      expect(msg.html).toContain('Corrugated 5-ply');
+      expect(msg.html).toContain('BoxCo');
+      expect(msg.html).toContain('100 Boxes');
+      expect(msg.html).toContain('Sealing Tape');
+      expect(msg.html).toContain('Heavy Duty 2 inch');
+      expect(msg.html).toContain('100 Rolls');
+      expect(msg.html).toContain('Total Quoted Amount:');
+      expect(msg.html).toContain('45,000');
+    });
+
+    test('renders requested line items when RFQ has multiple line items without vendor breakdown', () => {
+      const msg = mailerService.buildQuoteReceivedEmail('buyer@x.com', {
+        rfq: {
+          ...RFQ,
+          extractedEntities: [
+            { id: 'li-1', itemName: 'Industrial Valves', quantity: 5, unit: 'Nos', majorCategory: 'Valves' },
+            { id: 'li-2', itemName: 'Actuators', quantity: 5, unit: 'Nos', majorCategory: 'Actuators' },
+          ],
+        },
+        quote: {
+          vendorName: 'Global Valves',
+          totalPrice: 120000,
+        },
+      });
+
+      expect(msg.html).toContain('Requested Line Items (2 Items)');
+      expect(msg.html).toContain('Industrial Valves');
+      expect(msg.html).toContain('Actuators');
+      expect(msg.html).toContain('5 Nos');
+    });
   });
 
   describe('sendRfqInviteEmail / sendQuoteReceivedEmail', () => {

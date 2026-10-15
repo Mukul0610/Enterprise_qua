@@ -393,12 +393,12 @@ describe('Buyer RFQ Summary (Screen 1.3)', () => {
       expect(within(row).queryByText('2026-09-15')).not.toBeInTheDocument();
     });
 
-    it('flags RFQs whose chasers are still running', () => {
+    it('does not display chaser running text under status', () => {
       renderScreen([
         buildRFQ({ id: 'a', rfqNumber: 'RFQ-A', chasingActive: true }),
         buildRFQ({ id: 'b', rfqNumber: 'RFQ-B', chasingActive: false }),
       ]);
-      expect(screen.getAllByText(RFQ.chasingActive)).toHaveLength(1);
+      expect(screen.queryByText(RFQ.chasingActive)).not.toBeInTheDocument();
     });
 
     it.each<RFQItem['status']>(['Parsing', 'In Evaluation', 'AI Recommended', 'PO Generated', 'Quotes Pending'])(

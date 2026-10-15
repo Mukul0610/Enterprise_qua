@@ -482,11 +482,6 @@ export default function RFQSummary({ onViewQuotes, onCreateRFQ, onViewDetails }:
                     </td>
                     <td className="px-3 py-2.5 align-top">
                       {statusBadge(rfq.status)}
-                      {rfq.chasingActive && (
-                        <span className="block text-[10px] text-amber-600 dark:text-amber-400 font-semibold mt-1">
-                          {RFQ.chasingActive}
-                        </span>
-                      )}
                     </td>
                     {/* Line items and quotations received, stacked: both count what
                         is on the RFQ, and quotes are only meaningful against items. */}

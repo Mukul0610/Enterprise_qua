@@ -1023,6 +1023,159 @@ async function sendVendorCreditsExhaustedEmail(toOrParams, maybeContext) {
 
 // ── Vendor quote → owning buyer ─────────────────────────────────────────────
 
+function formatAttachmentSize(bytes) {
+  const num = Number(bytes);
+  if (!Number.isFinite(num) || num <= 0) return '';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(num) / Math.log(k));
+  return parseFloat((num / Math.pow(k, i)).toFixed(1)) + ' ' + (sizes[i] || 'B');
+}
+
+function formatSubmissionDate(dateStr) {
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return String(dateStr);
+    return (
+      d.toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true,
+      }) + ' IST'
+    );
+  } catch {
+    return String(dateStr);
+  }
+}
+
+function formatCurrency(val) {
+  if (val == null || val === '') return null;
+  const num = Number(val);
+  if (Number.isFinite(num)) {
+    return `₹${num.toLocaleString('en-IN')}`;
+  }
+  return String(val);
+}
+
+function buildLineItemsBreakdownHtml(rfq = {}, quote = {}) {
+  const itemQuotes = Array.isArray(quote.lineItemQuotes) && quote.lineItemQuotes.length > 0
+    ? quote.lineItemQuotes
+    : [];
+
+  const entityMap = new Map();
+  if (Array.isArray(rfq.extractedEntities)) {
+    rfq.extractedEntities.forEach((ent) => {
+      if (ent && ent.id) entityMap.set(ent.id, ent);
+    });
+  }
+
+  if (itemQuotes.length > 0) {
+    return `
+      <div style="margin: 20px 0;">
+        <h4 style="margin: 0 0 10px 0; font-size: 13px; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px;">
+          Line Item Breakdown (${itemQuotes.length} ${itemQuotes.length === 1 ? 'Item' : 'Items'})
+        </h4>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px;">
+          <thead>
+            <tr style="background: #f1f5f9; color: #334155; border-bottom: 2px solid #cbd5e1;">
+              <th style="padding: 8px 10px; text-align: left; width: 28px;">#</th>
+              <th style="padding: 8px 10px; text-align: left;">Item Description</th>
+              <th style="padding: 8px 10px; text-align: center;">Qty</th>
+              <th style="padding: 8px 10px; text-align: right;">Unit Price</th>
+              <th style="padding: 8px 10px; text-align: right;">Total Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${itemQuotes.map((item, idx) => {
+              const ent = (item.lineItemId && entityMap.get(item.lineItemId)) || {};
+              const name = item.itemName || item.description || ent.itemName || ent.name || `Line Item ${idx + 1}`;
+              const qty = item.quantity != null ? item.quantity : (ent.quantity || 1);
+              const uom = item.unit || item.uom || ent.unit || ent.uom || '';
+              const specs = item.technicalSpecs || item.specs || ent.technicalSpecs || ent.specs || '';
+              const brand = item.brand || ent.brand || '';
+              const unitPriceFormatted = item.unitPrice != null ? formatCurrency(item.unitPrice) : '-';
+              const totalPriceFormatted = item.totalPrice != null ? formatCurrency(item.totalPrice) : '-';
+
+              return `
+                <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background: #f8fafc;' : ''}">
+                  <td style="padding: 8px 10px; font-weight: 600; color: #64748b;">${idx + 1}</td>
+                  <td style="padding: 8px 10px;">
+                    <div style="font-weight: 600; color: #0f172a;">${escapeHtml(name)}</div>
+                    ${specs ? `<div style="font-size: 11px; color: #64748b; margin-top: 2px;">Spec: ${escapeHtml(specs)}</div>` : ''}
+                    ${brand ? `<div style="font-size: 11px; color: #0284c7; margin-top: 1px;">Brand: ${escapeHtml(brand)}</div>` : ''}
+                  </td>
+                  <td style="padding: 8px 10px; text-align: center; color: #334155; white-space: nowrap;">
+                    ${qty} ${escapeHtml(uom)}
+                  </td>
+                  <td style="padding: 8px 10px; text-align: right; color: #0f172a; font-weight: 500; white-space: nowrap;">
+                    ${unitPriceFormatted}
+                  </td>
+                  <td style="padding: 8px 10px; text-align: right; color: #0f172a; font-weight: 700; white-space: nowrap;">
+                    ${totalPriceFormatted}
+                  </td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+          ${quote.totalPrice != null ? `
+            <tfoot>
+              <tr style="background: #f8fafc; font-weight: bold; border-top: 2px solid #cbd5e1;">
+                <td colspan="4" style="padding: 8px 10px; text-align: right; color: #334155;">Total Quoted Amount:</td>
+                <td style="padding: 8px 10px; text-align: right; color: #0f172a; font-size: 13px;">
+                  ${formatCurrency(quote.totalPrice)}
+                </td>
+              </tr>
+            </tfoot>
+          ` : ''}
+        </table>
+      </div>
+    `;
+  }
+
+  if (Array.isArray(rfq.extractedEntities) && rfq.extractedEntities.length > 1) {
+    return `
+      <div style="margin: 20px 0;">
+        <h4 style="margin: 0 0 10px 0; font-size: 13px; color: #0f172a; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px;">
+          Requested Line Items (${rfq.extractedEntities.length} Items)
+        </h4>
+        <table style="width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 12px; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 6px;">
+          <thead>
+            <tr style="background: #f1f5f9; color: #334155; border-bottom: 2px solid #cbd5e1;">
+              <th style="padding: 8px 10px; text-align: left; width: 28px;">#</th>
+              <th style="padding: 8px 10px; text-align: left;">Item & Specifications</th>
+              <th style="padding: 8px 10px; text-align: center;">Qty</th>
+              <th style="padding: 8px 10px; text-align: left;">Category</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rfq.extractedEntities.map((item, idx) => `
+              <tr style="border-bottom: 1px solid #e2e8f0; ${idx % 2 === 1 ? 'background: #f8fafc;' : ''}">
+                <td style="padding: 8px 10px; font-weight: 600; color: #64748b;">${idx + 1}</td>
+                <td style="padding: 8px 10px;">
+                  <div style="font-weight: 600; color: #0f172a;">${escapeHtml(item.itemName || item.name || `Item ${idx + 1}`)}</div>
+                  ${item.technicalSpecs || item.specs ? `<div style="font-size: 11px; color: #64748b; margin-top: 2px;">Spec: ${escapeHtml(item.technicalSpecs || item.specs)}</div>` : ''}
+                </td>
+                <td style="padding: 8px 10px; text-align: center; color: #334155; white-space: nowrap;">
+                  ${item.quantity || 1} ${escapeHtml(item.unit || item.uom || '')}
+                </td>
+                <td style="padding: 8px 10px; color: #64748b;">
+                  ${escapeHtml(item.category || item.majorCategory || '-')}
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  return '';
+}
+
 function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
   const isEmailSource = rfq.source === 'email' || rfq.source === 'email_gateway' || rfq.source === 'inbound_email';
   const isV0 =
@@ -1041,6 +1194,21 @@ function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
   const isWithin48h = !isEmailSource && !isV0 && ((createdAtMs > 0 && Date.now() - createdAtMs < FORTY_EIGHT_HOURS_MS) || Boolean(rfq.quotesHidden));
   const isClosed = rfq.status === 'Closed';
   const isSealed = isWithin48h && !isClosed;
+
+  const frontendUrl = getPublicFrontendUrl();
+  const matrixUrl = `${frontendUrl}/buyer/quote-matrix?rfq=${encodeURIComponent(rfq.rfqNumber || rfq.id || '')}`;
+  const rfqDetailsUrl = `${frontendUrl}/buyer/rfqs?rfq=${encodeURIComponent(rfq.rfqNumber || rfq.id || '')}`;
+
+  let attachmentsHtml = '';
+  if (Array.isArray(quote.attachments) && quote.attachments.length > 0) {
+    attachmentsHtml = quote.attachments
+      .map((att) => {
+        const name = escapeHtml(att.fileName || att.name || 'Document');
+        const sizeStr = formatAttachmentSize(att.size);
+        return `<span style="display: inline-block; background: #e0f2fe; color: #0369a1; padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; margin: 2px 4px 2px 0;">📎 ${name}${sizeStr ? ` (${sizeStr})` : ''}</span>`;
+      })
+      .join(' ');
+  }
 
   if (isSealed) {
     const unsealDateStr = createdAtMs > 0
@@ -1065,10 +1233,17 @@ function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
         ${row('RFQ Number', rfq.rfqNumber)}
         ${row('Requirement', rfq.title)}
         ${row('Vendor', quote.vendorName)}
+        ${row('Vendor Category', quote.vendorCategory)}
         ${row('Submission Status', 'Quotation Received & Sealed')}
         ${row('Commercial Details', 'Hidden for 48 hours (bidding integrity window)')}
+        ${attachmentsHtml ? row('Bid Documents', attachmentsHtml) : ''}
       </table>
-      <p style="font-size: 13px; color: #64748b;">Sign in to your Procucev account to track the status of this RFQ. Full quotation details will become visible after the 48-hour period concludes.</p>
+      <div style="margin: 24px 0 16px 0; text-align: center;">
+        <a href="${rfqDetailsUrl}" style="background-color: #0284c7; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; display: inline-block;">
+          View RFQ Details →
+        </a>
+      </div>
+      <p style="font-size: 12px; color: #64748b; text-align: center; margin: 0 0 16px 0;">Full quotation details will become visible after the 48-hour period concludes.</p>
     `;
 
     return {
@@ -1079,6 +1254,8 @@ function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
     };
   }
 
+  const lineItemsHtml = buildLineItemsBreakdownHtml(rfq, quote);
+
   const inner = `
     <p>${recipientName ? `Dear <strong>${recipientName}</strong>,` : 'Hello,'}</p>
     <p>${quote.vendorName ? `<strong>${quote.vendorName}</strong> has` : 'A vendor has'} submitted a quotation against your RFQ.</p>
@@ -1086,13 +1263,27 @@ function buildQuoteReceivedEmail(to, { rfq = {}, quote = {}, recipientName }) {
       ${row('RFQ Number', rfq.rfqNumber)}
       ${row('Requirement', rfq.title)}
       ${row('Vendor', quote.vendorName)}
+      ${row('Vendor Category', quote.vendorCategory)}
       ${row('Unit price', quote.unitPrice != null ? quote.unitPrice : null)}
       ${row('Total price', quote.totalPrice != null ? quote.totalPrice : null)}
       ${row('Lead time (days)', quote.leadTimeDays ? quote.leadTimeDays : null)}
       ${row('Payment terms', quote.paymentTerms)}
       ${row('Warranty (years)', quote.warrantyYears ? quote.warrantyYears : null)}
+      ${row('Compliance Status', quote.complianceStatus)}
+      ${row('AI Match Score', quote.aiMatchScore != null ? `${quote.aiMatchScore}%` : null)}
+      ${row('Remarks', quote.remarks)}
+      ${row('Submitted At', quote.submittedAt ? formatSubmissionDate(quote.submittedAt) : null)}
+      ${attachmentsHtml ? row('Bid Documents', attachmentsHtml) : ''}
     </table>
-    <p style="font-size: 13px; color: #64748b;">Sign in to your Procucev account to open the comparative quote matrix for this RFQ.</p>
+    ${lineItemsHtml}
+    <div style="margin: 24px 0 16px 0; text-align: center;">
+      <a href="${matrixUrl}" style="background-color: #0284c7; color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold; font-size: 14px; display: inline-block;">
+        Open Quote Matrix & Compare Bids →
+      </a>
+    </div>
+    <p style="font-size: 12px; color: #64748b; text-align: center; margin: 0 0 16px 0;">
+      Or track this requisition in the <a href="${rfqDetailsUrl}" style="color: #0284c7; text-decoration: underline;">RFQ Management Console</a>
+    </p>
   `;
 
   return {
