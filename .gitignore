@@ -86,3 +86,5 @@ backend/scripts/local_identity_seed.sql
 # Git worktrees
 .worktrees/
 
+# Google OAuth client credentials (used by backend/scripts/get-gmail-refresh-token.js)
+client_secret*.json
