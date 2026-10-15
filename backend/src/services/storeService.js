@@ -3991,12 +3991,11 @@ class StoreService {
   /**
    * Email a submitted quote to the RFQ's owning buyer. Fired from addQuoteToRFQ.
    *
-   * For Portal RFQ flow:
-   *   Stops the buyer from receiving the quote email for 48 hours.
-   *   Schedules dispatch after the 48-hour bidding integrity window elapses.
-   *
-   * For Email RFQ flow (or once 48 hours have elapsed / RFQ is closed):
-   *   Dispatches the quote email immediately.
+   * Dispatches immediately via mailerService.sendQuoteReceivedEmail:
+   * - If the RFQ is within the 48-hour bidding integrity window (and non-V0),
+   *   mailerService sends a sealed quotation alert to the buyer (notifying them
+   *   that a bid landed while preserving integrity until the window concludes).
+   * - For V0, closed, or post-48h RFQs, mailerService sends the unsealed quote details.
    */
   emailQuoteToBuyer(rfq, quote) {
     if (!rfq) return false;
@@ -4008,27 +4007,6 @@ class StoreService {
       corporateEmail: buyerEmail,
       organizationName: rfq.buyerAccountName || rfq.buyerName || 'Buyer',
     };
-
-    const isV0 =
-      rfq.sourcingMode === 'mode_0' ||
-      rfq.sourcingMode === 'v0' ||
-      rfq.sourcingMode === 'version_0';
-
-    const isPortal = this.isPortalRFQ(rfq);
-    const in48hWindow = this.isWithin48HourWindow(rfq);
-
-    // For V0: Quotes are sent directly to the buyer's email immediately (48-hour restriction does not apply to V0).
-    // For non-V0 Portal RFQs within 48h: Delay email dispatch.
-    if (isPortal && in48hWindow && !isV0) {
-      const delayMs = this.getRemaining48HourMs(rfq);
-      logger.info(
-        `[48H_BID_RULE] Portal RFQ ${rfq.rfqNumber}: stopped quote email to buyer (${buyerEmail}) for 48 hours. Scheduled dispatch in ${Math.round(delayMs / 1000 / 60)} minutes.`,
-        { rfqNumber: rfq.rfqNumber, quoteVendor: quote.vendorName, buyerEmail, delayMs },
-        'STORE_SERVICE'
-      );
-      this.scheduleDelayedBuyerQuoteEmail(rfq, quote, buyer, delayMs);
-      return { delayed: true, delayMs, sent: false };
-    }
 
     this._background(
       mailerService.sendQuoteReceivedEmail(buyer.corporateEmail, { rfq, quote, recipientName: buyer.organizationName }),
@@ -4050,7 +4028,16 @@ class StoreService {
       const buyer = this.buyerAccounts.find((a) => a.id === rfq.buyerAccountId);
       if (buyer && buyer.corporateEmail) return buyer.corporateEmail;
     }
-    return rfq.raisedByEmail || rfq.sourceEmail || rfq.buyerEmail || null;
+    return (
+      rfq.raisedByEmail ||
+      rfq.buyerEmail ||
+      rfq.sourceEmail ||
+      rfq.buyerCorporateEmail ||
+      rfq.corporateEmail ||
+      (rfq.buyer && (rfq.buyer.corporateEmail || rfq.buyer.email)) ||
+      (rfq.buyerAccount && (rfq.buyerAccount.corporateEmail || rfq.buyerAccount.email)) ||
+      null
+    );
   }
 
   // ==========================================

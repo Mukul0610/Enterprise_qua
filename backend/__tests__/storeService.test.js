@@ -2114,30 +2114,18 @@ describe('Store Service & Business Operations', () => {
       );
     });
 
-    test('addQuoteToRFQ stops buyer quote email for 48 hours on portal RFQ and schedules delayed dispatch', () => {
-      jest.useFakeTimers();
-      try {
-        const buyer = storeService.addBuyerAccount({ organizationName: 'Portal Buyer', corporateEmail: 'portalbuyer@ex.com' });
-        const rfq = storeService.createRFQ({ title: 'Portal RFQ 48h Hold', category: 'Raw Material', source: 'web_portal' }, buyer);
+    test('addQuoteToRFQ emails the owning buyer on portal RFQ upon quote submission', () => {
+      const buyer = storeService.addBuyerAccount({ organizationName: 'Portal Buyer', corporateEmail: 'portalbuyer@ex.com' });
+      const rfq = storeService.createRFQ({ title: 'Portal RFQ 48h Hold', category: 'Raw Material', source: 'web_portal' }, buyer);
 
-        quoteSpy.mockClear();
-        const res = storeService.addQuoteToRFQ(rfq.id, { vendorId: 'v-2', vendorName: 'Portal Bidder', unitPrice: 20, totalPrice: 200 });
-        expect(res).not.toBeNull();
+      quoteSpy.mockClear();
+      const res = storeService.addQuoteToRFQ(rfq.id, { vendorId: 'v-2', vendorName: 'Portal Bidder', unitPrice: 20, totalPrice: 200 });
+      expect(res).not.toBeNull();
 
-        // During 48-hour window, immediate email is stopped
-        expect(quoteSpy).not.toHaveBeenCalled();
-
-        // Advance timers by 48 hours
-        jest.advanceTimersByTime(48 * 60 * 60 * 1000);
-
-        // After 48 hours, buyer receives quote email
-        expect(quoteSpy).toHaveBeenCalledWith(
-          'portalbuyer@ex.com',
-          expect.objectContaining({ quote: expect.objectContaining({ vendorName: 'Portal Bidder' }), recipientName: 'Portal Buyer' })
-        );
-      } finally {
-        jest.useRealTimers();
-      }
+      expect(quoteSpy).toHaveBeenCalledWith(
+        'portalbuyer@ex.com',
+        expect.objectContaining({ quote: expect.objectContaining({ vendorName: 'Portal Bidder' }), recipientName: 'Portal Buyer' })
+      );
     });
 
     test('emailQuoteToBuyer no-ops without an owning buyer, an unknown buyer, or a buyer with no email', () => {
