@@ -61,6 +61,7 @@ class StoreService {
     this.notifications = [];
     this.vendorCatalogue = [];
     this.paymentLinks = [];
+    this.enterpriseInquiries = [];
     this.systemConfig = JSON.parse(JSON.stringify(INITIAL_SYSTEM_CONFIG));
     this.azureHealth = JSON.parse(JSON.stringify(INITIAL_AZURE_HEALTH));
     this.isHydratedFromDB = false;
@@ -77,6 +78,7 @@ class StoreService {
     this.notifications = [];
     this.vendorCatalogue = [];
     this.paymentLinks = [];
+    this.enterpriseInquiries = [];
     this.systemConfig = JSON.parse(JSON.stringify(INITIAL_SYSTEM_CONFIG));
     this.azureHealth = JSON.parse(JSON.stringify(INITIAL_AZURE_HEALTH));
     this.isHydratedFromDB = false;
@@ -5026,6 +5028,57 @@ class StoreService {
       azureHealth: this.azureHealth,
       vendorCatalogue: this.vendorCatalogue,
     };
+  }
+
+  addEnterpriseInquiry(inquiry) {
+    const id = `ent-inq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const newRecord = {
+      id,
+      companyName: (inquiry.companyName || '').trim(),
+      email: (inquiry.email || '').trim(),
+      mobile: (inquiry.mobile || '').trim(),
+      buyerAccountId: inquiry.buyerAccountId || null,
+      notes: inquiry.notes || '',
+      status: inquiry.status || 'NEW',
+      createdAt: inquiry.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    if (!Array.isArray(this.enterpriseInquiries)) {
+      this.enterpriseInquiries = [];
+    }
+    this.enterpriseInquiries.unshift(newRecord);
+
+    try {
+      this.addAuditLog(
+        `Enterprise contract enquiry submitted for ${newRecord.companyName} (${newRecord.email}, ${newRecord.mobile})`
+      );
+    } catch (_) {}
+
+    return newRecord;
+  }
+
+  getEnterpriseInquiries() {
+    if (!Array.isArray(this.enterpriseInquiries)) {
+      this.enterpriseInquiries = [];
+    }
+    return this.enterpriseInquiries;
+  }
+
+  updateEnterpriseInquiry(id, updates) {
+    if (!Array.isArray(this.enterpriseInquiries)) {
+      this.enterpriseInquiries = [];
+      return null;
+    }
+    const idx = this.enterpriseInquiries.findIndex((i) => i.id === id);
+    if (idx === -1) return null;
+    const target = this.enterpriseInquiries[idx];
+    const updated = {
+      ...target,
+      ...updates,
+      updatedAt: new Date().toISOString(),
+    };
+    this.enterpriseInquiries[idx] = updated;
+    return updated;
   }
 }
 

@@ -2121,7 +2121,8 @@ export type SidebarIconKey =
   | 'ClipboardList'
   | 'Database'
   | 'Receipt'
-  | 'Mail';
+  | 'Mail'
+  | 'MessageSquare';
 
 export interface SidebarNavItem {
   /** Active screen key consumed by the screen switchboard */

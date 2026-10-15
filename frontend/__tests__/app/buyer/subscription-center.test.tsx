@@ -38,15 +38,25 @@ describe('app/buyer/subscription-center.tsx', () => {
     global.fetch = originalFetch;
   });
 
-  it('renders free trial header, quota progress bar, and all 3 subscription plans', () => {
+  it('renders free trial header, quota progress bar, and all 3 subscription plans with strikethrough original prices', () => {
     render(<SubscriptionCenter />);
 
     expect(screen.getByText(/Free Starter Account — 5 Free RFQs Included/i)).toBeInTheDocument();
     expect(screen.getByText(/Remaining: 4 \/ 5/i)).toBeInTheDocument();
     expect(screen.getByText(/Used: 1 \/ 5/i)).toBeInTheDocument();
-    expect(screen.getByText('Version 1 Plan')).toBeInTheDocument();
-    expect(screen.getByText('Version 2 Plan')).toBeInTheDocument();
-    expect(screen.getByText('Version 3 Plan')).toBeInTheDocument();
+    expect(screen.getByText('Silver Plan')).toBeInTheDocument();
+    expect(screen.getByText('Gold Plan')).toBeInTheDocument();
+    expect(screen.getByText('Diamond Plan')).toBeInTheDocument();
+
+    const v1Original = screen.getByText('₹50,000');
+    const v2Original = screen.getByText('₹75,000');
+    const v3Original = screen.getByText('₹1,00,000');
+    expect(v1Original).toBeInTheDocument();
+    expect(v1Original).toHaveClass('line-through');
+    expect(v2Original).toBeInTheDocument();
+    expect(v2Original).toHaveClass('line-through');
+    expect(v3Original).toBeInTheDocument();
+    expect(v3Original).toHaveClass('line-through');
   });
 
   it('renders the Free Starter Account banner with remaining and used quotas', () => {
@@ -64,7 +74,7 @@ describe('app/buyer/subscription-center.tsx', () => {
     render(<SubscriptionCenter />);
 
     expect(screen.queryByText(/Free Starter Account — 5 Free RFQs Included/i)).not.toBeInTheDocument();
-    expect(screen.getByText(/Active Premium Plan: Version 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Silver Plan/i)).toBeInTheDocument();
   });
 
   it('clicking a paid plan opens the real Zoho checkout modal instead of granting the plan directly', async () => {
@@ -84,7 +94,7 @@ describe('app/buyer/subscription-center.tsx', () => {
     mockStore({ activeSubscription: 'version_1', remainingFreeRFQs: 0, activeBuyerAccount: { id: 'buyer-1', subscriptionPlan: 'version_1', remainingFreeRFQs: 0 } });
     render(<SubscriptionCenter />);
 
-    expect(screen.getByText(/Active Premium Plan: Version 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Silver Plan/i)).toBeInTheDocument();
     expect(screen.getByText('Active Subscription')).toBeInTheDocument();
   });
 
@@ -204,15 +214,15 @@ describe('app/buyer/subscription-center.tsx', () => {
   it('renders active premium plan banners for version_1, version_2, and version_3', () => {
     mockStore({ activeSubscription: 'version_1' });
     const { rerender } = render(<SubscriptionCenter />);
-    expect(screen.getByText(/Active Premium Plan: Version 1/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Silver Plan/i)).toBeInTheDocument();
 
     mockStore({ activeSubscription: 'version_2' });
     rerender(<SubscriptionCenter />);
-    expect(screen.getByText(/Active Premium Plan: Version 2/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Gold Plan/i)).toBeInTheDocument();
 
     mockStore({ activeSubscription: 'version_3' });
     rerender(<SubscriptionCenter />);
-    expect(screen.getByText(/Active Premium Plan: Version 3/i)).toBeInTheDocument();
+    expect(screen.getByText(/Active Premium Plan: Diamond Plan/i)).toBeInTheDocument();
   });
 
   it('shows info toast when payment link status returns CANCELED', async () => {
@@ -236,6 +246,9 @@ describe('app/buyer/subscription-center.tsx', () => {
     render(<SubscriptionCenter />);
 
     // Default: 12-month duration selected
+    expect(screen.getByText('₹50,000')).toBeInTheDocument();
+    expect(screen.getByText('₹75,000')).toBeInTheDocument();
+    expect(screen.getByText('₹1,00,000')).toBeInTheDocument();
     expect(screen.getByText('₹4,999')).toBeInTheDocument();
     expect(screen.getByText('₹7,499')).toBeInTheDocument();
     expect(screen.getByText('₹9,999')).toBeInTheDocument();
@@ -251,7 +264,10 @@ describe('app/buyer/subscription-center.tsx', () => {
     // Switch to 6 Months
     fireEvent.click(screen.getByRole('button', { name: '6 Months' }));
 
-    // 6-Month prices must be ₹500 higher: ₹5,499, ₹7,999, ₹10,499
+    // 6-Month prices: original prices maintained, monthly rates: ₹5,499, ₹7,999, ₹10,499
+    expect(screen.getByText('₹50,000')).toBeInTheDocument();
+    expect(screen.getByText('₹75,000')).toBeInTheDocument();
+    expect(screen.getByText('₹1,00,000')).toBeInTheDocument();
     expect(screen.getByText('₹5,499')).toBeInTheDocument();
     expect(screen.getByText('₹7,999')).toBeInTheDocument();
     expect(screen.getByText('₹10,499')).toBeInTheDocument();
@@ -260,6 +276,9 @@ describe('app/buyer/subscription-center.tsx', () => {
 
     // Switch back to 12 Months
     fireEvent.click(screen.getByRole('button', { name: /12 Months/i }));
+    expect(screen.getByText('₹50,000')).toBeInTheDocument();
+    expect(screen.getByText('₹75,000')).toBeInTheDocument();
+    expect(screen.getByText('₹1,00,000')).toBeInTheDocument();
     expect(screen.getByText('₹4,999')).toBeInTheDocument();
     expect(screen.getByText('₹7,499')).toBeInTheDocument();
     expect(screen.getByText('₹9,999')).toBeInTheDocument();
@@ -288,5 +307,59 @@ describe('app/buyer/subscription-center.tsx', () => {
     await waitFor(() => {
       expect(mockCreateBuyerPaymentLink).toHaveBeenCalledWith('version_1', '6_months');
     });
+  });
+
+  it('renders Enterprise Contracts banner and opens popup with autofilled Company Name, Email, and Mobile Number', async () => {
+    mockStore({
+      activeBuyerAccount: {
+        id: 'buyer-ent-1',
+        organizationName: 'Tata Power Ltd',
+        corporateEmail: 'procurement@tatapower.com',
+        mobileNumber: '+91 98765 43210',
+      },
+      currentUserSession: {
+        id: 'user-1',
+        name: 'Rohan Sharma',
+        email: 'procurement@tatapower.com',
+        role: 'buyer',
+        orgId: 'buyer-ent-1',
+        orgName: 'Tata Power Ltd',
+        mobile: '+91 98765 43210',
+      },
+    });
+
+    render(<SubscriptionCenter />);
+
+    // Verify Enterprise Contracts banner exists
+    expect(
+      screen.getByText(/Enterprise Contracts — For Customizations and Bulk Contracts — Contact us\./i)
+    ).toBeInTheDocument();
+
+    // Click Contact Us button
+    fireEvent.click(screen.getByTestId('enterprise-contact-btn'));
+
+    // Modal opens
+    expect(screen.getByText('For Customizations and Bulk Contracts')).toBeInTheDocument();
+
+    // Check autofilled fields including mobile number
+    const companyInput = screen.getByDisplayValue('Tata Power Ltd');
+    const emailInput = screen.getByDisplayValue('procurement@tatapower.com');
+    const mobileInput = screen.getByDisplayValue('+91 98765 43210');
+    expect(companyInput).toBeInTheDocument();
+    expect(emailInput).toBeInTheDocument();
+    expect(mobileInput).toBeInTheDocument();
+
+    // Submit the form
+    fireEvent.click(screen.getByRole('button', { name: /Submit Enquiry/i }));
+
+    // Success screen shown
+    await waitFor(() => {
+      expect(screen.getByText('Enquiry Received!')).toBeInTheDocument();
+    });
+    expect(mockShowToast).toHaveBeenCalledWith(
+      'Enquiry Submitted',
+      expect.stringContaining('reach out to you within 24 hours'),
+      'success'
+    );
   });
 });

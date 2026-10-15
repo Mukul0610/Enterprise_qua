@@ -183,6 +183,10 @@ export const UI_STRINGS = {
         label: 'All RFQs',
         description: 'Every RFQ raised across all buyers',
       },
+      enterpriseInquiries: {
+        label: 'Enterprise Inquiries',
+        description: 'Buyer enterprise customization & bulk contracts leads',
+      },
       opportunityFeed: {
         label: 'Dashboard',
         description: 'Your enquiries, quotes, and sourcing activity',

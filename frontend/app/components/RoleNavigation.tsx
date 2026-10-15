@@ -30,6 +30,7 @@ import {
   Database,
   Receipt,
   Mail,
+  MessageSquare,
   Menu,
   X,
   LogOut,
@@ -56,6 +57,7 @@ const SIDEBAR_ICONS: Record<SidebarIconKey, LucideIcon> = {
   Database,
   Receipt,
   Mail,
+  MessageSquare,
 };
 
 const NAV = UI_STRINGS.navigation;

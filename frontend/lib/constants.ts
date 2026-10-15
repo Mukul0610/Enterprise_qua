@@ -477,6 +477,16 @@ export const ROLE_SIDEBAR_NAV: Record<UserRole, SidebarNavItem[]> = {
       group: NAV_GROUPS.categoryGovernance,
       route: '/category-manager/all-rfqs',
     },
+    {
+      id: 'enterprise_inquiries',
+      screenTag: 'Screen 2.8',
+      shortTag: '2.8',
+      label: NAV_ITEMS.enterpriseInquiries.label,
+      description: NAV_ITEMS.enterpriseInquiries.description,
+      icon: 'Building2',
+      group: NAV_GROUPS.categoryGovernance,
+      route: '/category-manager/enterprise-inquiries',
+    },
   ],
   vendor: [
     {
