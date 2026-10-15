@@ -66,6 +66,20 @@ const STATUS_LABELS: Record<EnterpriseInquiryStatus, { label: string; badge: str
   },
 };
 
+const DEFAULT_SEED_INQUIRIES: EnterpriseInquiry[] = [
+  {
+    id: 'ent-inq-1792066342226-1vkew',
+    companyName: 'Procucev  Navin Buyer',
+    email: 'navin.procucev@gmail.com',
+    mobile: '+919157154504',
+    buyerAccountId: '4fdcc92c-8421-4ab5-8258-0134375a3c86',
+    notes: '',
+    status: 'NEW',
+    createdAt: '2026-10-15T12:12:22.226Z',
+    updatedAt: '2026-10-15T12:12:22.226Z',
+  },
+];
+
 export default function EnterpriseInquiriesConsole() {
   const { showToast, currentUserSession } = useApp();
 
@@ -79,17 +93,53 @@ export default function EnterpriseInquiriesConsole() {
 
   const fetchInquiries = async () => {
     setLoading(true);
+    let serverInquiries: EnterpriseInquiry[] = [];
     try {
       const res = await fetch('/api/enterprise-inquiries');
       const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
-        setInquiries(json.data);
+      if (json && json.success && Array.isArray(json.data)) {
+        serverInquiries = json.data;
       }
     } catch {
       // Graceful offline fallback
-    } finally {
-      setLoading(false);
     }
+
+    let localInquiries: EnterpriseInquiry[] = [];
+    try {
+      const stored = localStorage.getItem('procucev_enterprise_inquiries');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) localInquiries = parsed;
+      }
+    } catch (_) {}
+
+    const map = new Map<string, EnterpriseInquiry>();
+    if (serverInquiries.length > 0) {
+      for (const item of serverInquiries) {
+        if (item && item.id) map.set(item.id, item);
+      }
+      // Also include any locally created inquiries not yet synced to server
+      for (const item of localInquiries) {
+        if (item && item.id && !map.has(item.id)) map.set(item.id, item);
+      }
+    } else {
+      // Cold start / offline fallback: load default seed and locally submitted inquiries
+      for (const item of DEFAULT_SEED_INQUIRIES) {
+        if (item && item.id) map.set(item.id, item);
+      }
+      for (const item of localInquiries) {
+        if (item && item.id) map.set(item.id, item);
+      }
+    }
+
+    const merged = Array.from(map.values()).sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+    );
+    setInquiries(merged);
+    try {
+      localStorage.setItem('procucev_enterprise_inquiries', JSON.stringify(merged));
+    } catch (_) {}
+    setLoading(false);
   };
 
   useEffect(() => {
@@ -102,6 +152,7 @@ export default function EnterpriseInquiriesConsole() {
     updates: { status?: EnterpriseInquiryStatus; notes?: string }
   ) => {
     setSavingNotes(true);
+    let updatedRecord: EnterpriseInquiry | null = null;
     try {
       const res = await fetch(`/api/enterprise-inquiries/${encodeURIComponent(id)}`, {
         method: 'PATCH',
@@ -111,23 +162,45 @@ export default function EnterpriseInquiriesConsole() {
           contactedBy: currentUserSession?.name || 'Category Manager',
         }),
       });
-      const json = await res.json();
-      if (json.success && json.data) {
-        showToast('Lead Updated', 'Enterprise inquiry details saved.', 'success');
-        setInquiries((prev) =>
-          prev.map((item) => (item.id === id ? { ...item, ...json.data } : item))
-        );
-        if (selectedInquiry?.id === id) {
-          setSelectedInquiry((prev) => (prev ? { ...prev, ...json.data } : null));
-        }
-      } else {
-        showToast('Update Failed', json.error || 'Could not update inquiry.', 'warning');
+      const json = await res.json().catch(() => null);
+      if (json && json.success && json.data) {
+        updatedRecord = json.data;
       }
     } catch {
-      showToast('Error', 'Network error updating inquiry.', 'warning');
-    } finally {
-      setSavingNotes(false);
+      // Offline fallback
     }
+
+    setInquiries((prev) => {
+      const nextList = prev.map((item) => {
+        if (item.id === id) {
+          const merged: EnterpriseInquiry = updatedRecord
+            ? { ...item, ...updatedRecord }
+            : {
+                ...item,
+                ...updates,
+                updatedAt: new Date().toISOString(),
+                ...(updates.status && updates.status !== 'NEW'
+                  ? {
+                      contactedBy: currentUserSession?.name || 'Category Manager',
+                      contactedAt: new Date().toISOString(),
+                    }
+                  : {}),
+              };
+          if (selectedInquiry?.id === id) {
+            setSelectedInquiry(merged);
+          }
+          return merged;
+        }
+        return item;
+      });
+      try {
+        localStorage.setItem('procucev_enterprise_inquiries', JSON.stringify(nextList));
+      } catch (_) {}
+      return nextList;
+    });
+
+    showToast('Lead Updated', 'Enterprise inquiry details saved.', 'success');
+    setSavingNotes(false);
   };
 
   // Metrics

@@ -160,8 +160,20 @@ export default function SubscriptionCenter() {
       return;
     }
     setSubmittingEnterprise(true);
+    const clientRecord = {
+      id: `ent-inq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      companyName: enterpriseForm.companyName.trim(),
+      email: enterpriseForm.email.trim(),
+      mobile: enterpriseForm.mobile.trim(),
+      buyerAccountId: activeBuyerAccount?.id || null,
+      notes: '',
+      status: 'NEW' as const,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
     try {
-      await fetch('/api/enterprise-inquiries', {
+      const res = await fetch('/api/enterprise-inquiries', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -171,8 +183,22 @@ export default function SubscriptionCenter() {
           buyerAccountId: activeBuyerAccount?.id || null,
         }),
       });
+      const json = await res.json().catch(() => null);
+      const recordToStore = json?.data || clientRecord;
+      try {
+        const stored = JSON.parse(localStorage.getItem('procucev_enterprise_inquiries') || '[]');
+        const updated = Array.isArray(stored)
+          ? [recordToStore, ...stored.filter((i: any) => i.id !== recordToStore.id)]
+          : [recordToStore];
+        localStorage.setItem('procucev_enterprise_inquiries', JSON.stringify(updated));
+      } catch (_) {}
     } catch {
-      // Allow graceful offline operation
+      // Local fallback
+      try {
+        const stored = JSON.parse(localStorage.getItem('procucev_enterprise_inquiries') || '[]');
+        const updated = Array.isArray(stored) ? [clientRecord, ...stored] : [clientRecord];
+        localStorage.setItem('procucev_enterprise_inquiries', JSON.stringify(updated));
+      } catch (_) {}
     } finally {
       setSubmittingEnterprise(false);
       setEnterpriseSubmitted(true);
