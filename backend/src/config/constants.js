@@ -690,7 +690,20 @@ function getZohoEnv(key, fallback = '') {
 }
 
 function zohoModeFromEnv() {
-  return (getZohoEnv('ZOHO_MODE', 'live')).toLowerCase() === 'sandbox' ? 'sandbox' : 'live';
+  const explicit = (getZohoEnv('ZOHO_MODE', '')).toLowerCase();
+  const hasLiveToken = !!(getZohoEnv('ZOHO_LIVE_REFRESH_TOKEN') || getZohoEnv('ZOHO_REFRESH_TOKEN'));
+  const hasSandboxToken = !!getZohoEnv('ZOHO_SANDBOX_REFRESH_TOKEN');
+
+  if (explicit === 'sandbox') return 'sandbox';
+  if (explicit === 'live') {
+    // If live mode is selected in wrangler.jsonc but only sandbox secrets were added to Cloudflare Secrets,
+    // gracefully fall back to sandbox so payment links continue working instead of failing with a 502 error.
+    if (!hasLiveToken && hasSandboxToken) {
+      return 'sandbox';
+    }
+    return 'live';
+  }
+  return !hasLiveToken && hasSandboxToken ? 'sandbox' : 'live';
 }
 
 function zohoLiveCredentials() {
@@ -710,7 +723,7 @@ function zohoSandboxCredentials() {
   return {
     CLIENT_ID: getZohoEnv('ZOHO_SANDBOX_CLIENT_ID') || getZohoEnv('ZOHO_CLIENT_ID'),
     CLIENT_SECRET: getZohoEnv('ZOHO_SANDBOX_CLIENT_SECRET') || getZohoEnv('ZOHO_CLIENT_SECRET'),
-    REFRESH_TOKEN: getZohoEnv('ZOHO_SANDBOX_REFRESH_TOKEN'),
+    REFRESH_TOKEN: getZohoEnv('ZOHO_SANDBOX_REFRESH_TOKEN') || getZohoEnv('ZOHO_REFRESH_TOKEN'),
     OAUTH_TOKEN_URL: getZohoEnv('ZOHO_SANDBOX_OAUTH_TOKEN_URL', 'https://accounts.zoho.in/oauth/v2/token'),
     PAYMENTS_BASE_URL: getZohoEnv('ZOHO_SANDBOX_PAYMENTS_BASE_URL', 'https://paymentssandbox.zoho.in/api/v1'),
     ACCOUNT_ID: getZohoEnv('ZOHO_SANDBOX_PAYMENTS_ACCOUNT_ID') || getZohoEnv('ZOHO_PAYMENTS_ACCOUNT_ID'),

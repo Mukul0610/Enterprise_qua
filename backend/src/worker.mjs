@@ -108,10 +108,21 @@ async function scheduled(controller, workerEnv, ctx) {
 const EMAIL_GATEWAY_CRON = '* * * * *';
 const ZOHO_RECONCILIATION_CRON = '*/10 * * * *';
 
-// Attaching directly rather than spreading httpHandler into a new object:
-// spreading only copies own enumerable properties, and there's no guarantee
-// httpServerHandler()'s fetch isn't defined on a prototype instead — this
-// can't silently drop it.
+const originalFetch = httpHandler.fetch;
+httpHandler.fetch = function (request, workerEnv, ctx) {
+  if (workerEnv && typeof workerEnv === 'object') {
+    globalThis.__CF_ENV__ = workerEnv;
+    try {
+      for (const [k, v] of Object.entries(workerEnv)) {
+        if (typeof v === 'string') {
+          process.env[k] = v;
+        }
+      }
+    } catch {}
+  }
+  return originalFetch.call(this, request, workerEnv, ctx);
+};
+
 httpHandler.scheduled = scheduled;
 
 export default httpHandler;
