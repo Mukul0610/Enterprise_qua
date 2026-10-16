@@ -152,7 +152,12 @@ async function getPaymentLinkStatus(zohoPaymentLinkId) {
   const res = await fetchWithRetry(url, { method: 'GET', headers: { Accept: 'application/json', ...authHeader } });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || !data.payment_links) {
-    throw new Error(`Zoho payment-link status fetch failed (${res.status}): ${data.message || 'unknown error'}`);
+    const error = new Error(`Zoho payment-link status fetch failed (${res.status}): ${data.message || 'unknown error'}`);
+    error.status = res.status;
+    error.statusCode = res.status;
+    error.zohoMessage = data.message;
+    error.rawResponse = data;
+    throw error;
   }
   return {
     status: data.payment_links.status,

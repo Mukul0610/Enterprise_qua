@@ -41,7 +41,41 @@ const RECONCILABLE_STATUSES = ['CREATED', 'pending', 'active'];
  * never have to wait on it or the 10-minute interval.
  */
 async function reconcileLink(link) {
-  const result = await zohoPaymentService.getPaymentLinkStatus(link.zohoPaymentLinkId);
+  if (!link || !link.zohoPaymentLinkId) {
+    logger.warn(`Payment link ${link?.id} has no zohoPaymentLinkId; marking as expired`, { linkId: link?.id }, 'ZOHO_RECONCILIATION');
+    storeService.updatePaymentLinkRecord(link?.id, {
+      status: 'expired',
+      rawResponse: { error: 'Missing zohoPaymentLinkId', reconciledAt: new Date().toISOString() },
+    });
+    return { status: 'expired', nonExistent: true };
+  }
+
+  let result;
+  try {
+    result = await zohoPaymentService.getPaymentLinkStatus(link.zohoPaymentLinkId);
+  } catch (err) {
+    const msg = String(err?.message || '');
+    const isNotFound =
+      err?.status === 404 ||
+      err?.statusCode === 404 ||
+      (err?.status === 400 && /does not exist/i.test(msg)) ||
+      /payment link does not exist/i.test(msg);
+
+    if (isNotFound) {
+      logger.warn(
+        `Zoho payment link ${link.id} (${link.zohoPaymentLinkId}) does not exist in Zoho; marking as expired`,
+        { linkId: link.id, zohoPaymentLinkId: link.zohoPaymentLinkId, message: msg },
+        'ZOHO_RECONCILIATION'
+      );
+      storeService.updatePaymentLinkRecord(link.id, {
+        status: 'expired',
+        rawResponse: { error: msg, reconciledAt: new Date().toISOString() },
+      });
+      return { status: 'expired', nonExistent: true };
+    }
+    throw err;
+  }
+
   storeService.updatePaymentLinkRecord(link.id, { status: result.status, rawResponse: result.rawResponse });
   // Zoho's own status strings are lowercase ('active', 'paid', 'expired',
   // 'cancelled') — compared case-insensitively since the webhook path

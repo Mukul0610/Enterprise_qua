@@ -85,6 +85,77 @@ describe('zohoReconciliationService', () => {
       expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-2', { status: 'PAID', rawResponse: {} });
     });
 
+    test('marks link as expired when Zoho reports Payment Link does not exist (400)', async () => {
+      storeService.getPaymentLinksByStatusIn.mockReturnValue([
+        { id: 'pl-dead-1', zohoPaymentLinkId: 'zoho-dead-1' },
+      ]);
+      const notFoundErr = new Error('Zoho payment-link status fetch failed (400): Payment Link does not exist.');
+      notFoundErr.status = 400;
+      notFoundErr.statusCode = 400;
+      zohoPaymentService.getPaymentLinkStatus.mockRejectedValueOnce(notFoundErr);
+
+      const result = await zohoReconciliationService.reconcileOnce();
+
+      expect(result).toEqual({ checked: 1 });
+      expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-dead-1', {
+        status: 'expired',
+        rawResponse: expect.objectContaining({ error: expect.stringContaining('Payment Link does not exist') }),
+      });
+      expect(storeService.activateVendorSubscriptionFromPayment).not.toHaveBeenCalled();
+    });
+
+    test('marks link as expired when Zoho returns 404', async () => {
+      storeService.getPaymentLinksByStatusIn.mockReturnValue([
+        { id: 'pl-dead-404', zohoPaymentLinkId: 'zoho-dead-404' },
+      ]);
+      const notFoundErr = new Error('Zoho payment-link status fetch failed (404): Not found');
+      notFoundErr.status = 404;
+      notFoundErr.statusCode = 404;
+      zohoPaymentService.getPaymentLinkStatus.mockRejectedValueOnce(notFoundErr);
+
+      await zohoReconciliationService.reconcileOnce();
+
+      expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-dead-404', {
+        status: 'expired',
+        rawResponse: expect.objectContaining({ error: expect.stringContaining('Not found') }),
+      });
+    });
+
+    test('marks link as expired when zohoPaymentLinkId is missing', async () => {
+      storeService.getPaymentLinksByStatusIn.mockReturnValue([
+        { id: 'pl-no-zoho-id', zohoPaymentLinkId: null },
+      ]);
+
+      await zohoReconciliationService.reconcileOnce();
+
+      expect(zohoPaymentService.getPaymentLinkStatus).not.toHaveBeenCalled();
+      expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-no-zoho-id', {
+        status: 'expired',
+        rawResponse: expect.objectContaining({ error: 'Missing zohoPaymentLinkId' }),
+      });
+    });
+
+    test('reconcilePendingLinks reconciles pending links and handles non-existent gracefully', async () => {
+      const notFoundErr = new Error('Zoho payment-link status fetch failed (400): Payment Link does not exist.');
+      notFoundErr.status = 400;
+      zohoPaymentService.getPaymentLinkStatus
+        .mockResolvedValueOnce({ status: 'PAID', rawResponse: {} })
+        .mockRejectedValueOnce(notFoundErr);
+
+      const count = await zohoReconciliationService.reconcilePendingLinks([
+        { id: 'pl-active-1', zohoPaymentLinkId: 'z-1', status: 'active' },
+        { id: 'pl-dead-2', zohoPaymentLinkId: 'z-2', status: 'CREATED' },
+        { id: 'pl-done-3', zohoPaymentLinkId: 'z-3', status: 'expired' },
+      ]);
+
+      expect(count).toBe(2);
+      expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-active-1', { status: 'PAID', rawResponse: {} });
+      expect(storeService.updatePaymentLinkRecord).toHaveBeenCalledWith('pl-dead-2', {
+        status: 'expired',
+        rawResponse: expect.objectContaining({ error: expect.stringContaining('Payment Link does not exist') }),
+      });
+    });
+
     test('does nothing when there is nothing pending', async () => {
       storeService.getPaymentLinksByStatusIn.mockReturnValue([]);
       await expect(zohoReconciliationService.reconcileOnce()).resolves.toEqual({ checked: 0 });
