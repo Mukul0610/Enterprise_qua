@@ -1,5 +1,5 @@
 # .github/workflows/copilot-review.yml
-name: Request Copilot To Review
+name: Request Copilot Review
 
 on:
   pull_request:
