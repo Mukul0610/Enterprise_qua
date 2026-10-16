@@ -2086,6 +2086,171 @@ async function sendRfqNotCreatedEmail(params = {}) {
   return deliver(asAutoReply(buildRfqNotCreatedEmail(params)), 'buyer RFQ not-created notice');
 }
 
+/**
+ * Resolves the recipient email for new Enterprise Contracts inquiry alerts.
+ * Configurable via ENTERPRISE_INQUIRY_NOTIFICATION_EMAIL; defaults to navin.procucev@gmail.com.
+ */
+function getEnterpriseInquiryRecipient() {
+  return getEnv('ENTERPRISE_INQUIRY_NOTIFICATION_EMAIL') || 'navin.procucev@gmail.com';
+}
+
+function buildEnterpriseInquiryNotificationEmail({ inquiry = {}, recipientEmail } = {}) {
+  const to = recipientEmail || getEnterpriseInquiryRecipient();
+  const companyName = escapeHtml(inquiry.companyName || 'Not specified');
+  const email = escapeHtml(inquiry.email || 'Not specified');
+  const mobile = escapeHtml(inquiry.mobile || 'Not specified');
+  const buyerAccountId = inquiry.buyerAccountId ? escapeHtml(inquiry.buyerAccountId) : null;
+  const notes = inquiry.notes ? escapeHtml(inquiry.notes) : null;
+  const inquiryId = escapeHtml(inquiry.id || 'N/A');
+  const dateFormatted = new Date(inquiry.createdAt || Date.now()).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+
+  const frontendUrl = getPublicFrontendUrl();
+  const consoleUrl = `${frontendUrl}/category-manager/enterprise-inquiries`;
+  const subject = `[Enterprise Inquiry] New Inquiry from ${inquiry.companyName || 'Buyer'}`;
+
+  const inner = `
+    <p>A buyer has submitted a new <strong>Enterprise Contracts</strong> inquiry from the Subscription Center.</p>
+    
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 18px 20px; margin: 18px 0;">
+      <h3 style="margin: 0 0 12px 0; color: #0f172a; font-size: 15px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px;">
+        Inquiry Details
+      </h3>
+      <table style="width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.8;">
+        <tr>
+          <td style="width: 35%; color: #64748b; font-weight: 600; padding: 4px 0;">Company Name:</td>
+          <td style="color: #0f172a; font-weight: bold; padding: 4px 0;">${companyName}</td>
+        </tr>
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0;">Corporate Email:</td>
+          <td style="padding: 4px 0;">
+            <a href="mailto:${email}" style="color: #0284c7; font-weight: 600; text-decoration: none;">${email}</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0;">Mobile Number:</td>
+          <td style="padding: 4px 0;">
+            <a href="tel:${mobile}" style="color: #0f172a; font-weight: 600; text-decoration: none;">${mobile}</a>
+          </td>
+        </tr>
+        ${buyerAccountId ? `
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0;">Buyer Account ID:</td>
+          <td style="color: #475569; font-family: monospace; font-size: 12px; padding: 4px 0;">${buyerAccountId}</td>
+        </tr>
+        ` : ''}
+        ${notes ? `
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0; vertical-align: top;">Notes:</td>
+          <td style="color: #334155; padding: 4px 0;">${notes}</td>
+        </tr>
+        ` : ''}
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0;">Inquiry Reference ID:</td>
+          <td style="color: #64748b; font-family: monospace; font-size: 12px; padding: 4px 0;">${inquiryId}</td>
+        </tr>
+        <tr>
+          <td style="color: #64748b; font-weight: 600; padding: 4px 0;">Submitted At:</td>
+          <td style="color: #475569; padding: 4px 0;">${dateFormatted} IST</td>
+        </tr>
+      </table>
+    </div>
+
+    <div style="background: #eff6ff; border-left: 4px solid #0284c7; padding: 12px 16px; border-radius: 4px; margin: 18px 0; font-size: 13px; color: #1e3a8a;">
+      <strong>Action Required:</strong> Please contact the buyer within 24 hours to discuss customized contract terms, volume discounts, or SLA customizations.
+    </div>
+
+    <div style="text-align: center; margin: 26px 0 16px 0;">
+      <a href="${consoleUrl}" style="background: #0284c7; color: #ffffff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 14px; display: inline-block;">
+        Open Category Manager Console
+      </a>
+    </div>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    replyTo: inquiry.email || undefined,
+    subject,
+    text: `New Enterprise Contract Inquiry\n\nCompany Name: ${inquiry.companyName || 'N/A'}\nCorporate Email: ${inquiry.email || 'N/A'}\nMobile: ${inquiry.mobile || 'N/A'}\nInquiry ID: ${inquiry.id || 'N/A'}\nSubmitted At: ${dateFormatted} IST\n\nView details: ${consoleUrl}`,
+    html: wrapEmail('ENTERPRISE CONTRACTS', 'New Custom Contract Request', inner),
+  };
+}
+
+async function sendEnterpriseInquiryNotificationEmail(inquiry, options = {}) {
+  const recipientEmail = options.recipientEmail || getEnterpriseInquiryRecipient();
+  const message = buildEnterpriseInquiryNotificationEmail({ inquiry, recipientEmail });
+  return deliver(asAutoReply(message), 'enterprise contract inquiry notification', options);
+}
+
+function buildEnterpriseInquiryBuyerConfirmationEmail(inquiry = {}) {
+  const to = inquiry.email;
+  const companyName = escapeHtml(inquiry.companyName || 'Valued Buyer');
+  const inquiryId = escapeHtml(inquiry.id || 'N/A');
+  const dateFormatted = new Date(inquiry.createdAt || Date.now()).toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  });
+
+  const frontendUrl = getPublicFrontendUrl();
+  const subscriptionCenterUrl = `${frontendUrl}/buyer/subscription-center`;
+  const subject = `We have received your Enterprise Contracts inquiry - Procucev`;
+
+  const inner = `
+    <p>Dear <strong>${companyName}</strong>,</p>
+    <p>Thank you for reaching out to us regarding customized Enterprise Contract terms and volume procurement.</p>
+
+    <div style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 16px 20px; margin: 18px 0;">
+      <h4 style="margin: 0 0 10px 0; color: #0f172a; font-size: 14px;">Inquiry Reference Summary</h4>
+      <p style="margin: 4px 0; font-size: 13px; color: #475569;">
+        <strong>Reference ID:</strong> <span style="font-family: monospace;">${inquiryId}</span>
+      </p>
+      <p style="margin: 4px 0; font-size: 13px; color: #475569;">
+        <strong>Submitted At:</strong> ${dateFormatted} IST
+      </p>
+      <p style="margin: 4px 0; font-size: 13px; color: #475569;">
+        <strong>Contact Email:</strong> ${escapeHtml(inquiry.email || '')}
+      </p>
+      <p style="margin: 4px 0; font-size: 13px; color: #475569;">
+        <strong>Contact Mobile:</strong> ${escapeHtml(inquiry.mobile || '')}
+      </p>
+    </div>
+
+    <p style="font-size: 13px; color: #334155;">
+      Our Enterprise Category Management team will reach out to you within <strong>24 hours</strong> with customized terms tailored to your organization’s procurement requirements.
+    </p>
+
+    <div style="text-align: center; margin: 24px 0 16px 0;">
+      <a href="${subscriptionCenterUrl}" style="background: #0284c7; color: #ffffff; padding: 11px 22px; border-radius: 6px; text-decoration: none; font-weight: bold; font-size: 13px; display: inline-block;">
+        Return to Subscription Center
+      </a>
+    </div>
+
+    <p style="margin-top: 24px; font-size: 13px; color: #475569;">
+      Best regards,<br/>
+      <strong>Procucev Enterprise Contracts Team</strong>
+    </p>
+  `;
+
+  return {
+    from: fromAddress(),
+    to,
+    subject,
+    text: `Dear ${inquiry.companyName || 'Valued Buyer'},\n\nThank you for reaching out regarding Procucev Enterprise Contracts.\nWe have received your inquiry (Ref: ${inquiry.id || 'N/A'}).\nOur Enterprise Contracts team will reach out to you at ${inquiry.email} or ${inquiry.mobile} within 24 hours.\n\nBest regards,\nProcucev Enterprise Contracts Team`,
+    html: wrapEmail('PROCUCEV ENTERPRISE', 'Inquiry Received', inner),
+  };
+}
+
+async function sendEnterpriseInquiryBuyerConfirmationEmail(inquiry, options = {}) {
+  if (!inquiry || !inquiry.email) return { sent: false, reason: 'missing recipient email' };
+  const message = buildEnterpriseInquiryBuyerConfirmationEmail(inquiry);
+  return deliver(asAutoReply(message), 'enterprise inquiry buyer confirmation', options);
+}
+
 function isConfigured() {
   return (
     gmailIdentities().length > 0 ||
@@ -2156,4 +2321,9 @@ module.exports = {
   DELIVERY_CHANNEL,
   getPublicFrontendUrl,
   getLogoUrl,
+  getEnterpriseInquiryRecipient,
+  buildEnterpriseInquiryNotificationEmail,
+  sendEnterpriseInquiryNotificationEmail,
+  buildEnterpriseInquiryBuyerConfirmationEmail,
+  sendEnterpriseInquiryBuyerConfirmationEmail,
 };

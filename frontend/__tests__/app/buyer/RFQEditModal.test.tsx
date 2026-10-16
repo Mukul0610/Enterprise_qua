@@ -22,23 +22,7 @@ const MINOR = categoriesData[0].minorCategories[0];
 const OTHER_MAJOR = categoriesData[1].majorCategory;
 const OTHER_MINOR = categoriesData[1].minorCategories[0];
 
-function entity(overrides: Partial<ExtractedEntity> = {}): ExtractedEntity {
-  return {
-    id: 'ent-1',
-    itemName: 'Centrifugal Water Pump 500 GPM',
-    quantity: 12,
-    unit: 'Nos',
-    targetDate: '2026-10-15',
-    technicalSpecs: 'SS316 impeller',
-    confidence: 95,
-    category: MINOR,
-    majorCategory: MAJOR,
-    minorCategory: MINOR,
-    ...overrides,
-  };
-}
-
-// A hardcoded literal here ('2026-09-30') is a time bomb: validateRFQEdit
+// A hardcoded literal here ('2026-09-30' or '2026-10-15') is a time bomb: validateRFQEdit
 // rejects any targetDeliveryDate earlier than today, so a fixed past-looking
 // date starts failing the instant the real calendar date passes it. Computed
 // once per test run instead, always valid.
@@ -48,6 +32,22 @@ const A_FUTURE_DATE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOStrin
 // far enough from A_FUTURE_DATE (60 days vs 30) that the two can never
 // collide and hide a real field change.
 const A_DIFFERENT_FUTURE_DATE = new Date(Date.now() + 60 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
+function entity(overrides: Partial<ExtractedEntity> = {}): ExtractedEntity {
+  return {
+    id: 'ent-1',
+    itemName: 'Centrifugal Water Pump 500 GPM',
+    quantity: 12,
+    unit: 'Nos',
+    targetDate: A_FUTURE_DATE,
+    technicalSpecs: 'SS316 impeller',
+    confidence: 95,
+    category: MINOR,
+    majorCategory: MAJOR,
+    minorCategory: MINOR,
+    ...overrides,
+  };
+}
 
 function attachment(overrides: Partial<RFQAttachment> = {}): RFQAttachment {
   return {
@@ -600,7 +600,7 @@ describe('RFQEditModal: line items', () => {
     expect(within(firstRow()).getByLabelText(EDIT.colQty)).toHaveValue(12);
     expect(within(firstRow()).getByLabelText(EDIT.colUnit)).toHaveValue('Nos');
     expect(within(firstRow()).getByLabelText(EDIT.colSpecs)).toHaveValue('SS316 impeller');
-    expect(within(firstRow()).getByLabelText(EDIT.colTargetDate)).toHaveValue('2026-10-15');
+    expect(within(firstRow()).getByLabelText(EDIT.colTargetDate)).toHaveValue(A_FUTURE_DATE);
   });
 
   it('counts the rows in the section heading', () => {
@@ -738,7 +738,7 @@ describe('RFQEditModal: line items', () => {
       expect(within(firstRow()).getByLabelText(EDIT.colUnit)).toHaveValue('Nos');
       expect(within(firstRow()).getByLabelText(EDIT.colItem)).toHaveValue('Centrifugal Water Pump 500 GPM');
       expect(within(firstRow()).getByLabelText(EDIT.colSpecs)).toHaveValue('SS316 impeller');
-      expect(within(firstRow()).getByLabelText(EDIT.colTargetDate)).toHaveValue('2026-10-15');
+      expect(within(firstRow()).getByLabelText(EDIT.colTargetDate)).toHaveValue(A_FUTURE_DATE);
     });
 
     // A six-figure BOQ quantity was being clipped by a 112px input, which read as

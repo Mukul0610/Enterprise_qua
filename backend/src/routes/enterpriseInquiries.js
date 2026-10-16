@@ -3,12 +3,13 @@ const router = express.Router();
 const storeService = require('../services/storeService');
 const { authenticate, requireRole } = require('../middleware/auth');
 const { logger } = require('../services/loggerService');
+const mailerService = require('../services/mailerService');
 
 /**
   * POST /api/enterprise-inquiries
   * Submit a buyer enterprise contract inquiry (Company Name, Email, Mobile).
   */
-router.post('/', (req, res, next) => {
+router.post('/', async (req, res, next) => {
   try {
     const { companyName, email, mobile, notes, buyerAccountId } = req.body;
 
@@ -35,6 +36,22 @@ router.post('/', (req, res, next) => {
       { id: inquiry.id, companyName: inquiry.companyName, email: inquiry.email },
       'ENTERPRISE_INQUIRIES'
     );
+
+    // Send email alert to Category Manager / Enterprise Team (default: navin.procucev@gmail.com, configurable via ENTERPRISE_INQUIRY_NOTIFICATION_EMAIL)
+    try {
+      await mailerService.sendEnterpriseInquiryNotificationEmail(inquiry);
+    } catch (mailErr) {
+      logger.error('Error sending enterprise inquiry notification email', mailErr, 'ENTERPRISE_INQUIRIES');
+    }
+
+    // Send confirmation email to the submitting buyer
+    try {
+      if (inquiry.email) {
+        await mailerService.sendEnterpriseInquiryBuyerConfirmationEmail(inquiry);
+      }
+    } catch (buyerMailErr) {
+      logger.error('Error sending enterprise inquiry buyer confirmation email', buyerMailErr, 'ENTERPRISE_INQUIRIES');
+    }
 
     return res.status(201).json({
       success: true,

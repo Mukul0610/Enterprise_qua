@@ -51,7 +51,8 @@
     "ZOHO_PAYMENTS_BASE_URL": "https://payments.zoho.in/api/v1",
     "ZOHO_OAUTH_TOKEN_URL": "https://accounts.zoho.in/oauth/v2/token",
     "ZOHO_PAYMENTS_RETURN_URL_BASE": "https://equa.procucev.com",
-    "ZOHO_RECONCILIATION_ENABLED": "true"
+    "ZOHO_RECONCILIATION_ENABLED": "true",
+    "ENTERPRISE_INQUIRY_NOTIFICATION_EMAIL": "info@procucev.com"
   },
   "d1_databases": [
     {
